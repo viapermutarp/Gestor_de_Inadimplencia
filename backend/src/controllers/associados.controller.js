@@ -19,10 +19,17 @@ function serializeCobranca(cobranca) {
   };
 }
 
+// Valores possíveis de "campo" em historico_status_associado — os três
+// status booleanos do associado que podem gerar uma linha de histórico.
+// Usado só como documentação/referência (não há validação de entrada aqui:
+// quem grava é sempre o próprio backend, nunca vem de payload externo).
+const CAMPOS_HISTORICO_STATUS = ['em_negociacao', 'bloqueado', 'em_juridico'];
+
 function serializeHistorico(historico) {
   return {
     id: historico.id,
     associado_id: historico.associadoId,
+    campo: historico.campo,
     status_anterior: historico.statusAnterior,
     status_novo: historico.statusNovo,
     alterado_em: historico.alteradoEm,
@@ -50,12 +57,8 @@ function serializeAssociado(associado) {
     serialized.cobrancas = associado.cobrancas.map(serializeCobranca);
   }
 
-  if (associado.historicoNegociacao) {
-    serialized.historico_negociacao = associado.historicoNegociacao.map(serializeHistorico);
-  }
-
-  if (associado.historicoBloqueio) {
-    serialized.historico_bloqueio = associado.historicoBloqueio.map(serializeHistorico);
+  if (associado.historicoStatus) {
+    serialized.historico = associado.historicoStatus.map(serializeHistorico);
   }
 
   return serialized;
@@ -277,7 +280,9 @@ exports.resumo = async (req, res, next) => {
 
 /**
  * GET /api/associados/:cpfCnpj
- * Detalhe de um associado, com todas as cobranças e o histórico de negociação.
+ * Detalhe de um associado, com todas as cobranças e o histórico unificado de
+ * status (em_negociacao, bloqueado e em_juridico juntos — ver "historico" em
+ * serializeAssociado), do mais recente para o mais antigo.
  */
 exports.detalhar = async (req, res, next) => {
   try {
@@ -287,8 +292,7 @@ exports.detalhar = async (req, res, next) => {
       where: { cpfCnpj },
       include: {
         cobrancas: { orderBy: { vencimento: 'asc' } },
-        historicoNegociacao: { orderBy: { alteradoEm: 'desc' } },
-        historicoBloqueio: { orderBy: { alteradoEm: 'desc' } },
+        historicoStatus: { orderBy: { alteradoEm: 'desc' } },
       },
     });
 
@@ -305,7 +309,8 @@ exports.detalhar = async (req, res, next) => {
 /**
  * PATCH /api/associados/:cpfCnpj/negociacao
  * Body: { "em_negociacao": true|false, "observacao": "texto opcional" }
- * Atualiza o status de negociação e grava um registro em historico_negociacao.
+ * Atualiza o status de negociação e grava um registro em
+ * historico_status_associado (campo = "em_negociacao").
  *
  * "observacao_atualizada_em" é atualizado (para a data/hora atual) somente
  * quando o valor de "observacao" realmente muda neste endpoint — não muda
@@ -339,9 +344,10 @@ exports.atualizarNegociacao = async (req, res, next) => {
           ...(observacaoMudou ? { observacaoAtualizadaEm: new Date() } : {}),
         },
       }),
-      prisma.historicoNegociacao.create({
+      prisma.historicoStatusAssociado.create({
         data: {
           associadoId: associado.id,
+          campo: 'em_negociacao',
           statusAnterior: associado.emNegociacao,
           statusNovo: emNegociacao,
         },
@@ -357,7 +363,8 @@ exports.atualizarNegociacao = async (req, res, next) => {
 /**
  * PATCH /api/associados/:cpfCnpj/bloqueio
  * Body: { "bloqueado": true|false }
- * Atualiza o campo e grava um registro em historico_bloqueio.
+ * Atualiza o campo e grava um registro em historico_status_associado
+ * (campo = "bloqueado").
  */
 exports.atualizarBloqueio = async (req, res, next) => {
   try {
@@ -379,9 +386,10 @@ exports.atualizarBloqueio = async (req, res, next) => {
         where: { cpfCnpj },
         data: { bloqueado },
       }),
-      prisma.historicoBloqueio.create({
+      prisma.historicoStatusAssociado.create({
         data: {
           associadoId: associado.id,
+          campo: 'bloqueado',
           statusAnterior: associado.bloqueado,
           statusNovo: bloqueado,
         },
@@ -397,7 +405,9 @@ exports.atualizarBloqueio = async (req, res, next) => {
 /**
  * PATCH /api/associados/:cpfCnpj/juridico
  * Body: { "em_juridico": true|false }
- * Atualiza o campo. Sem histórico dedicado (diferente de negociação/bloqueio).
+ * Atualiza o campo e grava um registro em historico_status_associado
+ * (campo = "em_juridico") — diferente das versões anteriores deste endpoint,
+ * que não gravavam histórico nenhum para esta mudança.
  */
 exports.atualizarJuridico = async (req, res, next) => {
   try {
@@ -414,10 +424,20 @@ exports.atualizarJuridico = async (req, res, next) => {
       return res.status(404).json({ error: 'Associado não encontrado.' });
     }
 
-    const atualizado = await prisma.associado.update({
-      where: { cpfCnpj },
-      data: { emJuridico },
-    });
+    const [atualizado] = await prisma.$transaction([
+      prisma.associado.update({
+        where: { cpfCnpj },
+        data: { emJuridico },
+      }),
+      prisma.historicoStatusAssociado.create({
+        data: {
+          associadoId: associado.id,
+          campo: 'em_juridico',
+          statusAnterior: associado.emJuridico,
+          statusNovo: emJuridico,
+        },
+      }),
+    ]);
 
     res.json(serializeAssociado(atualizado));
   } catch (err) {
@@ -428,8 +448,9 @@ exports.atualizarJuridico = async (req, res, next) => {
 /**
  * GET /api/associados/:cpfCnpj/bloqueios/contador
  * Conta quantas vezes o associado foi marcado como bloqueado
- * (historico_bloqueio.status_novo = true) desde o último reset
- * (associados.ciclo_resetado_em). Sem reset prévio, conta o histórico todo.
+ * (historico_status_associado com campo = "bloqueado" e status_novo = true)
+ * desde o último reset (associados.ciclo_resetado_em). Sem reset prévio,
+ * conta o histórico todo.
  */
 exports.contadorBloqueios = async (req, res, next) => {
   try {
@@ -441,9 +462,10 @@ exports.contadorBloqueios = async (req, res, next) => {
       return res.status(404).json({ error: 'Associado não encontrado.' });
     }
 
-    const contador = await prisma.historicoBloqueio.count({
+    const contador = await prisma.historicoStatusAssociado.count({
       where: {
         associadoId: associado.id,
+        campo: 'bloqueado',
         statusNovo: true,
         ...(associado.cicloResetadoEm ? { alteradoEm: { gt: associado.cicloResetadoEm } } : {}),
       },

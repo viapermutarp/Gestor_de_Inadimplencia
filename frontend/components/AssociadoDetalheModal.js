@@ -19,6 +19,16 @@ import { IconClose } from "@/components/icons";
 
 const LIMITE_RISCO_CASHBACK = 4;
 
+// Rótulos de cada campo que pode aparecer no histórico unificado (ver
+// "historico" em GET /api/associados/:cpf_cnpj, campo "campo" de cada
+// entrada) — mesmos textos usados nos toggles da tabela do Dashboard, para
+// manter a terminologia consistente entre as duas telas.
+const CAMPO_HISTORICO = {
+  em_negociacao: { nome: "Negociação", true: "Em negociação", false: "Não em negociação" },
+  bloqueado: { nome: "Bloqueio", true: "Bloqueado", false: "Não bloqueado" },
+  em_juridico: { nome: "Jurídico", true: "Em jurídico", false: "Fora do jurídico" },
+};
+
 export default function AssociadoDetalheModal({ cpfCnpj, onClose, onAtualizado }) {
   const [associado, setAssociado] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -123,7 +133,7 @@ export default function AssociadoDetalheModal({ cpfCnpj, onClose, onAtualizado }
   }
 
   const cobrancasAbertas = associado ? getCobrancasAbertas(associado) : [];
-  const historico = associado?.historico_negociacao || [];
+  const historico = associado?.historico || [];
   const indicadorSemContato = associado ? getIndicadorSemContato(associado) : null;
   const emRiscoCashback = !carregandoContador && (contador ?? 0) >= LIMITE_RISCO_CASHBACK;
 
@@ -367,7 +377,7 @@ export default function AssociadoDetalheModal({ cpfCnpj, onClose, onAtualizado }
               {/* Histórico */}
               <section>
                 <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Histórico de negociação
+                  Histórico
                 </h3>
                 {historico.length === 0 ? (
                   <p className="rounded-2xl bg-surface-elevated p-4 text-sm text-muted-foreground">
@@ -375,21 +385,31 @@ export default function AssociadoDetalheModal({ cpfCnpj, onClose, onAtualizado }
                   </p>
                 ) : (
                   <ul className="space-y-2">
-                    {historico.map((h) => (
-                      <li
-                        key={h.id}
-                        className="flex items-center justify-between gap-3 rounded-2xl bg-surface-elevated p-3 text-sm"
-                      >
-                        <span className="text-foreground">
-                          {h.status_anterior ? "Em negociação" : "Não em negociação"}
-                          <span className="mx-2 text-muted-foreground">→</span>
-                          {h.status_novo ? "Em negociação" : "Não em negociação"}
-                        </span>
-                        <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                          {formatDateTime(h.alterado_em)}
-                        </span>
-                      </li>
-                    ))}
+                    {historico.map((h) => {
+                      const campo = CAMPO_HISTORICO[h.campo] || {
+                        nome: h.campo,
+                        true: "Sim",
+                        false: "Não",
+                      };
+                      return (
+                        <li
+                          key={h.id}
+                          className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-2xl bg-surface-elevated p-3 text-sm"
+                        >
+                          <span className="text-foreground">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                              {campo.nome}:
+                            </span>{" "}
+                            {campo[h.status_anterior]}
+                            <span className="mx-2 text-muted-foreground">→</span>
+                            {campo[h.status_novo]}
+                          </span>
+                          <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                            {formatDateTime(h.alterado_em)}
+                          </span>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </section>

@@ -13,7 +13,7 @@ import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
 import AssociadoDetalheModal from "@/components/AssociadoDetalheModal";
 import ResumoCards from "@/components/ResumoCards";
-import { IconSearch } from "@/components/icons";
+import { IconSearch, IconRefresh, IconCheck } from "@/components/icons";
 
 const LIMITE_POR_PAGINA = 100;
 const PAGINACAO_PADRAO = {
@@ -57,6 +57,14 @@ export default function DashboardPage() {
   // na tabela.
   const [resumo, setResumo] = useState(null);
   const [resumoLoading, setResumoLoading] = useState(true);
+
+  // Botão "Atualizar" — re-busca a página atual da tabela + os cards de
+  // resumo sem precisar de F5. Estado próprio (separado de loading/
+  // resumoLoading) só para dar feedback visual no botão (spinner enquanto
+  // roda, "Atualizado agora" por alguns segundos depois) — mesmo padrão já
+  // usado na tela de Taxa de Inadimplência.
+  const [atualizando, setAtualizando] = useState(false);
+  const [atualizadoAgora, setAtualizadoAgora] = useState(false);
 
   // Busca com debounce (evita uma chamada à API a cada tecla) — troca de
   // busca sempre volta a tabela para a página 1.
@@ -114,6 +122,15 @@ export default function DashboardPage() {
   useEffect(() => {
     carregarResumo();
   }, [carregarResumo]);
+
+  async function handleAtualizar() {
+    setAtualizando(true);
+    setAtualizadoAgora(false);
+    await Promise.all([carregarPagina(), carregarResumo()]);
+    setAtualizando(false);
+    setAtualizadoAgora(true);
+    setTimeout(() => setAtualizadoAgora(false), 4000);
+  }
 
   /**
    * Atualiza um campo booleano do associado localmente na tabela, com
@@ -207,21 +224,39 @@ export default function DashboardPage() {
           />
         </div>
 
-        <div className="flex flex-wrap rounded-xl border border-border-soft bg-surface p-1 text-sm">
-          {FILTROS.map((f) => (
-            <button
-              key={f.value}
-              type="button"
-              onClick={() => handleFiltroChange(f.value)}
-              className={`rounded-lg px-3.5 py-1.5 font-medium transition-colors ${
-                filtro === f.value
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap rounded-xl border border-border-soft bg-surface p-1 text-sm">
+            {FILTROS.map((f) => (
+              <button
+                key={f.value}
+                type="button"
+                onClick={() => handleFiltroChange(f.value)}
+                className={`rounded-lg px-3.5 py-1.5 font-medium transition-colors ${
+                  filtro === f.value
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {atualizadoAgora && (
+            <span className="flex items-center gap-1.5 text-xs font-medium text-status-green">
+              <IconCheck className="h-3.5 w-3.5" />
+              Atualizado agora
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleAtualizar}
+            disabled={atualizando || loading}
+            className="flex shrink-0 items-center gap-2 rounded-xl border border-border-soft bg-surface px-3.5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {atualizando ? <Spinner className="h-3.5 w-3.5" /> : <IconRefresh className="h-3.5 w-3.5" />}
+            Atualizar
+          </button>
         </div>
       </div>
 

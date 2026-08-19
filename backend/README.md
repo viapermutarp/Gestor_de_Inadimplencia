@@ -14,8 +14,7 @@ API de controle de cobrança da **Via Permuta**. Node.js + Express + PostgreSQL 
 
 - **associados**: `id`, `cpf_cnpj` (único, indexado), `nome`, `telefone`, `email`, `em_negociacao`, `observacao`, `observacao_atualizada_em` (data/hora da última mudança de valor de `observacao`, só via `PATCH .../negociacao` — ver seção de endpoints), `bloqueado`, `em_juridico`, `ciclo_resetado_em` (marco usado pelo contador de bloqueios), `criado_em`, `atualizado_em`
 - **cobrancas**: `id`, `associado_id` (FK), `id_externo` (opcional, único, indexado — ID gerado pelo Asaas para a cobrança, ex.: `pay_xxxxxxxxxxxxx`), `valor`, `vencimento`, `dias_diferenca`, `link_pagamento`, `descricao`, `status` (`pending` | `overdue` | `paid`), `sincronizado_em`
-- **historico_negociacao**: `id`, `associado_id` (FK), `status_anterior`, `status_novo`, `alterado_em`
-- **historico_bloqueio**: `id`, `associado_id` (FK), `status_anterior`, `status_novo`, `alterado_em`
+- **historico_status_associado**: `id`, `associado_id` (FK), `campo` (`"em_negociacao"` | `"bloqueado"` | `"em_juridico"`), `status_anterior`, `status_novo`, `alterado_em` — histórico único das três mudanças de status booleano do associado (substitui as antigas `historico_negociacao` e `historico_bloqueio`, consolidadas nesta tabela pela migração `consolidar_historico_status`; `em_juridico` não tinha histórico dedicado antes disso)
 - **configuracoes**: `chave` (PK, ex.: `"api_key"`, `"n8n_webhook_cadastro_url"`, `"asaas_api_key"`, `"inadimplencia_palavras_excluidas"` — array JSON serializado em string), `valor`, `atualizado_em` — tabela genérica de configurações persistidas em runtime
 - **sync_log**: `id`, `executado_em`, `total_associados_processados`, `sucesso` — uma linha por chamada a `POST /api/sync`
 - **cadastros_enviados**: `id`, `payload` (json — corpo completo enviado pelo formulário), `status` (`enviado` | `erro`), `resposta_n8n` (texto, nullable — motivo do erro quando o repasse ao n8n falha), `criado_em` — uma linha por chamada a `POST /api/cadastros` (fluxo de Cadastro/Faturamento, substitui o gatilho do Kommo)
@@ -77,14 +76,14 @@ Isso vale inclusive para chamadas **sem nenhum filtro** — antes, `GET /api/ass
 | Método | Rota | Descrição |
 |---|---|---|
 | POST | `/api/login` | Login fixo (`ADMIN_USER`/`ADMIN_PASSWORD`), retorna JWT. Única rota pública. |
-| POST | `/api/sync` | Recebe array de associados (com `cobrancas` aninhadas) e faz upsert. Registra uma linha em `sync_log` a cada chamada. |
+| POST | `/api/sync` | Recebe array de associados (com `cobrancas` aninhadas) e faz upsert. Cada associado aceita `cpf_cnpj`, `nome`, `telefone` (obrigatórios) e `email` (opcional). Registra uma linha em `sync_log` a cada chamada. |
 | GET | `/api/associados` | **Paginada** (`page`, `limit` — padrão 1/100, máximo 100). Filtros `em_negociacao`, `em_juridico`, `bloqueado` (`true`\|`false`, combináveis via AND) e `busca` (nome, cpf_cnpj ou telefone, contains case-insensitive). Sem filtro/busca: cada associado vem com todas as cobranças; com algum filtro/busca ativo: só com as em aberto (`pending`/`overdue`). Ordenada pelo `dias_diferenca` mais crítico (mais negativo) em aberto, calculado e aplicado **no banco antes da paginação** (ver seção própria abaixo). Resposta: `{ dados, paginacao }` — ver aviso de breaking change acima. |
 | GET | `/api/associados/resumo` | Números agregados (`com_cobranca_aberto`, `valor_total_aberto`, `em_negociacao`, `bloqueados`, `em_juridico`), calculados direto no banco — nunca traz os registros individuais pra aplicação. Aceita só `busca` (mesmo comportamento do parâmetro acima); não aceita paginação nem os filtros booleanos. |
-| GET | `/api/associados/:cpf_cnpj` | Detalhe de um associado, com todas as cobranças, histórico de negociação e histórico de bloqueio. |
-| PATCH | `/api/associados/:cpf_cnpj/negociacao` | Body `{ "em_negociacao": bool, "observacao"?: string }`. Atualiza o status e grava uma linha em `historico_negociacao`. Se o valor de `observacao` realmente mudar, também atualiza `observacao_atualizada_em` — nenhum outro endpoint (incluindo `POST /api/sync`) toca nesse campo. |
-| PATCH | `/api/associados/:cpf_cnpj/bloqueio` | Body `{ "bloqueado": bool }`. Atualiza o status e grava uma linha em `historico_bloqueio`. |
-| PATCH | `/api/associados/:cpf_cnpj/juridico` | Body `{ "em_juridico": bool }`. Atualiza o campo. Sem histórico dedicado. |
-| GET | `/api/associados/:cpf_cnpj/bloqueios/contador` | Conta quantas vezes o associado foi marcado como bloqueado desde o último reset (ou desde sempre, se nunca resetado). |
+| GET | `/api/associados/:cpf_cnpj` | Detalhe de um associado, com todas as cobranças e `historico` — as mudanças de `em_negociacao`, `bloqueado` e `em_juridico` juntas num só array (`{ id, associado_id, campo, status_anterior, status_novo, alterado_em }`), mais recente primeiro. Ver "Histórico unificado de status" abaixo. |
+| PATCH | `/api/associados/:cpf_cnpj/negociacao` | Body `{ "em_negociacao": bool, "observacao"?: string }`. Atualiza o status e grava uma linha em `historico_status_associado` (`campo: "em_negociacao"`). Se o valor de `observacao` realmente mudar, também atualiza `observacao_atualizada_em` — nenhum outro endpoint (incluindo `POST /api/sync`) toca nesse campo. |
+| PATCH | `/api/associados/:cpf_cnpj/bloqueio` | Body `{ "bloqueado": bool }`. Atualiza o status e grava uma linha em `historico_status_associado` (`campo: "bloqueado"`). |
+| PATCH | `/api/associados/:cpf_cnpj/juridico` | Body `{ "em_juridico": bool }`. Atualiza o campo e grava uma linha em `historico_status_associado` (`campo: "em_juridico"`) — diferente de versões anteriores deste endpoint, que não gravavam histórico nenhum. |
+| GET | `/api/associados/:cpf_cnpj/bloqueios/contador` | Conta quantas vezes o associado foi marcado como bloqueado (`historico_status_associado` com `campo: "bloqueado"` e `status_novo: true`) desde o último reset (ou desde sempre, se nunca resetado). |
 | POST | `/api/associados/:cpf_cnpj/bloqueios/resetar` | Marca `ciclo_resetado_em = agora`. Não apaga o histórico; só move o ponto de corte do contador. |
 | GET | `/api/config/api-key` | Retorna a API key vigente mascarada (só os últimos 6 caracteres visíveis). |
 | POST | `/api/config/api-key/regenerar` | Gera e persiste uma nova API key. Retorna a chave completa — única vez que ela aparece por inteiro. |
@@ -533,7 +532,23 @@ curl -X POST https://api.exemplo.com/api/associados/123.456.789-00/bloqueios/res
 # {"cpf_cnpj":"123.456.789-00","ciclo_resetado_em":"2026-08-13T15:00:00.000Z"}
 ```
 
-Depois do reset, o contador volta a zero e só passa a contar bloqueios (`status_novo = true`) registrados **após** `ciclo_resetado_em`. Os registros antigos continuam em `historico_bloqueio` — nada é apagado, só o ponto de corte do contador muda.
+Depois do reset, o contador volta a zero e só passa a contar bloqueios (`status_novo = true`, `campo = "bloqueado"`) registrados **após** `ciclo_resetado_em`. Os registros antigos continuam em `historico_status_associado` — nada é apagado, só o ponto de corte do contador muda.
+
+### Histórico unificado de status (`historico_status_associado`)
+
+`GET /api/associados/:cpf_cnpj` traz um único array `historico` reunindo **todas** as mudanças de `em_negociacao`, `bloqueado` e `em_juridico` do associado, ordenado do mais recente para o mais antigo — cada item identifica qual campo mudou:
+
+```json
+{
+  "historico": [
+    { "id": "...", "associado_id": "...", "campo": "em_juridico", "status_anterior": false, "status_novo": true, "alterado_em": "2026-08-19T18:40:00.000Z" },
+    { "id": "...", "associado_id": "...", "campo": "bloqueado", "status_anterior": false, "status_novo": true, "alterado_em": "2026-08-19T18:35:00.000Z" },
+    { "id": "...", "associado_id": "...", "campo": "em_negociacao", "status_anterior": false, "status_novo": true, "alterado_em": "2026-08-10T09:00:00.000Z" }
+  ]
+}
+```
+
+Antes desta versão, o histórico vinha em dois campos separados (`historico_negociacao` e `historico_bloqueio`) e `em_juridico` não tinha histórico nenhum — `PATCH .../juridico` só atualizava o campo, sem deixar rastro de quando/quem mudou. A migração `20260819160000_consolidar_historico_status` resolve os dois problemas de uma vez: cria `historico_status_associado` (coluna `campo` discrimina o tipo de mudança), **migra os dados existentes** das duas tabelas antigas para a nova (com o `campo` certo em cada linha, preservando `id`/`status_anterior`/`status_novo`/`alterado_em` originais) e só então derruba `historico_negociacao`/`historico_bloqueio`. `PATCH .../juridico` passou a gravar uma linha nessa tabela a partir de agora — mudanças de `em_juridico` anteriores a este deploy não têm registro histórico (não havia como reconstituir o que nunca foi salvo).
 
 ### Exemplo — configuração da API key
 
@@ -760,4 +775,16 @@ O ambiente de execução usado para gerar este projeto não tinha Docker dispon�
 - **`criticos_90_dias` sensível à tolerância, sem mudar de faixa**: `pay_mock_029` (91 dias em aberto) conta em `criticos_90_dias` (`900`) e na faixa `50_100` (`900`) com tolerância 0; com tolerância 2 (atraso efetivo de 89 dias) sai de `criticos_90_dias` (`0`) mas **permanece** na faixa `50_100` (`900`) — isolando o efeito da tolerância sobre o corte de 90 dias do efeito sobre a escolha de faixa, também sem `forcar=true`.
 - Suíte automatizada dedicada a esta rodada rodou de ponta a ponta contra um Postgres descartável (`embedded-postgres`) e o mock estendido do Asaas: **47/47 asserções passaram**.
 
+**Histórico unificado de status (`historico_status_associado`) e confirmação de `email` em `POST /api/sync`** — validado com Postgres real, num teste desenhado especificamente para provar que a migração `20260819160000_consolidar_historico_status` preserva dados reais existentes (não só que funciona num banco vazio):
+
+- Aplicadas as 6 primeiras migrações isoladamente (a de consolidação foi temporariamente retirada de `prisma/migrations`), depois inseridas à mão 3 linhas "à moda antiga" — 1 em `historico_negociacao`, 2 em `historico_bloqueio`, associadas a um mesmo associado fictício — simulando dados reais de produção antes do deploy.
+- Restaurada a migração de consolidação e reaplicada via `prisma migrate deploy`: as 3 linhas apareceram em `historico_status_associado` com o **mesmo `id` original**, `status_anterior`/`status_novo`/`alterado_em` preservados e `campo` corretamente atribuído (`em_negociacao` para a primeira, `bloqueado` para as outras duas) — confirmado direto no banco, sem passar pela aplicação. `historico_negociacao` e `historico_bloqueio` deixaram de existir (`relation ... does not exist` ao consultar).
+- Com o app real rodando sobre esse banco já migrado: `POST /api/sync` enviando `email` tanto para o associado legado (upsert) quanto para um associado novo (create) — `GET /api/associados/:cpf_cnpj` de ambos retornou o `email` salvo corretamente nos dois casos.
+- `GET /api/associados/:cpf_cnpj` do associado legado trouxe os 3 registros migrados dentro de `historico` (não mais `historico_negociacao`/`historico_bloqueio` separados), ordenados do mais recente pro mais antigo.
+- `PATCH .../negociacao`, `.../bloqueio` e `.../juridico` em sequência: cada um gravou exatamente uma linha nova em `historico_status_associado` com o `campo` certo — a de `.../juridico` é o caso novo (antes desta rodada esse endpoint não gravava histórico nenhum), confirmado com `status_anterior: false`/`status_novo: true` corretos. `GET` seguinte trouxe as 6 linhas (3 legadas + 3 novas) na ordem certa, misturando dado migrado com dado novo sem problema.
+- `GET .../bloqueios/contador` (ainda sem reset) contou `2` — as duas marcações como bloqueado do associado (1 migrada + 1 nova), ignorando corretamente a marcação de desbloqueio migrada (`status_novo: false`) — confirmando que o contador migrou de `historico_bloqueio` para a tabela única sem quebrar a lógica de contagem.
+- Suíte automatizada dedicada a esta rodada rodou de ponta a ponta contra um Postgres descartável (`embedded-postgres`): **35/35 asserções passaram**.
+
 Antes do primeiro deploy real, recomendamos rodar `docker-compose up --build` localmente para confirmar o build da imagem Docker em si.
+
+⚠️ **Atenção ao aplicar esta versão em produção**: a migração `20260819160000_consolidar_historico_status` **derruba as tabelas `historico_negociacao` e `historico_bloqueio`** depois de copiar os dados para `historico_status_associado` — o teste acima confirma que a cópia preserva tudo, mas, como em qualquer migração que remove tabelas, vale fazer um backup do banco antes do `prisma migrate deploy` em produção, por precaução.

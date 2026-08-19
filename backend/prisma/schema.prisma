@@ -23,9 +23,8 @@ model Associado {
   criadoEm               DateTime  @default(now()) @map("criado_em")
   atualizadoEm           DateTime  @updatedAt @map("atualizado_em")
 
-  cobrancas           Cobranca[]
-  historicoNegociacao HistoricoNegociacao[]
-  historicoBloqueio   HistoricoBloqueio[]
+  cobrancas       Cobranca[]
+  historicoStatus HistoricoStatusAssociado[]
 
   @@index([cpfCnpj])
   @@map("associados")
@@ -50,28 +49,28 @@ model Cobranca {
   @@map("cobrancas")
 }
 
-model HistoricoNegociacao {
+/// Histórico unificado de mudanças de status do associado — substitui as
+/// antigas tabelas "historico_negociacao" e "historico_bloqueio" (uma
+/// terceira nunca chegou a existir para "em_juridico", que não tinha
+/// histórico nenhum antes desta tabela). Uma linha por mudança de qualquer
+/// um dos três campos booleanos de status, discriminada por "campo" — ver
+/// CAMPOS_HISTORICO_STATUS em src/controllers/associados.controller.js.
+/// Consultada tanto pela seção "Histórico" do modal de detalhe
+/// (GET /api/associados/:cpf_cnpj, todos os campos juntos, mais recente
+/// primeiro) quanto pelo contador de bloqueios
+/// (GET .../bloqueios/contador, filtrando campo = "bloqueado").
+model HistoricoStatusAssociado {
   id             String    @id @default(uuid())
   associadoId    String    @map("associado_id")
   associado      Associado @relation(fields: [associadoId], references: [id], onDelete: Cascade)
+  campo          String
   statusAnterior Boolean   @map("status_anterior")
   statusNovo     Boolean   @map("status_novo")
   alteradoEm     DateTime  @default(now()) @map("alterado_em")
 
   @@index([associadoId])
-  @@map("historico_negociacao")
-}
-
-model HistoricoBloqueio {
-  id             String    @id @default(uuid())
-  associadoId    String    @map("associado_id")
-  associado      Associado @relation(fields: [associadoId], references: [id], onDelete: Cascade)
-  statusAnterior Boolean   @map("status_anterior")
-  statusNovo     Boolean   @map("status_novo")
-  alteradoEm     DateTime  @default(now()) @map("alterado_em")
-
-  @@index([associadoId])
-  @@map("historico_bloqueio")
+  @@index([campo])
+  @@map("historico_status_associado")
 }
 
 /// Tabela de configurações persistidas em runtime (ex.: API_KEY atual),
