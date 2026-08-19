@@ -1,0 +1,6 @@
+-- Este arquivo de migração ficou vazio por causa de uma falha de geração
+-- (tentativa de diff que exigia um shadow database indisponível no momento).
+-- Não pôde ser removido do disco neste ambiente; é uma migração no-op
+-- (nenhum comando SQL), segura de aplicar. A alteração real de schema
+-- (coluna id_externo em cobrancas) está na migração seguinte:
+-- 20260813015015_add_id_externo_cobrancas

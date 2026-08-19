@@ -1,0 +1,133 @@
+@import "tailwindcss";
+
+/*
+ * Tema "Sinal" — painel interno de cobrança da Via Permuta.
+ *
+ * Direção: fundo quase preto (não roxo), com uma única cor de destaque
+ * elétrica e saturada (índigo/azul vibrante — "Sinal") aplicada de forma
+ * consistente em botões primários, estados ativos, foco e ícones. Cantos
+ * bem arredondados, respiração generosa, números em destaque com peso forte.
+ *
+ * Cores nomeadas:
+ *   Tinta       #0A0A0D  — fundo
+ *   Carvão      #131318  — superfície (cards, painéis)
+ *   Carvão+     #1B1C24  — superfície elevada (inputs, modais, hover)
+ *   Sinal       #3D5AFE  — cor de marca (índigo elétrico)
+ *   Sinal Claro #7C8BFF  — variação clara do sinal (eyebrows, foco, spinner)
+ *   Osso        #F2F3F7  — texto principal
+ *
+ * As cores de status de atraso (verde/âmbar/laranja/vermelho) ficam FORA
+ * dessa paleta: são um código de cor semântico fixo, reservado para a faixa
+ * de atraso de cada associado, e NUNCA usado como cor de marca genérica —
+ * exatamente para não colidir visualmente com os indicadores de risco.
+ */
+
+:root {
+  --background: #0a0a0d;
+  --surface: #131318;
+  --surface-hover: #191a22;
+  --surface-elevated: #1e2029;
+
+  --primary: #3d5afe;
+  --primary-hover: #5470ff;
+  --primary-foreground: #f5f6ff;
+
+  --accent: #7c8bff;
+  --accent-hover: #97a3ff;
+
+  --foreground: #f2f3f7;
+  --muted: #74768c;
+  --muted-foreground: #9a9cb2;
+
+  --border: #2a2c38;
+  --border-soft: rgba(255, 255, 255, 0.08);
+
+  /* Cores semânticas fixas de status de atraso — reservadas, nunca usadas
+     como cor de marca/destaque geral. */
+  --status-green: #22c55e;
+  --status-yellow: #f5b301;
+  --status-orange: #fb7a24;
+  --status-red: #f2454b;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-elevated: var(--surface-elevated);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-border: var(--border);
+  --color-border-soft: var(--border-soft);
+
+  --color-status-green: var(--status-green);
+  --color-status-yellow: var(--status-yellow);
+  --color-status-orange: var(--status-orange);
+  --color-status-red: var(--status-red);
+
+  --font-sans: var(--font-plex-sans);
+  --font-display: var(--font-space-grotesk);
+  --font-mono: var(--font-plex-mono);
+}
+
+* {
+  border-color: var(--border-soft);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  /* Glow discreto do sinal no topo + textura de pontos muito sutil (grade
+     técnica, no espírito de "radar/sinal") — nunca compete com o conteúdo. */
+  background-color: var(--background);
+  background-image:
+    radial-gradient(ellipse 90% 55% at 50% -12%, rgba(61, 90, 254, 0.16), transparent 60%),
+    radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    26px 26px;
+  background-repeat: no-repeat, repeat;
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  font-feature-settings: "tnum" 1, "cv05" 1;
+}
+
+::selection {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--foreground);
+  -webkit-box-shadow: 0 0 0px 1000px var(--surface-elevated) inset;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--primary);
+  border-radius: 9999px;
+}

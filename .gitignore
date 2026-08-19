@@ -1,0 +1,52 @@
+# ---------------------------------------------------------------------------
+# Gestor de Inadimplencia - .gitignore consolidado (raiz do monorepo)
+# Reúne as regras que antes viviam em backend/.gitignore e frontend/.gitignore
+# separadamente (cada um removido depois de consolidado aqui), com o prefixo
+# da subpasta correspondente.
+# ---------------------------------------------------------------------------
+
+# --- backend/ ---
+backend/node_modules/
+backend/.env
+backend/dist/
+backend/coverage/
+
+# --- frontend/ ---
+frontend/node_modules
+frontend/.pnp
+frontend/.pnp.*
+frontend/.yarn/*
+!frontend/.yarn/patches
+!frontend/.yarn/plugins
+!frontend/.yarn/releases
+!frontend/.yarn/versions
+frontend/coverage
+frontend/.next/
+frontend/out/
+frontend/build
+frontend/.env*
+!frontend/.env.example
+frontend/.vercel
+frontend/next-env.d.ts
+
+# --- genéricos (log/debug/SO/typescript) — recursivos em qualquer subpasta ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.DS_Store
+*.pem
+*.tsbuildinfo
+
+# --- resíduos das antigas pastas .git e .gitignore de backend/ e frontend/ ---
+# Renomeados (não foi possível apagar fisicamente neste ambiente por uma
+# restrição de permissão do disco montado — ver relatório do Claude). As
+# pastas .git perderam o nome ".git" e não são mais repositórios; os
+# .gitignore antigos viraram redundantes agora que a raiz cobre tudo.
+# Ignorados aqui para não entrarem no commit. Podem ser apagados manualmente
+# mais tarde direto no Windows.
+backend/.git-removido-*/
+frontend/.git-removido-*/
+backend/.gitignore-antigo
+frontend/.gitignore-antigo
