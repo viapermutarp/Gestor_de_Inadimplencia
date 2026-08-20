@@ -1,7 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getAssociados, getResumo, patchNegociacao, patchBloqueio, patchJuridico, ApiError } from "@/lib/api";
+import {
+  getAssociados,
+  getResumo,
+  patchNegociacao,
+  patchBloqueio,
+  patchJuridico,
+  dispararSincronizacao,
+  ApiError,
+} from "@/lib/api";
 import { getPiorDiasDiferenca, getSomaValorAberto, getStatusAtraso, STATUS_COLOR_CLASSES } from "@/lib/atraso";
 import { getIndicadorSemContato } from "@/lib/contato";
 import { formatCurrency } from "@/lib/format";
@@ -13,7 +21,7 @@ import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
 import AssociadoDetalheModal from "@/components/AssociadoDetalheModal";
 import ResumoCards from "@/components/ResumoCards";
-import { IconSearch, IconRefresh, IconCheck } from "@/components/icons";
+import { IconSearch, IconRefresh, IconCheck, IconAlert } from "@/components/icons";
 
 const LIMITE_POR_PAGINA = 100;
 const PAGINACAO_PADRAO = {
@@ -65,6 +73,10 @@ export default function DashboardPage() {
   // usado na tela de Taxa de Inadimplência.
   const [atualizando, setAtualizando] = useState(false);
   const [atualizadoAgora, setAtualizadoAgora] = useState(false);
+  // Mensagem de aviso quando o webhook de sincronização (n8n -> Asaas)
+  // falha ou dá timeout — não impede a re-busca normal em seguida, só avisa
+  // que os dados podem não estar 100% frescos desta vez.
+  const [erroSincronizacao, setErroSincronizacao] = useState("");
 
   // Busca com debounce (evita uma chamada à API a cada tecla) — troca de
   // busca sempre volta a tabela para a página 1.
@@ -123,13 +135,35 @@ export default function DashboardPage() {
     carregarResumo();
   }, [carregarResumo]);
 
+  // 1. Dispara o webhook do n8n (sincroniza com o Asaas e já deixa nosso
+  //    banco atualizado quando responde). 2. Só depois de essa chamada
+  //    retornar (sucesso ou falha) é que re-busca tabela + cards — assim, se
+  //    a sincronização deu certo, a re-busca já reflete os dados novos.
+  //    3. Se o webhook falhar/der timeout, mostra um aviso mas ainda assim
+  //    faz a re-busca normal (não trava o botão) — os dados locais podem já
+  //    estar atualizados de uma sincronização anterior.
   async function handleAtualizar() {
     setAtualizando(true);
     setAtualizadoAgora(false);
+    setErroSincronizacao("");
+
+    let sincronizacaoOk = true;
+    try {
+      await dispararSincronizacao();
+    } catch (err) {
+      sincronizacaoOk = false;
+      setErroSincronizacao(
+        err instanceof ApiError ? err.message : "Não foi possível sincronizar com o Asaas."
+      );
+    }
+
     await Promise.all([carregarPagina(), carregarResumo()]);
     setAtualizando(false);
-    setAtualizadoAgora(true);
-    setTimeout(() => setAtualizadoAgora(false), 4000);
+
+    if (sincronizacaoOk) {
+      setAtualizadoAgora(true);
+      setTimeout(() => setAtualizadoAgora(false), 4000);
+    }
   }
 
   /**
@@ -246,6 +280,15 @@ export default function DashboardPage() {
             <span className="flex items-center gap-1.5 text-xs font-medium text-status-green">
               <IconCheck className="h-3.5 w-3.5" />
               Atualizado agora
+            </span>
+          )}
+          {erroSincronizacao && (
+            <span
+              className="flex items-center gap-1.5 text-xs font-medium text-status-yellow"
+              title={erroSincronizacao}
+            >
+              <IconAlert className="h-3.5 w-3.5" />
+              Sincronização falhou, exibindo últimos dados
             </span>
           )}
           <button

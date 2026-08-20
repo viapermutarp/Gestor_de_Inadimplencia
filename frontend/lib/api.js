@@ -10,7 +10,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path, { method = "GET", body, auth = true } = {}) {
+async function request(path, { method = "GET", body, auth = true, timeoutMs } = {}) {
   if (!API_URL) {
     throw new ApiError(
       "NEXT_PUBLIC_API_URL não está configurada. Defina a URL da API no .env.local.",
@@ -25,15 +25,28 @@ async function request(path, { method = "GET", body, auth = true } = {}) {
     if (token) headers.Authorization = `Bearer ${token}`;
   }
 
+  // `timeoutMs` é opcional — usado por chamadas que sabidamente podem demorar
+  // bem mais que o normal (ex.: dispararSincronizacao, que aguarda um webhook
+  // do n8n paginar no Asaas), pra não deixar o fetch pendurado indefinidamente
+  // se a rede/servidor travar sem nunca fechar a conexão.
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
   let res;
   try {
     res = await fetch(`${API_URL}${path}`, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller?.signal,
     });
-  } catch {
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new ApiError("Tempo esgotado ao aguardar resposta da API.", 0);
+    }
     throw new ApiError("Não foi possível conectar à API. Verifique sua conexão.", 0);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 
   let data = null;
@@ -146,6 +159,24 @@ export function regenerarApiKey() {
 
 export function getSyncLog() {
   return request("/api/config/sync-log");
+}
+
+/**
+ * POST /api/sync/atualizar — dispara sob demanda o webhook do n8n
+ * (configurado no backend via N8N_SYNC_WEBHOOK_URL) que sincroniza com o
+ * Asaas e já deixa nosso banco atualizado quando responde. Usado pelo botão
+ * "Atualizar" do Dashboard: chamado ANTES da re-busca de tabela/cards, para
+ * que a re-busca já reflita os dados novos.
+ *
+ * Timeout de 35s no frontend (um pouco maior que os 30s do backend, pra
+ * deixar o backend responder primeiro com sua própria mensagem de timeout
+ * em vez do frontend desistir antes). Falhas (502 do backend, timeout, rede)
+ * lançam ApiError normalmente — quem chama decide se trava o fluxo ou só
+ * avisa e segue com a re-busca normal (ver handleAtualizar em
+ * app/dashboard/page.js).
+ */
+export function dispararSincronizacao() {
+  return request("/api/sync/atualizar", { method: "POST", timeoutMs: 35000 });
 }
 
 /**

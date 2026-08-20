@@ -77,6 +77,7 @@ Isso vale inclusive para chamadas **sem nenhum filtro** — antes, `GET /api/ass
 |---|---|---|
 | POST | `/api/login` | Login fixo (`ADMIN_USER`/`ADMIN_PASSWORD`), retorna JWT. Única rota pública. |
 | POST | `/api/sync` | Recebe array de associados (com `cobrancas` aninhadas) e faz upsert. Cada associado aceita `cpf_cnpj`, `nome`, `telefone` (obrigatórios) e `email` (opcional). Registra uma linha em `sync_log` a cada chamada. |
+| POST | `/api/sync/atualizar` | Sem corpo. Dispara sob demanda o webhook do n8n (`N8N_SYNC_WEBHOOK_URL`) que sincroniza com o Asaas e chama `POST /api/sync` internamente — usado pelo botão "Atualizar" do Dashboard. Timeout de 30s. Ver seção própria abaixo. |
 | GET | `/api/associados` | **Paginada** (`page`, `limit` — padrão 1/100, máximo 100). Filtros `em_negociacao`, `em_juridico`, `bloqueado` (`true`\|`false`, combináveis via AND) e `busca` (nome, cpf_cnpj ou telefone, contains case-insensitive). Sem filtro/busca: cada associado vem com todas as cobranças; com algum filtro/busca ativo: só com as em aberto (`pending`/`overdue`). Ordenada pelo `dias_diferenca` mais crítico (mais negativo) em aberto, calculado e aplicado **no banco antes da paginação** (ver seção própria abaixo). Resposta: `{ dados, paginacao }` — ver aviso de breaking change acima. |
 | GET | `/api/associados/resumo` | Números agregados (`com_cobranca_aberto`, `valor_total_aberto`, `em_negociacao`, `bloqueados`, `em_juridico`), calculados direto no banco — nunca traz os registros individuais pra aplicação. Aceita só `busca` (mesmo comportamento do parâmetro acima); não aceita paginação nem os filtros booleanos. |
 | GET | `/api/associados/:cpf_cnpj` | Detalhe de um associado, com todas as cobranças e `historico` — as mudanças de `em_negociacao`, `bloqueado` e `em_juridico` juntas num só array (`{ id, associado_id, campo, status_anterior, status_novo, alterado_em }`), mais recente primeiro. Ver "Histórico unificado de status" abaixo. |
@@ -516,6 +517,28 @@ Resposta:
 > 1. **`id_externo`**, quando presente no payload — é o identificador mais confiável (ex.: o ID da cobrança gerado pelo Asaas), então tem prioridade máxima e é único/indexado na tabela `cobrancas`.
 > 2. **Fallback** (compatibilidade retroativa), quando `id_externo` não vem no payload — casamento pela combinação `(associado_id, vencimento, descricao)`, como antes. Esse fallback só considera cobranças que também não têm `id_externo` gravado, para não sobrescrever por engano um registro já vinculado a um ID do Asaas.
 
+### Sincronização sob demanda (`POST /api/sync/atualizar`)
+
+Endpoint sem corpo de requisição, usado pelo botão **"Atualizar"** do Dashboard no frontend, para permitir buscar dados novos do Asaas sem esperar a próxima execução agendada de `POST /api/sync`. Não substitui o `POST /api/sync` — só o **dispara indiretamente**, chamando um webhook do n8n (`N8N_SYNC_WEBHOOK_URL`, variável de ambiente) que:
+
+1. Busca os dados atualizados na API do Asaas (paginando, o que pode levar alguns segundos).
+2. Agrupa os dados por associado.
+3. Chama `POST /api/sync` internamente, com o payload já pronto.
+
+Ou seja: quando `POST /api/sync/atualizar` retorna com sucesso, o banco **já está atualizado** — o frontend só precisa re-buscar (`GET /api/associados`/`GET /api/associados/resumo`) depois, sem se preocupar em orquestrar o sync em si.
+
+```bash
+curl -X POST https://api.exemplo.com/api/sync/atualizar \
+  -H "Authorization: Bearer <token>"
+# {"status":"ok","synced_at":"2026-08-19T12:00:00.000Z","total_associados":42}
+```
+
+- **`N8N_SYNC_WEBHOOK_URL`** (variável de ambiente, ver `.env.example`) — URL do webhook do n8n. Fica só em variável de ambiente (não é um valor configurável em runtime como `n8n_webhook_cadastro_url`) porque tende a mudar entre ambientes (dev/staging/produção) e não precisa de UI própria. Se não estiver definida, o endpoint responde `502` explicando isso, sem tentar nenhuma chamada.
+- **Timeout de 30s** (`SYNC_WEBHOOK_TIMEOUT_MS`, também variável de ambiente — só existe pra permitir reduzir em testes automatizados sem esperar 30s de verdade; em produção deixe sem definir, o padrão já é 30000). Generoso de propósito: o webhook pagina no Asaas antes de responder, então pode legitimamente demorar bem mais que uma chamada comum da nossa API.
+- **Qualquer falha vira `502`** (nunca `500` genérico) — URL não configurada, timeout, erro de rede, ou o próprio webhook respondendo com status HTTP de erro (nesse último caso, o corpo da resposta do webhook vem em `detalhe`, truncado a 500 caracteres). A mensagem em `error` sempre deixa claro que o problema foi no webhook/Asaas, não na nossa API.
+- **Resposta de sucesso** repassa o corpo do webhook (que devolve `{ status, syncedAt, totalAssociados }`) convertido pra `snake_case` (`{ status, synced_at, total_associados }`), consistente com o resto da API. Se o webhook responder `200` mas com um corpo que não é JSON válido, o endpoint **não trata isso como erro** — degrada graciosamente, devolvendo `status: "ok"` e os outros dois campos como `null` (afinal o `200` já indica que o n8n processou a chamada; só não conseguimos extrair os detalhes do corpo).
+- Este endpoint **não grava nada em `sync_log`** diretamente — quem grava é o próprio `POST /api/sync` acionado pelo webhook (do jeito que sempre gravou), então uma sincronização feita pelo botão "Atualizar" aparece no log de sincronizações normalmente, sem duplicar contagem.
+
 ### Exemplo — bloqueio e contador
 
 ```bash
@@ -788,3 +811,12 @@ O ambiente de execução usado para gerar este projeto não tinha Docker dispon�
 Antes do primeiro deploy real, recomendamos rodar `docker-compose up --build` localmente para confirmar o build da imagem Docker em si.
 
 ⚠️ **Atenção ao aplicar esta versão em produção**: a migração `20260819160000_consolidar_historico_status` **derruba as tabelas `historico_negociacao` e `historico_bloqueio`** depois de copiar os dados para `historico_status_associado` — o teste acima confirma que a cópia preserva tudo, mas, como em qualquer migração que remove tabelas, vale fazer um backup do banco antes do `prisma migrate deploy` em produção, por precaução.
+
+**Sincronização sob demanda (`POST /api/sync/atualizar`)** — validado com Postgres real e um mock HTTP simples fazendo o papel do webhook do n8n (comportamento trocado em tempo de execução: sucesso, erro HTTP, "trava" pra forçar timeout, corpo de resposta que não é JSON):
+
+- `N8N_SYNC_WEBHOOK_URL` não configurada (instância própria do app, sem essa variável): `502`, mensagem citando `"N8N_SYNC_WEBHOOK_URL"` — nenhuma chamada de rede chega a ser tentada.
+- Webhook respondendo `200` com `{ status: "ok", syncedAt, totalAssociados }`: `200`, os três campos repassados corretamente convertidos pra `snake_case` (`status`, `synced_at`, `total_associados`).
+- Webhook respondendo `500`: `502` (não `500` genérico — deixa claro que o problema foi no upstream), com o corpo da resposta de erro do webhook presente em `detalhe`.
+- Webhook "travado" (nunca responde): usando `SYNC_WEBHOOK_TIMEOUT_MS=800` (só pra este teste não precisar esperar os 30s reais), a chamada voltou `502` com mensagem citando "Tempo esgotado" depois de ~858ms — confirmando que o timeout realmente é respeitado (nem retorna instantâneo, nem trava além do configurado).
+- Webhook respondendo `200` mas com corpo que não é JSON válido: ainda assim `200` (o `200` já indica que o n8n processou), com `status: "ok"` e os outros dois campos em `null` — confirmando que corpo inesperado degrada graciosamente em vez de virar erro.
+- Suíte automatizada dedicada a esta rodada rodou de ponta a ponta contra um Postgres descartável (`embedded-postgres`) e o mock do webhook: **16/16 asserções passaram**.

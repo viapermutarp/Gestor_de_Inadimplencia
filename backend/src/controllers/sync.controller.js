@@ -2,6 +2,14 @@ const prisma = require('../config/prisma');
 
 const STATUS_VALIDOS = ['pending', 'overdue', 'paid'];
 
+// Timeout generoso pro webhook do n8n usado por POST /api/sync/atualizar —
+// ele pagina no Asaas antes de responder, então pode demorar bem mais que
+// uma chamada HTTP comum (mas não deve travar o botão "Atualizar" do
+// frontend indefinidamente se o n8n ficar preso). Configurável via
+// SYNC_WEBHOOK_TIMEOUT_MS (útil pra testes automatizados de timeout sem
+// esperar 30s de verdade); sem essa variável, usa os 30s padrão.
+const TIMEOUT_WEBHOOK_ATUALIZAR_MS = Number(process.env.SYNC_WEBHOOK_TIMEOUT_MS) || 30000;
+
 /**
  * Registra uma linha em sync_log para cada chamada a POST /api/sync
  * (sucesso ou falha). Nunca lança erro — uma falha ao gravar o log não
@@ -196,5 +204,80 @@ exports.sync = async (req, res, next) => {
   } catch (err) {
     await registrarSyncLog({ total: totalAssociadosProcessados, sucesso: false });
     next(err);
+  }
+};
+
+/**
+ * POST /api/sync/atualizar
+ *
+ * Dispara sob demanda o webhook do n8n configurado em
+ * "N8N_SYNC_WEBHOOK_URL" (variável de ambiente — não é um valor
+ * configurável em runtime como "n8n_webhook_cadastro_url", já que pode
+ * mudar entre ambientes e não tem UI própria pra isso). Esse webhook busca
+ * os dados atualizados no Asaas e chama POST /api/sync internamente — ou
+ * seja, quando esta chamada retorna (sucesso), nosso banco já está
+ * atualizado. Usado pelo botão "Atualizar" do Dashboard (ver README do
+ * frontend): o frontend chama este endpoint primeiro e só depois re-busca a
+ * tabela/os cards de resumo, garantindo que a re-busca já reflita os dados
+ * novos.
+ *
+ * Sem corpo de requisição. Timeout de 30s (ver TIMEOUT_WEBHOOK_ATUALIZAR_MS)
+ * — o n8n pode demorar porque pagina no Asaas antes de responder.
+ *
+ * Resposta de sucesso (200), repassando o corpo do webhook:
+ *   { "status": "ok", "synced_at": "...", "total_associados": N }
+ *
+ * Falhas (URL não configurada, timeout, erro de rede, ou o webhook
+ * respondendo com status HTTP de erro) voltam como 502, com uma mensagem
+ * clara em "error" — nunca como 500 genérico, pra deixar claro pro frontend
+ * que o problema foi no upstream (n8n/Asaas), não na nossa API. O frontend
+ * trata esse 502 mostrando um aviso, mas ainda assim re-busca os dados
+ * locais em seguida (podem já estar atualizados de uma sincronização
+ * anterior, mesmo que esta tentativa específica tenha falhado).
+ */
+exports.atualizarSobDemanda = async (req, res) => {
+  const url = process.env.N8N_SYNC_WEBHOOK_URL;
+
+  if (!url) {
+    return res.status(502).json({ error: 'N8N_SYNC_WEBHOOK_URL não está configurada no ambiente do backend.' });
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_WEBHOOK_ATUALIZAR_MS);
+
+  try {
+    const resposta = await fetch(url, {
+      method: 'POST',
+      signal: controller.signal,
+    });
+
+    const corpoTexto = await resposta.text().catch(() => '');
+    let corpo = null;
+    try {
+      corpo = corpoTexto ? JSON.parse(corpoTexto) : null;
+    } catch {
+      corpo = null;
+    }
+
+    if (!resposta.ok) {
+      return res.status(502).json({
+        error: `Webhook de sincronização respondeu com status ${resposta.status}.`,
+        ...(corpoTexto ? { detalhe: corpoTexto.slice(0, 500) } : {}),
+      });
+    }
+
+    res.json({
+      status: corpo?.status ?? 'ok',
+      synced_at: corpo?.syncedAt ?? null,
+      total_associados: corpo?.totalAssociados ?? null,
+    });
+  } catch (err) {
+    const mensagem =
+      err.name === 'AbortError'
+        ? 'Tempo esgotado ao aguardar o webhook de sincronização (30s).'
+        : `Falha ao chamar o webhook de sincronização: ${err.message}`;
+    res.status(502).json({ error: mensagem });
+  } finally {
+    clearTimeout(timeoutId);
   }
 };
