@@ -75,6 +75,7 @@ function construirCondicoesFiltro({
   emJuridicoParam,
   bloqueadoParam,
   termoBusca,
+  exigirCobrancaAberta,
 } = {}) {
   const condicoes = [];
 
@@ -91,6 +92,19 @@ function construirCondicoesFiltro({
     const termo = `%${termoBusca}%`;
     condicoes.push(
       Prisma.sql`(a.nome ILIKE ${termo} OR a.cpf_cnpj ILIKE ${termo} OR a.telefone ILIKE ${termo})`
+    );
+  }
+
+  // Só usado pela aba "Todos" de GET /api/associados (ver `listar` — nunca
+  // por `resumo`, que já conta "com_cobranca_aberto" à parte via FILTER).
+  // Sem isso, um associado que ficou sem nenhuma cobrança pending/overdue
+  // (ex.: quitou tudo, ver reconciliação em POST /api/sync) continuava
+  // aparecendo na tabela do Dashboard com "R$ 0,00"/"Em dia" mesmo não tendo
+  // mais nada em aberto — o card de resumo já não contava esse associado,
+  // então a tabela ficava inconsistente com o próprio resumo da tela.
+  if (exigirCobrancaAberta) {
+    condicoes.push(
+      Prisma.sql`EXISTS (SELECT 1 FROM cobrancas c WHERE c.associado_id = a.id AND c.status IN ('pending', 'overdue'))`
     );
   }
 
@@ -122,12 +136,23 @@ function montarWhereSql(condicoes) {
  * (qualquer status). Com pelo menos um filtro/busca ativo: só com as
  * cobranças em aberto (status "pending" ou "overdue").
  *
+ * ⚠️ Aba "Todos" (nenhum de "em_negociacao"/"em_juridico"/"bloqueado"
+ * informado — "busca" sozinho não conta): só retorna associados com **pelo
+ * menos uma cobrança pending/overdue** — quem quitou tudo (ver reconciliação
+ * em POST /api/sync) não aparece mais aqui, do mesmo jeito que já não é
+ * contado em `com_cobranca_aberto` de GET /api/associados/resumo. Assim que
+ * QUALQUER um dos três toggles é informado (true OU false), essa exigência
+ * desaparece — as abas "Em Negociação"/"Bloqueados"/"Jurídico" continuam
+ * mostrando todo mundo marcado com o respectivo toggle, tenha ou não
+ * cobrança em aberto (ex.: associado em negociação que já zerou as
+ * cobranças, mas ainda está em acompanhamento).
+ *
  * Ordenação: pelo "pior" (mais negativo) dias_diferenca entre as cobranças
  * em aberto de cada associado — feita NO BANCO, antes de aplicar a
  * paginação, para garantir que o associado mais crítico do sistema inteiro
  * sempre apareça na página 1 (não é uma ordenação só dentro da página).
- * Associados sem cobrança em aberto vão por último; empates são desempatados
- * por nome (A-Z).
+ * Associados sem cobrança em aberto (só possível quando algum toggle está
+ * ativo — ver acima) vão por último; empates são desempatados por nome (A-Z).
  *
  * Paginação: "page" (padrão 1) e "limit" (padrão 100, máximo 100 — valores
  * maiores são reduzidos para 100, não geram erro). Resposta:
@@ -158,12 +183,22 @@ exports.listar = async (req, res, next) => {
     if (!Number.isInteger(limit) || limit < 1) limit = LIMITE_PADRAO;
     if (limit > LIMITE_MAXIMO) limit = LIMITE_MAXIMO;
 
+    // Nenhum dos três toggles de status ativo (independente de "busca") =
+    // é a aba "Todos" — nesse caso, e só nesse caso, associados sem nenhuma
+    // cobrança pending/overdue ficam de fora da lista (ver comentário em
+    // `construirCondicoesFiltro`). As abas "Em Negociação"/"Bloqueados"/
+    // "Jurídico" continuam mostrando quem está marcado com o respectivo
+    // toggle, tenha ou não cobrança em aberto (ex.: associado em negociação
+    // que já quitou tudo, mas ainda em acompanhamento).
+    const nenhumFiltroDeStatusAtivo = !emNegociacaoValido && !emJuridicoValido && !bloqueadoValido;
+
     const whereSql = montarWhereSql(
       construirCondicoesFiltro({
         emNegociacaoParam,
         emJuridicoParam,
         bloqueadoParam,
         termoBusca: buscaValida ? termoBusca : '',
+        exigirCobrancaAberta: nenhumFiltroDeStatusAtivo,
       })
     );
 
