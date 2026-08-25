@@ -501,6 +501,17 @@ Pensado pros cards de resumo do painel: como o `GET /api/associados` normal agor
 
 `cobrancas[].id_externo` é **opcional** — string com o ID único que o Asaas gera para a cobrança (ex.: `"pay_xxxxxxxxxxxxx"`). Quando enviado, é o campo usado para casar a cobrança no upsert (ver nota abaixo). Integrações que ainda não enviam esse campo continuam funcionando normalmente.
 
+**Forma alternativa do corpo (recomendada — habilita a reconciliação global, ver abaixo):** em vez do array na raiz, um objeto com `associados` (mesmo formato de sempre) e `janela`:
+
+```json
+{
+  "janela": { "inicio": "2026-07-03", "fim": "2026-08-30" },
+  "associados": [ /* mesmo formato do array acima */ ]
+}
+```
+
+`janela.inicio`/`janela.fim` descrevem o intervalo de vencimento usado pela consulta ao Asaas que gerou este payload (datas `YYYY-MM-DD`). Ver a seção de reconciliação abaixo para o efeito disso.
+
 Resposta:
 
 ```json
@@ -510,21 +521,22 @@ Resposta:
   "cobrancas_criadas": 1,
   "cobrancas_atualizadas": 0,
   "cobrancas_quitadas": 0,
+  "reconciliacao": "global",
   "erros": []
 }
 ```
+
+`reconciliacao` diz qual modo rodou nesta chamada: `"global"` (corpo trouxe uma `janela` válida) ou `"por_associado"` (sem `janela`, ou `janela` malformada — cai no modo antigo sem quebrar a chamada).
 
 > **Nota sobre o upsert de cobranças:** o casamento de cada cobrança no upsert segue esta ordem de prioridade:
 > 1. **`id_externo`**, quando presente no payload — é o identificador mais confiável (ex.: o ID da cobrança gerado pelo Asaas), então tem prioridade máxima e é único/indexado na tabela `cobrancas`.
 > 2. **Fallback** (compatibilidade retroativa), quando `id_externo` não vem no payload — casamento pela combinação `(associado_id, vencimento, descricao)`, como antes. Esse fallback só considera cobranças que também não têm `id_externo` gravado, para não sobrescrever por engano um registro já vinculado a um ID do Asaas.
 
-> **Reconciliação (quitação automática — corrige o bug de cobranças "presas"):** o payload do n8n traz, para cada associado, a lista das cobranças **atualmente** pending/overdue no Asaas. Antes, quando uma cobrança era paga, o Asaas simplesmente parava de devolvê-la nas próximas consultas — e como `POST /api/sync` só fazia upsert (nunca removia nada), essa cobrança ficava presa no banco para sempre no último status sincronizado, contando indevidamente como "em aberto" no Dashboard.
+> **Reconciliação (quitação automática — corrige o bug de cobranças "presas"):** o payload do n8n traz, para cada associado, a lista das cobranças **atualmente** pending/overdue no Asaas. Antes, quando uma cobrança era paga, o Asaas simplesmente parava de devolvê-la nas próximas consultas — e como `POST /api/sync` só fazia upsert (nunca removia nada), essa cobrança ficava presa no banco para sempre no último status sincronizado, contando indevidamente como "em aberto" no Dashboard. Não é hard delete em nenhum dos dois modos abaixo — o registro continua no banco (histórico financeiro preservado), só sai do conjunto "em aberto". `"quitada"` nunca é um valor aceito vindo de payload externo (só `pending`/`overdue`/`paid`, ver `STATUS_VALIDOS`) — é um status que só o próprio backend grava, durante a reconciliação. Se uma cobrança marcada `"quitada"` **voltar** a aparecer num sync seguinte (ex.: reversão de pagamento no Asaas), a quitação é desfeita automaticamente (`quitada_em` volta a `null`) — o upsert normal já cuida disso, nos dois modos.
 >
-> Agora, para cada associado cujo registro traga `"cobrancas"` como array (mesmo vazio — um array vazio é uma afirmação válida de "nada em aberto"), toda cobrança já existente no banco com status `pending`/`overdue` que **não** foi criada/atualizada por esta chamada é marcada como `"quitada"` (com `quitada_em` = agora). Não é hard delete — o registro continua no banco (histórico financeiro preservado), só sai do conjunto "em aberto". `"quitada"` nunca é um valor aceito vindo de payload externo (só `pending`/`overdue`/`paid`, ver `STATUS_VALIDOS`) — é um status que só o próprio backend grava, durante a reconciliação.
+> **Modo global (`"janela"` no corpo — recomendado):** ao final do processamento de todos os associados do payload, roda **uma reconciliação só, pra base inteira**: toda cobrança `pending`/`overdue` no banco cujo `vencimento` caia dentro de `janela.inicio`–`janela.fim` e que **não foi tocada por nenhum associado deste payload** é marcada `"quitada"` — mesmo que o associado dela não tenha aparecido em `"associados"` de jeito nenhum. Isso cobre a lacuna do modo por-associado (abaixo): quando **todas** as cobranças de um associado são pagas, o agrupamento do n8n para de gerar uma entrada pra ele — o associado inteiro some do payload, não só a cobrança paga. Cobranças com vencimento **fora** da janela nunca são tocadas, mesmo que o associado delas também tenha sumido do payload — o Asaas nem foi consultado sobre esse intervalo nesta chamada, então não há informação nova pra agir sobre elas.
 >
-> Se uma cobrança marcada como `"quitada"` **voltar** a aparecer num sync seguinte (ex.: reversão de pagamento no Asaas), a quitação é desfeita automaticamente (`quitada_em` volta a `null`, `status` reflete o valor atual do payload) — o upsert normal já cuida disso.
->
-> Associados cujo registro **não** trouxer `"cobrancas"` como array (chave ausente, ou não é um array) não sofrem nenhuma reconciliação — preserva o comportamento de syncs "só cadastrais" (ex.: só atualizando nome/telefone/email), que não pretendem informar nada sobre cobranças e não devem quitar nada por omissão.
+> **Modo por-associado (sem `"janela"` — compatibilidade):** para cada associado cujo registro traga `"cobrancas"` como array (mesmo vazio), toda cobrança já existente no banco **para esse associado** com status pending/overdue que não foi criada/atualizada por esta chamada é marcada `"quitada"`. Associados cujo registro não trouxer `"cobrancas"` como array (chave ausente, ou não é array) não sofrem reconciliação nenhuma nesse modo — preserva o comportamento de syncs "só cadastrais". **Limitação que motivou o modo global**: se um associado inteiro sumir do payload (todas as cobranças dele pagas), o loop nunca chega a examiná-lo, então as cobranças presas dele nunca são reconciliadas neste modo — é exatamente o que acontecia antes de existir `"janela"`.
 >
 > `GET /api/associados`, `GET /api/associados/resumo` e a seção "Cobranças em aberto" do frontend já **excluíam** qualquer status fora de `pending`/`overdue` (ver `COBRANCAS_ABERTAS` em `associados.controller.js` e `STATUS_ABERTOS` no frontend) — então cobranças `"quitada"` somem do Dashboard automaticamente, sem precisar de nenhuma mudança nesses endpoints. `GET /api/associados/:cpf_cnpj` (detalhe do associado) continua trazendo **todas** as cobranças, de qualquer status, incluindo as quitadas — é onde o histórico financeiro completo fica visível.
 
@@ -532,7 +544,9 @@ Resposta:
 
 Se você já tinha o bug de cobranças "presas" descrito acima **antes** desta versão, a correção em `POST /api/sync` sozinha não conserta os registros que já ficaram travados no passado — ela só evita que aconteça de novo dali em diante.
 
-**Você não precisa rodar nada manualmente na maioria dos casos**: a próxima execução normal de `POST /api/sync` (agendamento do n8n, ou clicando em "Atualizar" no Dashboard) já reconcilia automaticamente qualquer cobrança presa, porque o payload de cada associado volta a refletir a realidade atual do Asaas.
+**Você não precisa rodar nada manualmente na maioria dos casos**: a próxima execução normal de `POST /api/sync` (agendamento do n8n, ou clicando em "Atualizar" no Dashboard) já reconcilia automaticamente qualquer cobrança presa — **desde que o n8n já esteja enviando `"janela"`** (ver seção acima). Sem `"janela"`, o sync continua rodando no modo por-associado, que **não** reconcilia associados que sumiram inteiros do payload (ex.: todas as cobranças dele foram pagas) — esse era exatamente o caso da Deni e de outros ~17 associados relatados.
+
+Este script (`reconciliar-cobrancas-presas.js`), por outro lado, **nunca dependeu do payload de nenhum sync** — ele varre a tabela `cobrancas` direto, comparando `sincronizado_em`, então já cobre esse caso mesmo antes do n8n mandar `"janela"`.
 
 Se preferir corrigir imediatamente, sem esperar/disparar um sync completo, existe `scripts/reconciliar-cobrancas-presas.js`: varre `cobrancas` procurando pending/overdue com `sincronizado_em` visivelmente mais antigo que o resto da base (mesmo sintoma do bug: alguns associados travados numa data antiga enquanto o resto já está atualizado) e marca como `"quitada"`.
 
@@ -862,3 +876,14 @@ Antes do primeiro deploy real, recomendamos rodar `docker-compose up --build` lo
 - `GET /api/associados/resumo` depois do sync 2: `valor_total_aberto` e `com_cobranca_aberto` já refletem só as cobranças que continuam abertas (A e B), sem exigir nenhuma mudança nesse endpoint — o filtro `status IN ('pending','overdue')` que já existia excluiu `"quitada"` automaticamente.
 - Sync 3: `pay_A2` volta a aparecer no payload de A (simulando reversão de pagamento) — a reconciliação anterior é desfeita automaticamente (`status` volta a `overdue`, `quitada_em` volta a `null`), sem sync duplicado nem `cobrancas_quitadas` incorreto.
 - Suíte dedicada a esta correção: **24/24 asserções passaram**. Suíte completa de regressão também rodada nesta rodada: `historico_status_associado` (**35/35**) e tolerância de dias (**47/47**) continuam passando integralmente — ambas tocam associados/cobranças de perto e não quebraram com a mudança. As suítes de Taxa de Inadimplência (`AJUSTE CRÍTICO`, `valor adimplente/forcar`) apresentaram falhas **pré-existentes e não relacionadas a esta correção**: são testes com datas de vencimento fixas cujo resultado depende de "hoje" (classificação PENDING/OVERDUE/pago-com-atraso muda conforme o calendário avança) — não tocam a tabela `cobrancas` nem o `POST /api/sync` de forma alguma, então não são afetadas por esta mudança. Ficam com data desatualizada há alguns dias e precisam de uma recalibração própria, fora do escopo deste fix.
+
+**Reconciliação global via `"janela"` (correção da lacuna "associado sumiu inteiro do payload")** — validado com Postgres real, reproduzindo exatamente o caso relatado com a Deni: um associado cuja única cobrança em aberto foi paga simplesmente não aparece mais em `"associados"` (o agrupamento do n8n só cria uma entrada quando existe pelo menos uma cobrança pendente/vencida), então o modo por-associado nunca chegava a examinar as cobranças presas dele:
+
+- Sync 1 (sem `"janela"`, modo `por_associado`) cria três associados: Deni (1 cobrança, vencimento dentro da janela que o sync 2 vai usar), Eduarda (1 cobrança, idem) e Fábio (1 cobrança, vencimento **fora** da janela que o sync 2 vai usar).
+- Sync 2 manda `{ "janela": { "inicio": "2026-08-01", "fim": "2026-08-31" }, "associados": [Eduarda] }` — **Deni e Fábio não aparecem no payload de jeito nenhum**. Resposta: `"reconciliacao": "global"`, `"cobrancas_quitadas": 1`.
+- `GET /api/associados?busca=<cpf da Deni>`: 0 cobranças em aberto — a cobrança dela foi quitada mesmo sem ela ter aparecido no payload, confirmando que a lacuna foi fechada.
+- `GET /api/associados/<cpf da Deni>` (detalhe): a cobrança continua lá, agora com `status: "quitada"` — histórico preservado, mesmo comportamento do modo por-associado.
+- Fábio (cobrança com vencimento **fora** da janela, também sumiu do payload): continua com a cobrança `overdue`, intocada — confirma que "fora da janela" nunca é quitado só porque o associado sumiu, já que o Asaas nem foi consultado sobre esse intervalo nesta chamada.
+- Eduarda (voltou no payload): continua com sua cobrança aberta normalmente.
+- Sync 3, com `"janela"` malformada (`inicio: "not-a-date"`): responde `200` normalmente e `"reconciliacao": "por_associado"` — confirma que uma janela inválida não quebra a chamada, só faz cair de volta pro modo antigo.
+- Suíte dedicada a este ajuste: **16/16 asserções passaram**. Reconciliação por-associado (sem `"janela"`, suíte da rodada anterior) rodada de novo pra garantir que o modo de compatibilidade não regrediu: **24/24**. `historico_status_associado` também revalidado: **35/35**.

@@ -58,6 +58,15 @@ async function registrarSyncLog({ total, sucesso }) {
  *   }
  * ]
  *
+ * Alternativamente, o corpo pode ser um objeto com "associados" (mesmo
+ * formato do array acima) e "janela" — ver seção de reconciliação abaixo
+ * pra quando/por que usar essa forma:
+ *
+ * {
+ *   "janela": { "inicio": "2026-07-03", "fim": "2026-08-30" },
+ *   "associados": [ ... ]
+ * }
+ *
  * Upsert de associado: chave = cpf_cnpj.
  *
  * Upsert de cobrança:
@@ -68,30 +77,72 @@ async function registrarSyncLog({ total, sucesso }) {
  *      antigas que ainda não enviam esse campo), mantém o fallback anterior:
  *      casa por (associado_id, vencimento, descricao).
  *
- * Reconciliação (quitação automática): para cada associado cujo registro
- * traga "cobrancas" como array (mesmo vazio), toda cobrança já existente no
- * banco para esse associado com status "pending"/"overdue" que NÃO foi
- * criada/atualizada por esta chamada é marcada como "quitada" (com
- * "quitada_em" = agora). Isso cobre o caso comum de uma cobrança ser paga no
- * Asaas: o n8n simplesmente para de trazê-la nas próximas chamadas (a
- * consulta lá filtra por status PENDING/OVERDUE), então sem essa
- * reconciliação a cobrança ficava presa no banco para sempre no último
- * status sincronizado, contando indevidamente como "em aberto" no Dashboard.
- * Não é hard delete — o registro continua no banco, só muda de status
- * (histórico financeiro preservado). Associados cujo registro não trouxer
- * "cobrancas" como array (chave ausente ou não-array) não sofrem nenhuma
- * reconciliação — preserva o comportamento de syncs "só cadastrais", que não
- * pretendem informar nada sobre cobranças.
+ * Reconciliação (quitação automática): cobre o caso de uma cobrança ser paga
+ * no Asaas — o n8n simplesmente para de trazê-la nas próximas chamadas (a
+ * consulta lá filtra por status PENDING/OVERDUE), então sem reconciliação a
+ * cobrança ficava presa no banco para sempre no último status sincronizado,
+ * contando indevidamente como "em aberto" no Dashboard. Não é hard delete —
+ * o registro continua no banco, só muda para "quitada" (histórico
+ * financeiro preservado).
+ *
+ * Tem dois modos, dependendo de o corpo trazer "janela" ou não:
+ *
+ * MODO GLOBAL (recomendado — requer "janela" no corpo):
+ * ```
+ * {
+ *   "janela": { "inicio": "2026-07-03", "fim": "2026-08-30" },
+ *   "associados": [ ... ]
+ * }
+ * ```
+ * "janela" descreve o intervalo de vencimento usado pela consulta ao Asaas
+ * que gerou este payload. Nesse modo, a reconciliação roda **uma vez só,
+ * pra base inteira**, ao final do processamento: toda cobrança pending/
+ * overdue no banco cujo "vencimento" caia dentro da janela e cujo id
+ * (interno) não foi tocado por NENHUM associado deste payload é marcada
+ * como quitada — mesmo que o associado dela não tenha aparecido em
+ * "associados" (caso comum: quando TODAS as cobranças de um associado são
+ * pagas, o agrupamento do n8n para de gerar uma entrada pra ele, então o
+ * associado inteiro some do payload; sem o modo global, essas cobranças
+ * nunca eram reconciliadas). Cobranças com vencimento FORA da janela não são
+ * tocadas de jeito nenhum — o Asaas nem foi consultado sobre elas nesta
+ * chamada, então não há informação nova pra agir.
+ *
+ * MODO POR ASSOCIADO (compatibilidade — sem "janela" no corpo):
+ * Para cada associado cujo registro traga "cobrancas" como array (mesmo
+ * vazio), toda cobrança já existente no banco PARA ESSE ASSOCIADO com status
+ * pending/overdue que não foi criada/atualizada por esta chamada é marcada
+ * como quitada. Tem a limitação que motivou o modo global: se um associado
+ * inteiro sumir do payload (todas as cobranças dele pagas), suas cobranças
+ * presas nunca são examinadas, porque o loop nem chega a rodar pra ele.
+ * Mantido só até o n8n passar a enviar "janela" em todo payload.
+ *
+ * Em ambos os modos: se uma cobrança marcada "quitada" voltar a aparecer
+ * num payload seguinte (ex.: reversão de pagamento no Asaas), a quitação é
+ * desfeita automaticamente pelo upsert normal (quitada_em volta a null).
  */
 exports.sync = async (req, res, next) => {
   let totalAssociadosProcessados = 0;
 
   try {
-    const registros = Array.isArray(req.body) ? req.body : req.body?.associados;
+    const corpoEhArray = Array.isArray(req.body);
+    const registros = corpoEhArray ? req.body : req.body?.associados;
 
     if (!Array.isArray(registros) || registros.length === 0) {
       await registrarSyncLog({ total: 0, sucesso: false });
       return res.status(400).json({ error: 'Envie um array de associados no corpo da requisição.' });
+    }
+
+    // "janela" só é lida quando o corpo é um objeto (não um array na raiz —
+    // não haveria onde colocá-la). Precisa de "inicio"/"fim" parseáveis como
+    // data e "inicio" <= "fim"; qualquer coisa fora disso é tratada como
+    // "sem janela" (cai no modo por-associado, não quebra a chamada).
+    let janela = null;
+    if (!corpoEhArray && req.body?.janela && typeof req.body.janela === 'object') {
+      const inicioDate = new Date(req.body.janela.inicio);
+      const fimDate = new Date(req.body.janela.fim);
+      if (!Number.isNaN(inicioDate.getTime()) && !Number.isNaN(fimDate.getTime()) && inicioDate <= fimDate) {
+        janela = { inicio: inicioDate, fim: fimDate };
+      }
     }
 
     totalAssociadosProcessados = registros.length;
@@ -102,6 +153,10 @@ exports.sync = async (req, res, next) => {
     let cobrancasAtualizadas = 0;
     let cobrancasQuitadas = 0;
     const erros = [];
+    // Ids (internos) de toda cobrança criada/atualizada por QUALQUER
+    // associado deste payload — só usado no modo global (com "janela"), pra
+    // reconciliar a base inteira numa passada só, no final.
+    const idsTratadosGlobal = new Set();
 
     for (const [index, registro] of registros.entries()) {
       const { cpf_cnpj: cpfCnpj, nome, telefone, email, cobrancas } = registro || {};
@@ -212,6 +267,7 @@ exports.sync = async (req, res, next) => {
               },
             });
             idsTratados.add(cobrancaExistente.id);
+            idsTratadosGlobal.add(cobrancaExistente.id);
             cobrancasAtualizadas += 1;
           } else {
             const criada = await prisma.cobranca.create({
@@ -221,25 +277,48 @@ exports.sync = async (req, res, next) => {
               },
             });
             idsTratados.add(criada.id);
+            idsTratadosGlobal.add(criada.id);
             cobrancasCriadas += 1;
           }
         }
 
-        // Reconciliação: cobranças que estavam pending/overdue no banco para
-        // este associado mas não vieram (nem foram criadas/atualizadas) neste
-        // payload — o caso mais comum é a cobrança ter sido paga no Asaas, que
-        // simplesmente para de devolvê-la nas próximas consultas. Marca como
-        // "quitada" em vez de apagar, preservando o histórico financeiro.
-        const resultadoQuitacao = await prisma.cobranca.updateMany({
-          where: {
-            associadoId: associado.id,
-            status: { in: STATUS_CONSIDERADOS_ABERTOS },
-            ...(idsTratados.size > 0 ? { id: { notIn: Array.from(idsTratados) } } : {}),
-          },
-          data: { status: 'quitada', quitadaEm: new Date() },
-        });
-        cobrancasQuitadas += resultadoQuitacao.count;
+        // Reconciliação por-associado (modo de compatibilidade): só roda
+        // quando NÃO veio "janela" no corpo. Com "janela", a reconciliação
+        // acontece uma vez só, pra base inteira, depois deste loop (ver
+        // abaixo) — rodar as duas juntas seria redundante e o modo
+        // por-associado tem a limitação que o modo global resolve (não
+        // reconcilia associados que sumiram inteiros do payload).
+        if (!janela) {
+          const resultadoQuitacao = await prisma.cobranca.updateMany({
+            where: {
+              associadoId: associado.id,
+              status: { in: STATUS_CONSIDERADOS_ABERTOS },
+              ...(idsTratados.size > 0 ? { id: { notIn: Array.from(idsTratados) } } : {}),
+            },
+            data: { status: 'quitada', quitadaEm: new Date() },
+          });
+          cobrancasQuitadas += resultadoQuitacao.count;
+        }
       }
+    }
+
+    // Reconciliação global (modo "janela"): roda uma vez só, depois de
+    // processar todos os associados do payload. Pega qualquer cobrança
+    // pending/overdue com vencimento dentro da janela informada que não foi
+    // tocada por NENHUM associado desta chamada — cobre o caso de um
+    // associado sumir inteiro do payload porque todas as cobranças dele
+    // foram pagas (o modo por-associado nunca examinava esse associado).
+    if (janela) {
+      const idsGlobal = Array.from(idsTratadosGlobal);
+      const resultadoQuitacaoGlobal = await prisma.cobranca.updateMany({
+        where: {
+          status: { in: STATUS_CONSIDERADOS_ABERTOS },
+          vencimento: { gte: janela.inicio, lte: janela.fim },
+          ...(idsGlobal.length > 0 ? { id: { notIn: idsGlobal } } : {}),
+        },
+        data: { status: 'quitada', quitadaEm: new Date() },
+      });
+      cobrancasQuitadas += resultadoQuitacaoGlobal.count;
     }
 
     await registrarSyncLog({ total: totalAssociadosProcessados, sucesso: true });
@@ -250,6 +329,7 @@ exports.sync = async (req, res, next) => {
       cobrancas_criadas: cobrancasCriadas,
       cobrancas_atualizadas: cobrancasAtualizadas,
       cobrancas_quitadas: cobrancasQuitadas,
+      reconciliacao: janela ? 'global' : 'por_associado',
       erros,
     });
   } catch (err) {
