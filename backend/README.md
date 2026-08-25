@@ -13,7 +13,7 @@ API de controle de cobrança da **Via Permuta**. Node.js + Express + PostgreSQL 
 ## Modelo de dados
 
 - **associados**: `id`, `cpf_cnpj` (único, indexado), `nome`, `telefone`, `email`, `em_negociacao`, `observacao`, `observacao_atualizada_em` (data/hora da última mudança de valor de `observacao`, só via `PATCH .../negociacao` — ver seção de endpoints), `bloqueado`, `em_juridico`, `ciclo_resetado_em` (marco usado pelo contador de bloqueios), `criado_em`, `atualizado_em`
-- **cobrancas**: `id`, `associado_id` (FK), `id_externo` (opcional, único, indexado — ID gerado pelo Asaas para a cobrança, ex.: `pay_xxxxxxxxxxxxx`), `valor`, `vencimento`, `dias_diferenca`, `link_pagamento`, `descricao`, `status` (`pending` | `overdue` | `paid`), `sincronizado_em`
+- **cobrancas**: `id`, `associado_id` (FK), `id_externo` (opcional, único, indexado — ID gerado pelo Asaas para a cobrança, ex.: `pay_xxxxxxxxxxxxx`), `valor`, `vencimento`, `dias_diferenca`, `link_pagamento`, `descricao`, `status` (`pending` | `overdue` | `paid` | `quitada` — este último só é gravado pelo próprio backend, nunca vem de payload externo, ver seção de reconciliação em `POST /api/sync`), `sincronizado_em`, `quitada_em` (preenchido só quando reconciliada como `"quitada"`)
 - **historico_status_associado**: `id`, `associado_id` (FK), `campo` (`"em_negociacao"` | `"bloqueado"` | `"em_juridico"`), `status_anterior`, `status_novo`, `alterado_em` — histórico único das três mudanças de status booleano do associado (substitui as antigas `historico_negociacao` e `historico_bloqueio`, consolidadas nesta tabela pela migração `consolidar_historico_status`; `em_juridico` não tinha histórico dedicado antes disso)
 - **configuracoes**: `chave` (PK, ex.: `"api_key"`, `"n8n_webhook_cadastro_url"`, `"asaas_api_key"`, `"inadimplencia_palavras_excluidas"` — array JSON serializado em string), `valor`, `atualizado_em` — tabela genérica de configurações persistidas em runtime
 - **sync_log**: `id`, `executado_em`, `total_associados_processados`, `sucesso` — uma linha por chamada a `POST /api/sync`
@@ -509,6 +509,7 @@ Resposta:
   "associados_atualizados": 0,
   "cobrancas_criadas": 1,
   "cobrancas_atualizadas": 0,
+  "cobrancas_quitadas": 0,
   "erros": []
 }
 ```
@@ -516,6 +517,35 @@ Resposta:
 > **Nota sobre o upsert de cobranças:** o casamento de cada cobrança no upsert segue esta ordem de prioridade:
 > 1. **`id_externo`**, quando presente no payload — é o identificador mais confiável (ex.: o ID da cobrança gerado pelo Asaas), então tem prioridade máxima e é único/indexado na tabela `cobrancas`.
 > 2. **Fallback** (compatibilidade retroativa), quando `id_externo` não vem no payload — casamento pela combinação `(associado_id, vencimento, descricao)`, como antes. Esse fallback só considera cobranças que também não têm `id_externo` gravado, para não sobrescrever por engano um registro já vinculado a um ID do Asaas.
+
+> **Reconciliação (quitação automática — corrige o bug de cobranças "presas"):** o payload do n8n traz, para cada associado, a lista das cobranças **atualmente** pending/overdue no Asaas. Antes, quando uma cobrança era paga, o Asaas simplesmente parava de devolvê-la nas próximas consultas — e como `POST /api/sync` só fazia upsert (nunca removia nada), essa cobrança ficava presa no banco para sempre no último status sincronizado, contando indevidamente como "em aberto" no Dashboard.
+>
+> Agora, para cada associado cujo registro traga `"cobrancas"` como array (mesmo vazio — um array vazio é uma afirmação válida de "nada em aberto"), toda cobrança já existente no banco com status `pending`/`overdue` que **não** foi criada/atualizada por esta chamada é marcada como `"quitada"` (com `quitada_em` = agora). Não é hard delete — o registro continua no banco (histórico financeiro preservado), só sai do conjunto "em aberto". `"quitada"` nunca é um valor aceito vindo de payload externo (só `pending`/`overdue`/`paid`, ver `STATUS_VALIDOS`) — é um status que só o próprio backend grava, durante a reconciliação.
+>
+> Se uma cobrança marcada como `"quitada"` **voltar** a aparecer num sync seguinte (ex.: reversão de pagamento no Asaas), a quitação é desfeita automaticamente (`quitada_em` volta a `null`, `status` reflete o valor atual do payload) — o upsert normal já cuida disso.
+>
+> Associados cujo registro **não** trouxer `"cobrancas"` como array (chave ausente, ou não é um array) não sofrem nenhuma reconciliação — preserva o comportamento de syncs "só cadastrais" (ex.: só atualizando nome/telefone/email), que não pretendem informar nada sobre cobranças e não devem quitar nada por omissão.
+>
+> `GET /api/associados`, `GET /api/associados/resumo` e a seção "Cobranças em aberto" do frontend já **excluíam** qualquer status fora de `pending`/`overdue` (ver `COBRANCAS_ABERTAS` em `associados.controller.js` e `STATUS_ABERTOS` no frontend) — então cobranças `"quitada"` somem do Dashboard automaticamente, sem precisar de nenhuma mudança nesses endpoints. `GET /api/associados/:cpf_cnpj` (detalhe do associado) continua trazendo **todas** as cobranças, de qualquer status, incluindo as quitadas — é onde o histórico financeiro completo fica visível.
+
+### Corrigindo cobranças já presas antes deste fix (`scripts/reconciliar-cobrancas-presas.js`)
+
+Se você já tinha o bug de cobranças "presas" descrito acima **antes** desta versão, a correção em `POST /api/sync` sozinha não conserta os registros que já ficaram travados no passado — ela só evita que aconteça de novo dali em diante.
+
+**Você não precisa rodar nada manualmente na maioria dos casos**: a próxima execução normal de `POST /api/sync` (agendamento do n8n, ou clicando em "Atualizar" no Dashboard) já reconcilia automaticamente qualquer cobrança presa, porque o payload de cada associado volta a refletir a realidade atual do Asaas.
+
+Se preferir corrigir imediatamente, sem esperar/disparar um sync completo, existe `scripts/reconciliar-cobrancas-presas.js`: varre `cobrancas` procurando pending/overdue com `sincronizado_em` visivelmente mais antigo que o resto da base (mesmo sintoma do bug: alguns associados travados numa data antiga enquanto o resto já está atualizado) e marca como `"quitada"`.
+
+```bash
+# dentro do container/ambiente com DATABASE_URL certo:
+node scripts/reconciliar-cobrancas-presas.js                    # dry run — só lista, não muda nada
+node scripts/reconciliar-cobrancas-presas.js --confirm          # aplica de verdade
+node scripts/reconciliar-cobrancas-presas.js --cutoff=2026-08-21 --confirm   # cutoff manual
+```
+
+Roda em modo **dry run por padrão** (lista os candidatos, não altera o banco — confira a lista contra o que você já validou manualmente no Asaas antes de confirmar). Sem `--cutoff` explícito, calcula automaticamente a data do `sincronizado_em` mais recente da base inteira e trata qualquer cobrança sincronizada num dia anterior como candidata. Tem um guardrail de segurança: recusa aplicar (`--confirm`) se o número de candidatos passar muito do esperado (> 60), a não ser que você passe `--force` também — evita quitar em massa por engano se o cutoff calculado pegar mais coisa do que devia. Não é hard delete, mesmo comportamento do fix em `POST /api/sync`.
+
+Validado com Postgres real simulando o cenário do relato original: 17 associados só com cobrança presa, 3 associados "saudáveis" com cobrança recente, e um caso "Fernanda" (associado com uma cobrança recente **e** uma presa ao mesmo tempo) — confirmando que o script quita só a presa da Fernanda sem tocar na recente. Também testado: guardrail de segurança recusando aplicar com candidatos em excesso sem `--force`, e idempotência (rodar de novo depois não encontra mais nada) — **14/14 asserções passaram**.
 
 ### Sincronização sob demanda (`POST /api/sync/atualizar`)
 
@@ -820,3 +850,15 @@ Antes do primeiro deploy real, recomendamos rodar `docker-compose up --build` lo
 - Webhook "travado" (nunca responde): usando `SYNC_WEBHOOK_TIMEOUT_MS=800` (só pra este teste não precisar esperar os 30s reais), a chamada voltou `502` com mensagem citando "Tempo esgotado" depois de ~858ms — confirmando que o timeout realmente é respeitado (nem retorna instantâneo, nem trava além do configurado).
 - Webhook respondendo `200` mas com corpo que não é JSON válido: ainda assim `200` (o `200` já indica que o n8n processou), com `status: "ok"` e os outros dois campos em `null` — confirmando que corpo inesperado degrada graciosamente em vez de virar erro.
 - Suíte automatizada dedicada a esta rodada rodou de ponta a ponta contra um Postgres descartável (`embedded-postgres`) e o mock do webhook: **16/16 asserções passaram**.
+
+**Reconciliação de cobranças quitadas (correção de bug — `POST /api/sync`)** — validado com Postgres real, num teste desenhado para reproduzir exatamente o cenário relatado (cobrança paga no Asaas sumindo do payload e ficando "presa" como em aberto no banco):
+
+- Sync 1 cria um associado A com 2 cobranças em aberto (`pay_A1` overdue, `pay_A2` pending) e outros dois associados (B, C) com 1 cobrança cada — `cobrancas_quitadas: 0` (nada a reconciliar na primeira aparição).
+- Sync 2 manda A só com `pay_A1` (simulando `pay_A2` paga e removida da consulta do Asaas), manda B **sem a chave `"cobrancas"`** (payload só cadastral) e manda C com `"cobrancas": []` (array vazio explícito) — resposta trouxe `cobrancas_quitadas: 2` (`pay_A2` de A + a única cobrança de C).
+- `GET /api/associados?busca=<cpf de A>` depois do sync 2: volta só 1 cobrança em aberto (`pay_A1`) — `pay_A2` sumiu da lista, confirmando a correção do bug.
+- `GET /api/associados/<cpf de A>` (detalhe, sem filtro de status): continua trazendo as 2 cobranças — `pay_A2` aparece com `status: "quitada"` e `sincronizado_em` preservado do sync original, confirmando que é reconciliação (não hard delete) e que o histórico financeiro não se perde.
+- B (sync sem a chave `"cobrancas"`): sua cobrança **não** foi tocada — continua `overdue` — confirmando que syncs só-cadastrais não quitam nada por omissão.
+- C (`"cobrancas": []` explícito): ficou com 0 cobranças em aberto — confirmando que um array vazio é tratado como "nada pendente agora", diferente de omitir a chave.
+- `GET /api/associados/resumo` depois do sync 2: `valor_total_aberto` e `com_cobranca_aberto` já refletem só as cobranças que continuam abertas (A e B), sem exigir nenhuma mudança nesse endpoint — o filtro `status IN ('pending','overdue')` que já existia excluiu `"quitada"` automaticamente.
+- Sync 3: `pay_A2` volta a aparecer no payload de A (simulando reversão de pagamento) — a reconciliação anterior é desfeita automaticamente (`status` volta a `overdue`, `quitada_em` volta a `null`), sem sync duplicado nem `cobrancas_quitadas` incorreto.
+- Suíte dedicada a esta correção: **24/24 asserções passaram**. Suíte completa de regressão também rodada nesta rodada: `historico_status_associado` (**35/35**) e tolerância de dias (**47/47**) continuam passando integralmente — ambas tocam associados/cobranças de perto e não quebraram com a mudança. As suítes de Taxa de Inadimplência (`AJUSTE CRÍTICO`, `valor adimplente/forcar`) apresentaram falhas **pré-existentes e não relacionadas a esta correção**: são testes com datas de vencimento fixas cujo resultado depende de "hoje" (classificação PENDING/OVERDUE/pago-com-atraso muda conforme o calendário avança) — não tocam a tabela `cobrancas` nem o `POST /api/sync` de forma alguma, então não são afetadas por esta mudança. Ficam com data desatualizada há alguns dias e precisam de uma recalibração própria, fora do escopo deste fix.

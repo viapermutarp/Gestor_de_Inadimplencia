@@ -42,6 +42,11 @@ model Cobranca {
   descricao      String?
   status         String    @default("pending")
   sincronizadoEm DateTime  @default(now()) @map("sincronizado_em")
+  /// Preenchido só quando o backend reconcilia a cobrança de "quitada" (ver
+  /// POST /api/sync): marca quando ela deixou de aparecer no payload do n8n
+  /// (ou seja, sumiu da listagem PENDING/OVERDUE do Asaas — geralmente
+  /// porque foi paga). Nunca é setado a partir de payload externo.
+  quitadaEm      DateTime? @map("quitada_em")
 
   @@index([associadoId])
   @@index([status])

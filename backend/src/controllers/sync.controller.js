@@ -2,6 +2,13 @@ const prisma = require('../config/prisma');
 
 const STATUS_VALIDOS = ['pending', 'overdue', 'paid'];
 
+// Status considerados "em aberto" no banco — mesmo conjunto usado por
+// GET /api/associados e GET /api/associados/resumo (ver COBRANCAS_ABERTAS
+// em associados.controller.js). Usado pela reconciliação de POST /api/sync
+// para decidir quais cobranças existentes ainda contam como pendências
+// ativas de um associado.
+const STATUS_CONSIDERADOS_ABERTOS = ['pending', 'overdue'];
+
 // Timeout generoso pro webhook do n8n usado por POST /api/sync/atualizar —
 // ele pagina no Asaas antes de responder, então pode demorar bem mais que
 // uma chamada HTTP comum (mas não deve travar o botão "Atualizar" do
@@ -60,6 +67,21 @@ async function registrarSyncLog({ total, sucesso }) {
  *   2. Se "id_externo" não vier no payload (compatibilidade com integrações
  *      antigas que ainda não enviam esse campo), mantém o fallback anterior:
  *      casa por (associado_id, vencimento, descricao).
+ *
+ * Reconciliação (quitação automática): para cada associado cujo registro
+ * traga "cobrancas" como array (mesmo vazio), toda cobrança já existente no
+ * banco para esse associado com status "pending"/"overdue" que NÃO foi
+ * criada/atualizada por esta chamada é marcada como "quitada" (com
+ * "quitada_em" = agora). Isso cobre o caso comum de uma cobrança ser paga no
+ * Asaas: o n8n simplesmente para de trazê-la nas próximas chamadas (a
+ * consulta lá filtra por status PENDING/OVERDUE), então sem essa
+ * reconciliação a cobrança ficava presa no banco para sempre no último
+ * status sincronizado, contando indevidamente como "em aberto" no Dashboard.
+ * Não é hard delete — o registro continua no banco, só muda de status
+ * (histórico financeiro preservado). Associados cujo registro não trouxer
+ * "cobrancas" como array (chave ausente ou não-array) não sofrem nenhuma
+ * reconciliação — preserva o comportamento de syncs "só cadastrais", que não
+ * pretendem informar nada sobre cobranças.
  */
 exports.sync = async (req, res, next) => {
   let totalAssociadosProcessados = 0;
@@ -78,6 +100,7 @@ exports.sync = async (req, res, next) => {
     let associadosAtualizados = 0;
     let cobrancasCriadas = 0;
     let cobrancasAtualizadas = 0;
+    let cobrancasQuitadas = 0;
     const erros = [];
 
     for (const [index, registro] of registros.entries()) {
@@ -103,6 +126,11 @@ exports.sync = async (req, res, next) => {
       }
 
       if (Array.isArray(cobrancas)) {
+        // Ids (internos, do nosso banco) de toda cobrança criada ou
+        // atualizada nesta chamada para este associado — usado depois do
+        // loop para achar as que NÃO foram tocadas (candidatas a "quitada").
+        const idsTratados = new Set();
+
         for (const cobranca of cobrancas) {
           const {
             id_externo: idExternoRaw,
@@ -176,19 +204,41 @@ exports.sync = async (req, res, next) => {
                 ...dadosComuns,
                 idExterno,
                 sincronizadoEm: new Date(),
+                // Se essa cobrança tinha sido reconciliada como "quitada" em
+                // algum sync anterior e voltou a aparecer agora (ex.: reversão
+                // de pagamento no Asaas), desfaz a quitação — o "status" acima
+                // (em dadosComuns) já reflete o valor atual vindo do payload.
+                quitadaEm: null,
               },
             });
+            idsTratados.add(cobrancaExistente.id);
             cobrancasAtualizadas += 1;
           } else {
-            await prisma.cobranca.create({
+            const criada = await prisma.cobranca.create({
               data: {
                 ...dadosComuns,
                 idExterno,
               },
             });
+            idsTratados.add(criada.id);
             cobrancasCriadas += 1;
           }
         }
+
+        // Reconciliação: cobranças que estavam pending/overdue no banco para
+        // este associado mas não vieram (nem foram criadas/atualizadas) neste
+        // payload — o caso mais comum é a cobrança ter sido paga no Asaas, que
+        // simplesmente para de devolvê-la nas próximas consultas. Marca como
+        // "quitada" em vez de apagar, preservando o histórico financeiro.
+        const resultadoQuitacao = await prisma.cobranca.updateMany({
+          where: {
+            associadoId: associado.id,
+            status: { in: STATUS_CONSIDERADOS_ABERTOS },
+            ...(idsTratados.size > 0 ? { id: { notIn: Array.from(idsTratados) } } : {}),
+          },
+          data: { status: 'quitada', quitadaEm: new Date() },
+        });
+        cobrancasQuitadas += resultadoQuitacao.count;
       }
     }
 
@@ -199,6 +249,7 @@ exports.sync = async (req, res, next) => {
       associados_atualizados: associadosAtualizados,
       cobrancas_criadas: cobrancasCriadas,
       cobrancas_atualizadas: cobrancasAtualizadas,
+      cobrancas_quitadas: cobrancasQuitadas,
       erros,
     });
   } catch (err) {

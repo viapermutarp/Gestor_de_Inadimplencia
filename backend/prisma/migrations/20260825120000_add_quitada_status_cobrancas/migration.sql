@@ -1,0 +1,11 @@
+-- Adiciona "quitada_em" à tabela cobrancas.
+--
+-- Faz parte do fix de reconciliação de POST /api/sync: cobranças que somem
+-- do payload do n8n (geralmente porque foram pagas no Asaas, que para de
+-- devolvê-las na listagem PENDING/OVERDUE) deixam de ficar "presas" para
+-- sempre com o último status pending/overdue sincronizado — o backend
+-- agora marca essas cobranças com status = 'quitada' e quitada_em = now().
+-- "quitada" nunca é um valor aceito vindo de payload externo (ver
+-- STATUS_VALIDOS em src/controllers/sync.controller.js) — só o próprio
+-- backend grava esse status, durante a reconciliação.
+ALTER TABLE "cobrancas" ADD COLUMN "quitada_em" TIMESTAMP(3);
