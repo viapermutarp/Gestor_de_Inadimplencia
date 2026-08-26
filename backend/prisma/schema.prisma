@@ -103,11 +103,17 @@ model SyncLog {
 /// gatilho do Kommo) — guarda o payload completo enviado pelo formulário e
 /// o resultado do repasse para o webhook do n8n (ver POST /api/cadastros).
 model CadastroEnviado {
-  id          String   @id @default(uuid())
-  payload     Json
-  status      String   @default("enviado")
-  respostaN8n String?  @map("resposta_n8n")
-  criadoEm    DateTime @default(now()) @map("criado_em")
+  id             String   @id @default(uuid())
+  payload        Json
+  status         String   @default("enviado")
+  respostaN8n    String?  @map("resposta_n8n")
+  /// Preenchidos a partir da resposta do webhook do n8n quando "sucesso" —
+  /// ver enviarParaN8n em cadastros.controller.js. Ficam null em caso de
+  /// erro (o motivo vai em respostaN8n) ou se o n8n ainda não os enviar.
+  linkPagamento  String?  @map("link_pagamento")
+  clienteAsaasId String?  @map("cliente_asaas_id")
+  pedidoBlingId  String?  @map("pedido_bling_id")
+  criadoEm       DateTime @default(now()) @map("criado_em")
 
   @@index([criadoEm])
   @@index([status])

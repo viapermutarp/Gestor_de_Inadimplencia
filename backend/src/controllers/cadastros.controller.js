@@ -3,7 +3,13 @@ const { getWebhookCadastroUrl } = require('../services/config.service');
 
 const LIMITE_PADRAO = 100;
 const LIMITE_MAXIMO = 100;
-const TIMEOUT_N8N_MS = 10000;
+// O n8n encadeia várias chamadas externas em sequência (cria cliente no
+// Bling, cria pedido no Bling, cria cliente no Asaas, gera a cobrança —
+// cada uma com retry de até 3 tentativas e 5s de espera entre elas), então
+// o caminho feliz já passa de 30-40s e um retry pode empurrar pra mais de
+// 1 minuto. 60s por padrão; configurável via CADASTRO_WEBHOOK_TIMEOUT_MS
+// pra testes automatizados não precisarem esperar isso de verdade.
+const TIMEOUT_N8N_MS = Number(process.env.CADASTRO_WEBHOOK_TIMEOUT_MS) || 60000;
 
 const DESCRICOES_SERVICO_VALIDAS = [
   'Anuidade (PIX)',
@@ -57,9 +63,19 @@ function validarPayload(payload) {
 }
 
 /**
- * Repassa o payload para o webhook do n8n configurado (n8n_webhook_cadastro_url).
- * Nunca lança: sempre retorna { ok, erro? } — falha de rede/timeout/HTTP não
- * deve travar a resposta de POST /api/cadastros, só é registrada no banco.
+ * Repassa o payload para o webhook do n8n configurado (n8n_webhook_cadastro_url)
+ * e captura a resposta real dele — usada por POST /api/cadastros pra devolver
+ * o link de pagamento e os IDs gerados (Asaas/Bling) pro frontend, em vez de
+ * só confirmar que a chamada HTTP em si funcionou.
+ *
+ * Corpo de resposta esperado do n8n (JSON):
+ *   { "sucesso": true, "linkPagamento": "...", "clienteAsaasId": "...", "pedidoBlingId": "..." }
+ *   { "sucesso": false, "erro": "CPF inválido" }
+ *
+ * Nunca lança: sempre retorna { ok, erro? } em caso de falha, ou
+ * { ok: true, linkPagamento, clienteAsaasId, pedidoBlingId } em caso de
+ * sucesso. Falha de rede/timeout/HTTP/negócio nunca deve travar a resposta
+ * de POST /api/cadastros — só é registrada no banco e repassada como erro.
  */
 async function enviarParaN8n(payload) {
   const url = await getWebhookCadastroUrl();
@@ -79,15 +95,41 @@ async function enviarParaN8n(payload) {
       signal: controller.signal,
     });
 
+    const corpoTexto = await resposta.text().catch(() => '');
+    let corpo = null;
+    try {
+      corpo = corpoTexto ? JSON.parse(corpoTexto) : null;
+    } catch {
+      corpo = null;
+    }
+
     if (!resposta.ok) {
-      const corpo = await resposta.text().catch(() => '');
+      const detalhe = corpo?.erro || (corpoTexto ? corpoTexto.slice(0, 500) : null);
       return {
         ok: false,
-        erro: `n8n respondeu com status ${resposta.status}${corpo ? `: ${corpo.slice(0, 500)}` : ''}`,
+        erro: `n8n respondeu com status ${resposta.status}${detalhe ? `: ${detalhe}` : ''}`,
       };
     }
 
-    return { ok: true };
+    // HTTP 2xx não garante sucesso do lado do n8n — o fluxo lá pode
+    // responder 200 mesmo quando a etapa de negócio falhou (ex.: CPF
+    // inválido, cliente já existe no Bling). O campo "sucesso" no corpo é
+    // quem manda de verdade; sem esse campo (integração ainda não
+    // atualizada), trata como sucesso — mesma lógica de graceful
+    // degradation usada em POST /api/sync/atualizar.
+    if (corpo?.sucesso === false) {
+      return {
+        ok: false,
+        erro: corpo.erro || 'O n8n reportou falha ao processar o cadastro (sem detalhe adicional).',
+      };
+    }
+
+    return {
+      ok: true,
+      linkPagamento: corpo?.linkPagamento ?? null,
+      clienteAsaasId: corpo?.clienteAsaasId ?? null,
+      pedidoBlingId: corpo?.pedidoBlingId ?? null,
+    };
   } catch (err) {
     const mensagem = err.name === 'AbortError' ? 'Tempo esgotado ao chamar o webhook do n8n.' : err.message;
     return { ok: false, erro: mensagem };
@@ -102,6 +144,9 @@ function serializeCadastro(cadastro) {
     payload: cadastro.payload,
     status: cadastro.status,
     resposta_n8n: cadastro.respostaN8n,
+    link_pagamento: cadastro.linkPagamento,
+    cliente_asaas_id: cadastro.clienteAsaasId,
+    pedido_bling_id: cadastro.pedidoBlingId,
     criado_em: cadastro.criadoEm,
   };
 }
@@ -114,12 +159,19 @@ function serializeCadastro(cadastro) {
  * n8n já espera). Fluxo:
  *   1. Valida os campos obrigatórios (ver `validarPayload`).
  *   2. Salva o registro em "cadastros_enviados" com status "enviado".
- *   3. Tenta repassar o payload ao webhook do n8n configurado.
- *   4. Se o repasse falhar (rede, timeout, HTTP de erro, ou URL não
- *      configurada), atualiza o registro para status "erro" com o motivo em
- *      "resposta_n8n" — mas a resposta HTTP continua sendo de sucesso, já
- *      que o cadastro em si foi salvo. A falha ao chamar o n8n nunca deve
- *      travar o formulário para quem está preenchendo.
+ *   3. Repassa o payload ao webhook do n8n configurado e aguarda a resposta
+ *      dele (até 60s, ver TIMEOUT_N8N_MS — o fluxo lá encadeia Bling e
+ *      Asaas com retries, pode demorar).
+ *   4. Se o repasse falhar (rede, timeout, HTTP de erro, URL não
+ *      configurada, ou o próprio n8n reportando `"sucesso": false` no
+ *      corpo), atualiza o registro para status "erro" com o motivo em
+ *      "resposta_n8n". Se der certo, grava `link_pagamento`,
+ *      `cliente_asaas_id` e `pedido_bling_id` vindos da resposta do n8n.
+ *   Em ambos os casos a resposta HTTP deste endpoint continua sendo 201 —
+ *   o cadastro em si foi salvo; quem decide se deu certo é o campo
+ *   "status" do corpo (ver serializeCadastro), não o status HTTP. Assim o
+ *   frontend sempre recebe uma resposta pra mostrar (sucesso com link, ou
+ *   erro com o motivo), sem a chamada "travar" nem virar uma exceção.
  */
 exports.criar = async (req, res, next) => {
   try {
@@ -140,6 +192,15 @@ exports.criar = async (req, res, next) => {
       cadastro = await prisma.cadastroEnviado.update({
         where: { id: cadastro.id },
         data: { status: 'erro', respostaN8n: resultadoN8n.erro },
+      });
+    } else {
+      cadastro = await prisma.cadastroEnviado.update({
+        where: { id: cadastro.id },
+        data: {
+          linkPagamento: resultadoN8n.linkPagamento,
+          clienteAsaasId: resultadoN8n.clienteAsaasId,
+          pedidoBlingId: resultadoN8n.pedidoBlingId,
+        },
       });
     }
 

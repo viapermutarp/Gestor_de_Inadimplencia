@@ -87,6 +87,10 @@ export default function CadastroPage() {
   const [erroEnvio, setErroEnvio] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [sucesso, setSucesso] = useState(false);
+  // Link de pagamento devolvido pelo n8n (cliente criado no Bling, cobrança
+  // gerada no Asaas) — só preenchido quando o cadastro realmente deu certo
+  // do lado de lá, não só porque a chamada HTTP ao nosso backend voltou 201.
+  const [linkPagamento, setLinkPagamento] = useState("");
 
   function atualizarCampo(campo, valor) {
     setForm((prev) => ({ ...prev, [campo]: valor }));
@@ -121,6 +125,7 @@ export default function CadastroPage() {
     e.preventDefault();
     setErroEnvio("");
     setSucesso(false);
+    setLinkPagamento("");
 
     const novosErros = validar();
     setErros(novosErros);
@@ -152,10 +157,23 @@ export default function CadastroPage() {
 
     setEnviando(true);
     try {
-      await criarCadastro(payload);
+      const resultado = await criarCadastro(payload);
+
+      // POST /api/cadastros sempre responde 201 (o registro em si foi
+      // salvo) — quem diz se o n8n de fato criou o cliente/cobrança é
+      // "status" no corpo, não o status HTTP. "erro" cobre tanto falha de
+      // transporte (timeout, webhook fora do ar) quanto falha de negócio
+      // que o próprio n8n reportou (CPF inválido, cliente já existe etc.).
+      if (resultado?.status === "erro") {
+        setErroEnvio(
+          resultado.resposta_n8n || "Não foi possível concluir o cadastro. Tente novamente."
+        );
+        return;
+      }
+
       setSucesso(true);
+      setLinkPagamento(resultado?.link_pagamento || "");
       limparFormulario();
-      setTimeout(() => setSucesso(false), 6000);
     } catch (err) {
       setErroEnvio(err instanceof ApiError ? err.message : "Não foi possível enviar o cadastro.");
     } finally {
@@ -173,14 +191,29 @@ export default function CadastroPage() {
       </div>
 
       {sucesso && (
-        <div className="flex items-center gap-3 rounded-xl border border-status-green/30 bg-status-green/10 px-4 py-3 text-sm text-foreground">
+        <div className="flex items-start gap-3 rounded-xl border border-status-green/30 bg-status-green/10 px-4 py-3 text-sm text-foreground">
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-status-green/20 text-status-green">
             <IconCheckCircle className="h-5 w-5" />
           </span>
-          <span>
-            <strong className="font-semibold">Cadastro enviado com sucesso.</strong> O formulário
-            foi limpo para o próximo cadastro.
-          </span>
+          <div className="space-y-1">
+            <p>
+              <strong className="font-semibold">Cadastro enviado com sucesso.</strong> O formulário
+              foi limpo para o próximo cadastro.
+            </p>
+            {linkPagamento && (
+              <p>
+                Link de pagamento:{" "}
+                <a
+                  href={linkPagamento}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-primary underline underline-offset-2 hover:text-primary-hover"
+                >
+                  {linkPagamento}
+                </a>
+              </p>
+            )}
+          </div>
         </div>
       )}
 

@@ -186,9 +186,20 @@ export function dispararSincronizacao() {
  * "Descrição do Serviço" etc.) — ver app/cadastro/page.js para o formato
  * completo. Sempre retorna 201 em caso de payload válido (mesmo que o
  * repasse ao n8n falhe); erro de validação vem como 400.
+ *
+ * Resposta: { id, payload, status: "enviado"|"erro", resposta_n8n,
+ * link_pagamento, cliente_asaas_id, pedido_bling_id, criado_em }.
+ * "status": "enviado" com "link_pagamento" preenchido é sucesso de verdade
+ * (o n8n criou cliente/cobrança); "status": "erro" traz o motivo em
+ * "resposta_n8n" (timeout, falha de negócio no n8n, etc.) — ver
+ * app/cadastro/page.js pra como isso é exibido.
+ *
+ * Timeout de 65s no frontend (o backend espera até 60s pelo n8n, que
+ * encadeia Bling + Asaas com retries — a folga de 5s deixa o backend
+ * responder primeiro com sua própria mensagem de timeout).
  */
 export function criarCadastro(payload) {
-  return request("/api/cadastros", { method: "POST", body: payload });
+  return request("/api/cadastros", { method: "POST", body: payload, timeoutMs: 65000 });
 }
 
 /**

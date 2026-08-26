@@ -17,7 +17,7 @@ API de controle de cobrança da **Via Permuta**. Node.js + Express + PostgreSQL 
 - **historico_status_associado**: `id`, `associado_id` (FK), `campo` (`"em_negociacao"` | `"bloqueado"` | `"em_juridico"`), `status_anterior`, `status_novo`, `alterado_em` — histórico único das três mudanças de status booleano do associado (substitui as antigas `historico_negociacao` e `historico_bloqueio`, consolidadas nesta tabela pela migração `consolidar_historico_status`; `em_juridico` não tinha histórico dedicado antes disso)
 - **configuracoes**: `chave` (PK, ex.: `"api_key"`, `"n8n_webhook_cadastro_url"`, `"asaas_api_key"`, `"inadimplencia_palavras_excluidas"` — array JSON serializado em string), `valor`, `atualizado_em` — tabela genérica de configurações persistidas em runtime
 - **sync_log**: `id`, `executado_em`, `total_associados_processados`, `sucesso` — uma linha por chamada a `POST /api/sync`
-- **cadastros_enviados**: `id`, `payload` (json — corpo completo enviado pelo formulário), `status` (`enviado` | `erro`), `resposta_n8n` (texto, nullable — motivo do erro quando o repasse ao n8n falha), `criado_em` — uma linha por chamada a `POST /api/cadastros` (fluxo de Cadastro/Faturamento, substitui o gatilho do Kommo)
+- **cadastros_enviados**: `id`, `payload` (json — corpo completo enviado pelo formulário), `status` (`enviado` | `erro`), `resposta_n8n` (texto, nullable — motivo do erro quando o repasse ao n8n falha ou reporta `sucesso: false`), `link_pagamento`/`cliente_asaas_id`/`pedido_bling_id` (texto, nullable — só preenchidos em caso de sucesso, vindos da resposta do n8n), `criado_em` — uma linha por chamada a `POST /api/cadastros` (fluxo de Cadastro/Faturamento, substitui o gatilho do Kommo)
 - **cobrancas_ignoradas**: `id`, `asaas_payment_id` (único, indexado), `motivo` (texto, nullable), `criado_em` — lista manual de cobranças do Asaas a excluir do cálculo de Taxa de Inadimplência (ver seção própria abaixo)
 
 ## Autenticação
@@ -139,16 +139,27 @@ Endpoint usado pela própria equipe interna via painel (autenticado com o JWT do
 
 **Fluxo, passo a passo:**
 1. Salva uma linha em `cadastros_enviados` com `status: "enviado"` e o payload completo.
-2. Faz `POST` do mesmo payload (JSON) para a URL configurada em `n8n_webhook_cadastro_url` (timeout de 10s).
-3. Se esse `POST` falhar — rede indisponível, timeout, HTTP de erro do n8n, ou a URL simplesmente não estar configurada — atualiza o registro para `status: "erro"` com o motivo em `resposta_n8n`.
-4. **A resposta HTTP para quem preencheu o formulário é sempre de sucesso (`201`)**, com o registro salvo (já refletindo `status: "enviado"` ou `"erro"`) — uma falha ao chamar o n8n nunca trava o cadastro em si, que já está garantido no banco.
+2. Faz `POST` do mesmo payload (JSON) para a URL configurada em `n8n_webhook_cadastro_url` e **aguarda a resposta dele** (timeout de 60s — o fluxo lá encadeia criação de cliente e pedido no Bling, depois cliente e cobrança no Asaas, cada chamada com retry de até 3 tentativas e 5s entre elas; o caminho feliz já passa de 30-40s, um retry pode passar de 1 minuto). Configurável via `CADASTRO_WEBHOOK_TIMEOUT_MS` (útil só pra testes automatizados não esperarem 60s de verdade).
+3. **Captura a resposta do n8n** (JSON esperado):
+   ```json
+   { "sucesso": true, "linkPagamento": "https://...", "clienteAsaasId": "cus_...", "pedidoBlingId": "..." }
+   { "sucesso": false, "erro": "CPF inválido" }
+   ```
+   Um HTTP `2xx` **não** garante sucesso — o n8n pode responder `200` mesmo quando a etapa de negócio falhou (CPF inválido, cliente já existe no Bling etc.); quem manda é o campo `"sucesso"` do corpo. Se a integração ainda não mandar esse campo, é tratado como sucesso (graceful degradation), só que sem os IDs/link (ficam `null`).
+4. Se o `POST` falhar por qualquer motivo — rede indisponível, timeout, HTTP de erro do n8n, `"sucesso": false` no corpo, ou a URL simplesmente não estar configurada — atualiza o registro para `status: "erro"` com o motivo em `resposta_n8n`. Se der certo, grava `link_pagamento`, `cliente_asaas_id` e `pedido_bling_id` vindos da resposta.
+5. **A resposta HTTP para quem preencheu o formulário é sempre de sucesso (`201`)**, com o registro salvo (já refletindo `status: "enviado"` ou `"erro"`, e os campos acima) — uma falha ao chamar/processar no n8n nunca trava o cadastro em si, que já está garantido no banco. Quem decide se deu certo pro usuário é o campo `"status"` do corpo, não o status HTTP — ver `app/cadastro/page.js` no frontend pra como isso é exibido (link de pagamento clicável em caso de sucesso, mensagem de erro real em caso de falha).
 
 ```bash
 curl -X POST https://api.exemplo.com/api/cadastros \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
   -d '{ "CNPJ/CPF": "123.456.789-00", "Contato": "Fulano", "Descrição do Serviço": "Anuidade (PIX)", "Valor Total": "1500.00" }'
-# 201 — { "id": "...", "payload": {...}, "status": "enviado", "resposta_n8n": null, "criado_em": "..." }
-# (se o n8n falhar: mesmo 201, mas "status": "erro" e "resposta_n8n": "<motivo>")
+# 201 — sucesso:
+# { "id": "...", "payload": {...}, "status": "enviado", "resposta_n8n": null,
+#   "link_pagamento": "https://sandbox.asaas.com/i/abc123", "cliente_asaas_id": "cus_000001",
+#   "pedido_bling_id": "bling_555", "criado_em": "..." }
+# 201 — falha (de negócio, transporte, ou timeout — mesmo formato pros três):
+# { "id": "...", "payload": {...}, "status": "erro", "resposta_n8n": "CPF inválido",
+#   "link_pagamento": null, "cliente_asaas_id": null, "pedido_bling_id": null, "criado_em": "..." }
 
 curl "https://api.exemplo.com/api/cadastros?page=1&limit=20" -H "Authorization: Bearer <token>"
 ```
@@ -897,3 +908,13 @@ Antes do primeiro deploy real, recomendamos rodar `docker-compose up --build` lo
 - Eduarda (voltou no payload): continua com sua cobrança aberta normalmente.
 - Sync 3, com `"janela"` malformada (`inicio: "not-a-date"`): responde `200` normalmente e `"reconciliacao": "por_associado"` — confirma que uma janela inválida não quebra a chamada, só faz cair de volta pro modo antigo.
 - Suíte dedicada a este ajuste: **16/16 asserções passaram**. Reconciliação por-associado (sem `"janela"`, suíte da rodada anterior) rodada de novo pra garantir que o modo de compatibilidade não regrediu: **24/24**. `historico_status_associado` também revalidado: **35/35**.
+
+**Cadastro/Faturamento — captura da resposta do n8n (link de pagamento + IDs)** — validado com Postgres real e um mock HTTP simples fazendo o papel do webhook do n8n (comportamento trocado em tempo de execução: sucesso com campos completos, falha de negócio via `"sucesso": false`, corpo sem os campos esperados, "trava" pra forçar timeout, erro HTTP 500):
+
+- Payload inválido (sem os campos obrigatórios): `400`, nem chega a tentar o webhook.
+- Webhook responde `200` com `{ sucesso: true, linkPagamento, clienteAsaasId, pedidoBlingId }`: `201`, `status: "enviado"`, os três campos repassados corretamente e também persistidos no banco (confirmado via `GET /api/cadastros`).
+- Webhook responde `200` mas com `{ sucesso: false, erro: "CPF inválido" }`: `201` (registro salvo normalmente), mas `status: "erro"` e `resposta_n8n: "CPF inválido"` — confirma que um HTTP `200` não é tratado como sucesso automático, o campo `"sucesso"` do corpo é quem manda.
+- Webhook responde `200` com corpo vazio (`{}`, integração ainda sem os campos novos): `status: "enviado"` (sem `"sucesso": false` explícito, trata como sucesso), mas `link_pagamento`/`cliente_asaas_id`/`pedido_bling_id` ficam `null` — degrada graciosamente.
+- Webhook "travado" (nunca responde): usando `CADASTRO_WEBHOOK_TIMEOUT_MS=800` (só pra este teste não precisar esperar os 60s reais), voltou `status: "erro"` com `resposta_n8n` citando "Tempo esgotado" depois de ~852ms.
+- Webhook responde `500`: `status: "erro"` com `resposta_n8n` citando o status HTTP retornado.
+- Suíte dedicada a esta correção: **24/24 asserções passaram**.
