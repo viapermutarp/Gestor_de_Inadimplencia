@@ -1,9 +1,6 @@
-const crypto = require('crypto');
 const prisma = require('../config/prisma');
 const cache = require('../services/cache.service');
 const {
-  getApiKey,
-  setApiKey,
   getWebhookCadastroUrl,
   setWebhookCadastroUrl,
   getAsaasApiKey,
@@ -13,6 +10,7 @@ const {
   getDiasTolerancia,
   setDiasTolerancia,
 } = require('../services/config.service');
+const { listarChaves, criarChave, revogarChave } = require('../services/apiKeys.service');
 
 const CARACTERES_VISIVEIS = 6;
 
@@ -24,35 +22,63 @@ function mascararChave(chave) {
 }
 
 /**
- * GET /api/config/api-key
- * Retorna a API_KEY vigente mascarada (só os últimos 6 caracteres visíveis).
+ * GET /api/config/api-keys
+ * Lista todas as API keys cadastradas (ativas e revogadas), mais recentes
+ * primeiro, sempre mascaradas (nunca em texto puro). Ver
+ * src/services/apiKeys.service.js — inclui a importação automática da
+ * antiga chave única na primeira chamada, se a lista ainda estiver vazia.
  */
-exports.obterApiKey = async (req, res, next) => {
+exports.listarApiKeys = async (req, res, next) => {
   try {
-    const chaveAtual = await getApiKey();
-    res.json({ api_key: mascararChave(chaveAtual) });
+    const chaves = await listarChaves();
+    res.json(chaves);
   } catch (err) {
     next(err);
   }
 };
 
 /**
- * POST /api/config/api-key/regenerar
- * Gera uma nova API_KEY aleatória forte, persiste na tabela "configuracoes"
- * (substituindo a atual) e retorna a chave completa — única vez que ela
- * aparece por inteiro na resposta de qualquer endpoint.
+ * POST /api/config/api-keys
+ * Body: { "nome": "n8n - Sync Cobrança" }
+ * Gera uma nova API key aleatória forte com o nome/rótulo informado e
+ * retorna a chave completa — única vez que ela aparece por inteiro na
+ * resposta de qualquer endpoint. Não afeta as demais chaves já cadastradas.
  */
-exports.regenerarApiKey = async (req, res, next) => {
+exports.criarApiKey = async (req, res, next) => {
   try {
-    const novaChave = crypto.randomBytes(32).toString('hex');
-    await setApiKey(novaChave);
+    const { nome } = req.body || {};
 
-    res.json({
-      api_key: novaChave,
-      aviso:
-        'Guarde esta chave agora — ela não será exibida completa novamente. ' +
-        'Integrações que ainda usam a chave anterior vão parar de funcionar.',
+    if (typeof nome !== 'string' || nome.trim() === '') {
+      return res.status(400).json({ error: '"nome" é obrigatório.' });
+    }
+
+    const nova = await criarChave(nome.trim());
+    res.status(201).json({
+      ...nova,
+      aviso: 'Guarde esta chave agora — ela não será exibida completa novamente.',
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/config/api-keys/:id/revogar
+ * Revoga individualmente a chave indicada (não deleta, só marca
+ * "revogada_em") — deixa de ser aceita por src/middleware/auth.js, sem
+ * afetar as demais chaves ativas. Idempotente: revogar uma chave já
+ * revogada não é erro. 404 se o id não existir.
+ */
+exports.revogarApiKey = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const revogada = await revogarChave(id);
+
+    if (!revogada) {
+      return res.status(404).json({ error: 'Chave não encontrada.' });
+    }
+
+    res.json(revogada);
   } catch (err) {
     next(err);
   }

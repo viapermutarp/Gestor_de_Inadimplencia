@@ -15,7 +15,8 @@ API de controle de cobrança da **Via Permuta**. Node.js + Express + PostgreSQL 
 - **associados**: `id`, `cpf_cnpj` (único, indexado), `nome`, `telefone`, `email`, `em_negociacao`, `observacao`, `observacao_atualizada_em` (data/hora da última mudança de valor de `observacao`, só via `PATCH .../negociacao` — ver seção de endpoints), `bloqueado`, `em_juridico`, `ciclo_resetado_em` (marco usado pelo contador de bloqueios), `criado_em`, `atualizado_em`
 - **cobrancas**: `id`, `associado_id` (FK), `id_externo` (opcional, único, indexado — ID gerado pelo Asaas para a cobrança, ex.: `pay_xxxxxxxxxxxxx`), `valor`, `vencimento`, `dias_diferenca`, `link_pagamento`, `descricao`, `status` (`pending` | `overdue` | `paid` | `quitada` — este último só é gravado pelo próprio backend, nunca vem de payload externo, ver seção de reconciliação em `POST /api/sync`), `sincronizado_em`, `quitada_em` (preenchido só quando reconciliada como `"quitada"`)
 - **historico_status_associado**: `id`, `associado_id` (FK), `campo` (`"em_negociacao"` | `"bloqueado"` | `"em_juridico"`), `status_anterior`, `status_novo`, `alterado_em` — histórico único das três mudanças de status booleano do associado (substitui as antigas `historico_negociacao` e `historico_bloqueio`, consolidadas nesta tabela pela migração `consolidar_historico_status`; `em_juridico` não tinha histórico dedicado antes disso)
-- **configuracoes**: `chave` (PK, ex.: `"api_key"`, `"n8n_webhook_cadastro_url"`, `"asaas_api_key"`, `"inadimplencia_palavras_excluidas"` — array JSON serializado em string), `valor`, `atualizado_em` — tabela genérica de configurações persistidas em runtime
+- **configuracoes**: `chave` (PK, ex.: `"api_key"` — legado, ver seção "Múltiplas API keys" abaixo —, `"n8n_webhook_cadastro_url"`, `"asaas_api_key"`, `"inadimplencia_palavras_excluidas"` — array JSON serializado em string), `valor`, `atualizado_em` — tabela genérica de configurações persistidas em runtime
+- **api_keys**: `id`, `nome` (rótulo livre, ex.: `"n8n - Sync Cobrança"`), `hash` (SHA-256 da chave, único — a chave em texto puro nunca é persistida), `tamanho`, `ultimos_caracteres` (usados só pra mascarar na listagem), `criada_em`, `ultimo_uso_em` (nullable, atualizado best-effort a cada autenticação bem-sucedida), `revogada_em` (nullable — `null` = ativa; a linha nunca é deletada, pra manter histórico) — substitui a antiga chave única de `configuracoes`, ver seção própria abaixo
 - **sync_log**: `id`, `executado_em`, `total_associados_processados`, `sucesso` — uma linha por chamada a `POST /api/sync`
 - **cadastros_enviados**: `id`, `payload` (json — corpo completo enviado pelo formulário), `status` (`enviado` | `erro`), `resposta_n8n` (texto, nullable — motivo do erro quando o repasse ao n8n falha ou reporta `sucesso: false`), `link_pagamento`/`cliente_asaas_id`/`pedido_bling_id` (texto, nullable — só preenchidos em caso de sucesso, vindos da resposta do n8n), `criado_em` — uma linha por chamada a `POST /api/cadastros` (fluxo de Cadastro/Faturamento, substitui o gatilho do Kommo)
 - **cobrancas_ignoradas**: `id`, `asaas_payment_id` (único, indexado), `motivo` (texto, nullable), `criado_em` — lista manual de cobranças do Asaas a excluir do cálculo de Taxa de Inadimplência (ver seção própria abaixo)
@@ -24,20 +25,24 @@ API de controle de cobrança da **Via Permuta**. Node.js + Express + PostgreSQL 
 
 Todas as rotas em `/api/*` exigem o header `Authorization: Bearer <token>`, **exceto** `POST /api/login`. O token pode ser:
 
-1. A **API key vigente** — para integrações externas (ex.: o job que faz `POST /api/sync`).
+1. **Qualquer API key ativa** cadastrada em `api_keys` — para integrações externas (ex.: n8n em `POST /api/sync` e `POST /api/cadastros`).
 2. Um **JWT** obtido via `POST /api/login` — para uso do painel administrativo.
 
-### De onde vem a API key
+### Múltiplas API keys
 
-A API key **não é mais fixa em runtime**: o middleware de autenticação (`src/middleware/auth.js`) lê o valor atual da tabela `configuracoes` (chave `"api_key"`) a cada requisição, através de `src/services/config.service.js`. Isso permite regenerá-la em produção via `POST /api/config/api-key/regenerar` sem precisar reiniciar o serviço ou editar variáveis de ambiente.
+Desde esta versão, a autenticação por API key suporta **N chaves simultâneas** (tabela `api_keys`), cada uma com nome/rótulo próprio (ex.: `"n8n - Sync Cobrança"`, `"n8n - Cadastro/Faturamento"`) e revogável individualmente sem afetar as demais — antes havia só uma chave global, e regenerá-la derrubava toda integração ativa de uma vez.
 
-Enquanto a tabela ainda não tem nenhum registro (logo após a primeira migração, antes de qualquer regeneração) ou se o banco estiver momentaneamente indisponível, o middleware cai no **fallback**: a variável de ambiente `API_KEY`.
+O middleware de autenticação (`src/middleware/auth.js`) valida o token recebido contra `src/services/apiKeys.service.js` (`validarChave`): calcula o SHA-256 do token e busca por esse hash entre as chaves não revogadas. A chave em texto puro **nunca é persistida** — só o hash (pra validar) e os últimos 6 caracteres (pra mascarar na listagem). A cada autenticação bem-sucedida, `ultimo_uso_em` é atualizado em segundo plano (best-effort, não bloqueia a resposta).
+
+Gerenciamento via `GET`/`POST /api/config/api-keys` e `POST /api/config/api-keys/:id/revogar` (ver tabela de endpoints abaixo) — sem UI de curl necessária, a tela de Configurações do painel já cobre isso.
+
+**Migração automática da chave legada.** A antiga chave única (variável `API_KEY` / tabela `configuracoes`, chave `"api_key"`) é importada automaticamente para `api_keys` (com o nome `"Chave padrão (migrada)"`) na primeira vez que qualquer requisição autenticada por API key ou qualquer chamada a `GET /api/config/api-keys` acontecer depois desta atualização — não é necessário nenhum passo manual, e integrações já configuradas com a chave antiga continuam funcionando sem interrupção. Depois da migração, ela aparece na lista como uma chave normal, revogável como qualquer outra.
 
 ### Geração automática da API key e do segredo JWT (fallback do `.env`)
 
-Se `API_KEY` ou `JWT_SECRET` estiverem vazios no `.env`, a aplicação gera valores fortes aleatoriamente **na primeira inicialização** e os grava de volta no arquivo `.env` (o `docker-compose.yml` monta `./.env` dentro do container justamente para isso persistir). Verifique o arquivo `.env` após o primeiro `docker-compose up` para pegar a chave gerada — ela aparece também nos logs do container `api`. Essa chave gerada no `.env` só é efetivamente usada enquanto a tabela `configuracoes` não tiver um registro `api_key` — assim que alguém chamar `POST /api/config/api-key/regenerar`, a tabela passa a mandar.
+Se `API_KEY` ou `JWT_SECRET` estiverem vazios no `.env`, a aplicação gera valores fortes aleatoriamente **na primeira inicialização** e os grava de volta no arquivo `.env` (o `docker-compose.yml` monta `./.env` dentro do container justamente para isso persistir). Verifique o arquivo `.env` após o primeiro `docker-compose up` para pegar a chave gerada — ela aparece também nos logs do container `api`. Essa variável só serve como semente pra migração automática descrita acima (usada apenas se `api_keys` ainda estiver vazia); depois da primeira migração, ela deixa de ter qualquer efeito e o gerenciamento passa a ser todo pela tabela `api_keys`.
 
-Em produção (EasyPanel), prefira **definir `API_KEY` e `JWT_SECRET` manualmente** nas variáveis de ambiente do serviço, já que o sistema de arquivos do container pode não ser persistente entre deploys — e use `POST /api/config/api-key/regenerar` (autenticado) quando quiser trocar a chave depois de já estar no ar.
+Em produção (EasyPanel), prefira **definir `API_KEY` e `JWT_SECRET` manualmente** nas variáveis de ambiente do serviço, já que o sistema de arquivos do container pode não ser persistente entre deploys — e use `POST /api/config/api-keys` (autenticado) pra gerar chaves nomeadas por integração depois de já estar no ar.
 
 ## ⚠️ Breaking change — `GET /api/associados` agora é paginado
 
@@ -86,8 +91,9 @@ Isso vale inclusive para chamadas **sem nenhum filtro** — antes, `GET /api/ass
 | PATCH | `/api/associados/:cpf_cnpj/juridico` | Body `{ "em_juridico": bool }`. Atualiza o campo e grava uma linha em `historico_status_associado` (`campo: "em_juridico"`) — diferente de versões anteriores deste endpoint, que não gravavam histórico nenhum. |
 | GET | `/api/associados/:cpf_cnpj/bloqueios/contador` | Conta quantas vezes o associado foi marcado como bloqueado (`historico_status_associado` com `campo: "bloqueado"` e `status_novo: true`) desde o último reset (ou desde sempre, se nunca resetado). |
 | POST | `/api/associados/:cpf_cnpj/bloqueios/resetar` | Marca `ciclo_resetado_em = agora`. Não apaga o histórico; só move o ponto de corte do contador. |
-| GET | `/api/config/api-key` | Retorna a API key vigente mascarada (só os últimos 6 caracteres visíveis). |
-| POST | `/api/config/api-key/regenerar` | Gera e persiste uma nova API key. Retorna a chave completa — única vez que ela aparece por inteiro. |
+| GET | `/api/config/api-keys` | Lista todas as API keys (ativas e revogadas), mais recentes primeiro, sempre mascaradas: `[{ id, nome, chave_mascarada, criada_em, ultimo_uso_em, ativa }]`. Dispara a migração automática da chave legada se `api_keys` ainda estiver vazia (ver seção "Múltiplas API keys" acima). |
+| POST | `/api/config/api-keys` | Body `{ "nome": "..." }`. Gera uma nova API key com esse nome/rótulo. Retorna a chave completa — única vez que ela aparece por inteiro. |
+| POST | `/api/config/api-keys/:id/revogar` | Revoga só a chave indicada (idempotente; não deleta, só marca `revogada_em`). 404 se o id não existir. |
 | GET | `/api/config/webhook-cadastro` | Retorna a URL vigente do webhook do n8n usada por `POST /api/cadastros` (`{ "n8n_webhook_cadastro_url": ... }`, `null` se ainda não configurada). |
 | PATCH | `/api/config/webhook-cadastro` | Body `{ "n8n_webhook_cadastro_url": "https://..." }`. Atualiza (cria ou substitui) a URL na tabela `configuracoes`. |
 | GET | `/api/config/sync-log` | Retorna as últimas 20 execuções de `POST /api/sync`, mais recentes primeiro. |
@@ -638,17 +644,25 @@ Depois do reset, o contador volta a zero e só passa a contar bloqueios (`status
 
 Antes desta versão, o histórico vinha em dois campos separados (`historico_negociacao` e `historico_bloqueio`) e `em_juridico` não tinha histórico nenhum — `PATCH .../juridico` só atualizava o campo, sem deixar rastro de quando/quem mudou. A migração `20260819160000_consolidar_historico_status` resolve os dois problemas de uma vez: cria `historico_status_associado` (coluna `campo` discrimina o tipo de mudança), **migra os dados existentes** das duas tabelas antigas para a nova (com o `campo` certo em cada linha, preservando `id`/`status_anterior`/`status_novo`/`alterado_em` originais) e só então derruba `historico_negociacao`/`historico_bloqueio`. `PATCH .../juridico` passou a gravar uma linha nessa tabela a partir de agora — mudanças de `em_juridico` anteriores a este deploy não têm registro histórico (não havia como reconstituir o que nunca foi salvo).
 
-### Exemplo — configuração da API key
+### Exemplo — múltiplas API keys
 
 ```bash
-curl https://api.exemplo.com/api/config/api-key -H "Authorization: Bearer <token>"
-# {"api_key":"••••••••••••••••••••••••••••••••••••••••••••••••••••••••b1c4d3"}
+curl https://api.exemplo.com/api/config/api-keys -H "Authorization: Bearer <token>"
+# [
+#   {"id":"...","nome":"n8n - Sync Cobrança","chave_mascarada":"••••••••••••••••••••••••••••••••••••••••••••••••••••••••b1c4d3","criada_em":"...","ultimo_uso_em":"...","ativa":true},
+#   {"id":"...","nome":"n8n - Cadastro/Faturamento","chave_mascarada":"••••••••••••••••••••••••••••••••••••••••••••••••••••••••7a91fe","criada_em":"...","ultimo_uso_em":null,"ativa":true}
+# ]
 
-curl -X POST https://api.exemplo.com/api/config/api-key/regenerar -H "Authorization: Bearer <token>"
-# {"api_key":"<chave completa, 64 caracteres hex>","aviso":"Guarde esta chave agora..."}
+curl -X POST https://api.exemplo.com/api/config/api-keys \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"nome":"n8n - Cadastro/Faturamento"}'
+# {"id":"...","nome":"n8n - Cadastro/Faturamento","chave":"<chave completa, 64 caracteres hex>","criada_em":"...","aviso":"Guarde esta chave agora..."}
+
+curl -X POST https://api.exemplo.com/api/config/api-keys/<id>/revogar -H "Authorization: Bearer <token>"
+# {"id":"...","nome":"n8n - Cadastro/Faturamento","ativa":false}
 ```
 
-Depois de regenerar, a chave anterior deixa de funcionar imediatamente — qualquer integração externa (ex.: o job de `POST /api/sync`) precisa ser atualizada com a nova chave.
+Revogar uma chave só afeta ela — as demais chaves ativas (e o JWT do painel) continuam funcionando normalmente.
 
 ### Exemplo — log de sincronizações
 
@@ -709,7 +723,7 @@ npm run dev
 1. Crie um novo serviço do tipo **App** apontando para este repositório/pasta (ele detecta o `Dockerfile` automaticamente) e um serviço **PostgreSQL** (pode usar o template de banco do próprio EasyPanel).
 2. No serviço da API, configure as variáveis de ambiente (aba *Environment*):
    - `DATABASE_URL` → string de conexão do serviço Postgres criado no EasyPanel (formato `postgresql://usuario:senha@host:5432/banco?schema=public`)
-   - `API_KEY` → gere uma chave forte você mesmo (ex.: `openssl rand -hex 32`) e defina fixa aqui, para não depender da geração automática em runtime
+   - `API_KEY` → gere uma chave forte você mesmo (ex.: `openssl rand -hex 32`) e defina fixa aqui; ela só é usada como semente da migração automática pra `api_keys` na primeira inicialização (ver seção "Múltiplas API keys" acima) — depois disso, gerencie chaves por `POST /api/config/api-keys`
    - `JWT_SECRET` → idem, gere com `openssl rand -hex 48`
    - `ADMIN_USER` / `ADMIN_PASSWORD` → credenciais do painel
    - `JWT_EXPIRES_IN` → opcional, padrão `8h`
@@ -750,14 +764,22 @@ O ambiente de execução usado para gerar este projeto não tinha Docker dispon�
 - Validação: 400 para `bloqueado`/`em_juridico` não booleano; 404 nos 4 endpoints novos para CPF/CNPJ inexistente.
 - `GET /api/associados/:cpf_cnpj` retornando `bloqueado`, `em_juridico`, `ciclo_resetado_em` e `historico_bloqueio` no payload.
 
-**Configurações (`api-key` em runtime e `sync-log`)**:
+**Configurações (`sync-log`)**:
 
-- `GET /api/config/api-key` antes de qualquer regeneração: cai no fallback da variável de ambiente `API_KEY` e mascara corretamente (só os últimos 6 caracteres visíveis).
-- `POST /api/config/api-key/regenerar`: gera uma chave nova de 64 caracteres, persiste na tabela `configuracoes` e retorna a chave completa.
-- Confirmado que a **chave antiga passa a ser rejeitada (401)** imediatamente após a regeneração, e a **chave nova passa a ser aceita (200)** — o middleware de auth está de fato lendo da tabela, não mais só do `.env`.
-- `GET /api/config/api-key` após a regeneração: máscara atualizada, terminando com os últimos 6 caracteres da nova chave.
-- JWT do painel continua funcionando normalmente nos endpoints de `/api/config/*` (200), confirmando que a mudança no middleware não quebrou esse caminho.
 - `GET /api/config/sync-log`: vazio antes de qualquer sync; após 2 syncs bem-sucedidos e 1 com corpo inválido, retorna as 3 linhas, mais recente primeiro, com `total_associados_processados`/`sucesso` corretos em cada uma (incluindo `sucesso: false` para a chamada inválida).
+
+**Múltiplas API keys (`api_keys`, substitui a chave única)** — testado com Postgres real (`test-multiplas-api-keys.js`, 29/29):
+
+- Subindo a aplicação com `API_KEY` (legada, via env) definida e nenhuma linha em `api_keys`: a primeira requisição autenticada com essa chave continua funcionando normalmente (200) — confirma a migração lazy.
+- `GET /api/config/api-keys` logo em seguida: lista exatamente 1 chave, nome `"Chave padrão (migrada)"`, ativa, mascarada (não expõe o valor completo).
+- `POST /api/config/api-keys` sem `"nome"` → 400; com `"nome"` → 201, retorna a chave completa (64 caracteres hex) só nessa resposta.
+- A chave nova funciona como Bearer em endpoint protegido, **independente e simultaneamente** com a chave legada migrada.
+- `ultimo_uso_em` começa e permanece `null` até a chave ser usada pela primeira vez; depois de usada, é preenchido (atualização em segundo plano, confirmado com uma pequena espera).
+- `POST /api/config/api-keys/:id/revogar`: revoga só aquela chave — passa a dar 401 em endpoint protegido — enquanto a chave legada (não revogada) continua aceita normalmente (200), confirmando que revogar uma não afeta as outras.
+- Chave revogada continua aparecendo em `GET /api/config/api-keys` (histórico preservado, `ativa: false`), não é deletada.
+- Revogar a mesma chave de novo: ainda 200 (idempotente). Revogar um id inexistente: 404.
+- Rotas antigas de chave única (`GET /api/config/api-key`, `POST /api/config/api-key/regenerar`) confirmadas removidas (404).
+- Regressão: `test-sync-atualizar.js` (16/16), `test-reconciliacao-janela.js` e `test-tolerancia.js` completos passando após a troca do middleware de auth, confirmando que endpoints que dependem de `API_KEY`/autenticação continuam funcionando normalmente com o novo esquema.
 
 **Filtro combinado `em_negociacao` + `em_juridico` em `GET /api/associados`** (validado com 4 associados cobrindo as 4 combinações possíveis dos dois booleanos):
 

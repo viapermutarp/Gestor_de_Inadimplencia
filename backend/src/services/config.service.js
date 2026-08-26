@@ -31,11 +31,12 @@ async function setConfigValor(chave, valor) {
 }
 
 /**
- * Lê a API_KEY vigente. Prioridade: tabela "configuracoes" no banco
- * (permite trocar em runtime, ex.: via POST /api/config/api-key/regenerar).
- * Fallback: variável de ambiente API_KEY, usada enquanto a tabela ainda
- * não tem nenhum registro (ex.: logo após a migração, antes da primeira
- * regeneração) ou se o banco estiver indisponível no momento da leitura.
+ * Lê a antiga API_KEY única (legada). Prioridade: tabela "configuracoes"
+ * no banco. Fallback: variável de ambiente API_KEY. Usada hoje só como
+ * semente da migração automática para a tabela "api_keys" (múltiplas
+ * chaves nomeadas e revogáveis individualmente — ver
+ * src/services/apiKeys.service.js e src/middleware/auth.js, que não usam
+ * mais esta função diretamente para autenticar requisições).
  */
 async function getApiKey() {
   try {

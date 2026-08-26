@@ -88,6 +88,32 @@ model Configuracao {
   @@map("configuracoes")
 }
 
+/// Chaves de API para integrações externas (n8n, etc.) — substitui o antigo
+/// modelo de chave única guardada em "configuracoes" (chave "api_key").
+/// Suporta N chaves simultâneas, cada uma com nome/rótulo próprio, pra
+/// permitir revogar uma integração sem derrubar as outras (ver
+/// src/services/apiKeys.service.js). Nunca guarda a chave em texto puro —
+/// só o hash SHA-256 (usado pra validar em src/middleware/auth.js) e os
+/// últimos caracteres (usados só pra exibir mascarada na tela de
+/// Configurações). "revogadaEm" null = chave ativa; a linha nunca é
+/// deletada, pra manter histórico. A chave única antiga (tabela
+/// "configuracoes") é importada automaticamente pra cá na primeira
+/// listagem/validação depois desta migração — ver
+/// migrarChaveLegadaSeNecessario em apiKeys.service.js.
+model ApiKey {
+  id                String    @id @default(uuid())
+  nome              String
+  hash              String    @unique
+  tamanho           Int
+  ultimosCaracteres String    @map("ultimos_caracteres")
+  criadaEm          DateTime  @default(now()) @map("criada_em")
+  ultimoUsoEm       DateTime? @map("ultimo_uso_em")
+  revogadaEm        DateTime? @map("revogada_em")
+
+  @@index([revogadaEm])
+  @@map("api_keys")
+}
+
 /// Registro de cada execução de POST /api/sync, usado por GET /api/config/sync-log.
 model SyncLog {
   id                         String   @id @default(uuid())

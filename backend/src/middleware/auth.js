@@ -1,22 +1,15 @@
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
 const env = require('../config/env');
-const { getApiKey } = require('../services/config.service');
-
-function safeEqual(a, b) {
-  const bufA = Buffer.from(String(a));
-  const bufB = Buffer.from(String(b));
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
+const { validarChave } = require('../services/apiKeys.service');
 
 /**
  * Protege as rotas da API. Aceita dois tipos de token no header
  * "Authorization: Bearer <token>":
- *   1. A API_KEY vigente (usada por integrações externas, ex.: POST /api/sync).
- *      Lida da tabela "configuracoes" no banco, com fallback para a variável
- *      de ambiente API_KEY caso a tabela ainda não tenha registro (ver
- *      src/services/config.service.js).
+ *   1. Qualquer API key ativa (não revogada) cadastrada em "api_keys" (ver
+ *      src/services/apiKeys.service.js — validarChave). Usada por
+ *      integrações externas (ex.: n8n em POST /api/sync e POST /api/cadastros).
+ *      Suporta múltiplas chaves simultâneas, cada uma revogável
+ *      individualmente sem afetar as demais.
  *   2. Um JWT válido emitido por POST /api/login (usado pelo painel)
  */
 module.exports = async function auth(req, res, next) {
@@ -28,8 +21,7 @@ module.exports = async function auth(req, res, next) {
   }
 
   try {
-    const apiKeyAtual = await getApiKey();
-    if (safeEqual(token, apiKeyAtual)) {
+    if (await validarChave(token)) {
       req.auth = { type: 'api_key' };
       return next();
     }

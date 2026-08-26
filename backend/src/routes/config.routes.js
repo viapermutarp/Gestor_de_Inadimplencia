@@ -4,8 +4,9 @@ const ctrl = require('../controllers/config.controller');
 
 const router = Router();
 
-router.get('/config/api-key', auth, ctrl.obterApiKey);
-router.post('/config/api-key/regenerar', auth, ctrl.regenerarApiKey);
+router.get('/config/api-keys', auth, ctrl.listarApiKeys);
+router.post('/config/api-keys', auth, ctrl.criarApiKey);
+router.post('/config/api-keys/:id/revogar', auth, ctrl.revogarApiKey);
 router.get('/config/webhook-cadastro', auth, ctrl.obterWebhookCadastro);
 router.patch('/config/webhook-cadastro', auth, ctrl.atualizarWebhookCadastro);
 router.get('/config/asaas-key', auth, ctrl.obterAsaasKey);

@@ -149,12 +149,33 @@ export function resetarBloqueios(cpfCnpj) {
   });
 }
 
-export function getApiKeyMascarada() {
-  return request("/api/config/api-key");
+/**
+ * GET /api/config/api-keys — lista todas as API keys cadastradas (ativas e
+ * revogadas), mais recentes primeiro, sempre mascaradas. Cada item:
+ * { id, nome, chave_mascarada, criada_em, ultimo_uso_em, ativa }.
+ */
+export function listarApiKeys() {
+  return request("/api/config/api-keys");
 }
 
-export function regenerarApiKey() {
-  return request("/api/config/api-key/regenerar", { method: "POST" });
+/**
+ * POST /api/config/api-keys — body { nome }. Gera uma nova chave com o
+ * nome/rótulo informado (ex.: "n8n - Sync Cobrança") e não afeta as demais
+ * chaves já cadastradas. Retorna { id, nome, chave, criada_em, aviso } —
+ * "chave" só aparece completa nesta resposta.
+ */
+export function criarApiKey(nome) {
+  return request("/api/config/api-keys", { method: "POST", body: { nome } });
+}
+
+/**
+ * POST /api/config/api-keys/:id/revogar — revoga só a chave indicada
+ * (idempotente); as demais continuam funcionando normalmente.
+ */
+export function revogarApiKey(id) {
+  return request(`/api/config/api-keys/${encodeURIComponent(id)}/revogar`, {
+    method: "POST",
+  });
 }
 
 export function getSyncLog() {
@@ -260,6 +281,23 @@ export function getAsaasKeyMascarada() {
 /** PATCH /api/config/asaas-key — body { chave }. Retorna só a versão mascarada. */
 export function atualizarAsaasKey(chave) {
   return request("/api/config/asaas-key", { method: "PATCH", body: { chave } });
+}
+
+/**
+ * GET /api/config/webhook-cadastro — URL vigente do webhook do n8n usada
+ * por POST /api/cadastros (fluxo de Cadastro/Faturamento). Retorna
+ * { n8n_webhook_cadastro_url }, null quando ainda não configurada.
+ */
+export function getWebhookCadastroUrl() {
+  return request("/api/config/webhook-cadastro");
+}
+
+/** PATCH /api/config/webhook-cadastro — body { n8n_webhook_cadastro_url }. */
+export function atualizarWebhookCadastroUrl(url) {
+  return request("/api/config/webhook-cadastro", {
+    method: "PATCH",
+    body: { n8n_webhook_cadastro_url: url },
+  });
 }
 
 /**

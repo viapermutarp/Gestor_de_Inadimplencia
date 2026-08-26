@@ -3,11 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  getApiKeyMascarada,
-  regenerarApiKey,
+  listarApiKeys,
+  criarApiKey,
+  revogarApiKey,
   getSyncLog,
   getAsaasKeyMascarada,
   atualizarAsaasKey,
+  getWebhookCadastroUrl,
+  atualizarWebhookCadastroUrl,
   getToleranciaDias,
   atualizarToleranciaDias,
   ApiError,
@@ -18,14 +21,24 @@ import ErrorBanner from "@/components/ErrorBanner";
 import { IconKey, IconHistory, IconClock } from "@/components/icons";
 
 export default function ConfiguracoesPage() {
-  const [apiKeyMascarada, setApiKeyMascarada] = useState(null);
-  const [carregandoChave, setCarregandoChave] = useState(true);
-  const [erroChave, setErroChave] = useState("");
+  const [apiKeys, setApiKeys] = useState([]);
+  const [carregandoChaves, setCarregandoChaves] = useState(true);
+  const [erroChaves, setErroChaves] = useState("");
 
-  const [confirmandoRegenerar, setConfirmandoRegenerar] = useState(false);
-  const [regenerando, setRegenerando] = useState(false);
-  const [novaChave, setNovaChave] = useState(null);
+  const [novoNomeChave, setNovoNomeChave] = useState("");
+  const [criandoChave, setCriandoChave] = useState(false);
+  const [chaveRevelada, setChaveRevelada] = useState(null);
   const [copiado, setCopiado] = useState(false);
+
+  const [confirmandoRevogarId, setConfirmandoRevogarId] = useState(null);
+  const [revogandoId, setRevogandoId] = useState(null);
+
+  const [webhookCadastroUrl, setWebhookCadastroUrl] = useState(null);
+  const [carregandoWebhookCadastro, setCarregandoWebhookCadastro] = useState(true);
+  const [erroWebhookCadastro, setErroWebhookCadastro] = useState("");
+  const [novoWebhookCadastro, setNovoWebhookCadastro] = useState("");
+  const [salvandoWebhookCadastro, setSalvandoWebhookCadastro] = useState(false);
+  const [webhookCadastroSalvo, setWebhookCadastroSalvo] = useState(false);
 
   const [logs, setLogs] = useState([]);
   const [carregandoLogs, setCarregandoLogs] = useState(true);
@@ -45,16 +58,32 @@ export default function ConfiguracoesPage() {
   const [salvandoTolerancia, setSalvandoTolerancia] = useState(false);
   const [toleranciaSalva, setToleranciaSalva] = useState(false);
 
-  const carregarApiKey = useCallback(async () => {
-    setCarregandoChave(true);
-    setErroChave("");
+  const carregarApiKeys = useCallback(async () => {
+    setCarregandoChaves(true);
+    setErroChaves("");
     try {
-      const data = await getApiKeyMascarada();
-      setApiKeyMascarada(data.api_key);
+      const data = await listarApiKeys();
+      setApiKeys(Array.isArray(data) ? data : []);
     } catch (err) {
-      setErroChave(err instanceof ApiError ? err.message : "Erro ao carregar a API key.");
+      setErroChaves(err instanceof ApiError ? err.message : "Erro ao carregar as API keys.");
     } finally {
-      setCarregandoChave(false);
+      setCarregandoChaves(false);
+    }
+  }, []);
+
+  const carregarWebhookCadastro = useCallback(async () => {
+    setCarregandoWebhookCadastro(true);
+    setErroWebhookCadastro("");
+    try {
+      const data = await getWebhookCadastroUrl();
+      setWebhookCadastroUrl(data.n8n_webhook_cadastro_url);
+      setNovoWebhookCadastro(data.n8n_webhook_cadastro_url || "");
+    } catch (err) {
+      setErroWebhookCadastro(
+        err instanceof ApiError ? err.message : "Erro ao carregar a URL do webhook de cadastro."
+      );
+    } finally {
+      setCarregandoWebhookCadastro(false);
     }
   }, []);
 
@@ -99,31 +128,47 @@ export default function ConfiguracoesPage() {
   }, []);
 
   useEffect(() => {
-    carregarApiKey();
+    carregarApiKeys();
+    carregarWebhookCadastro();
     carregarLogs();
     carregarAsaasKey();
     carregarTolerancia();
-  }, [carregarApiKey, carregarLogs, carregarAsaasKey, carregarTolerancia]);
+  }, [carregarApiKeys, carregarWebhookCadastro, carregarLogs, carregarAsaasKey, carregarTolerancia]);
 
-  async function handleRegenerar() {
-    setRegenerando(true);
-    setErroChave("");
+  async function handleCriarChave() {
+    if (!novoNomeChave.trim()) return;
+    setCriandoChave(true);
+    setErroChaves("");
     try {
-      const data = await regenerarApiKey();
-      setNovaChave(data.api_key);
-      setConfirmandoRegenerar(false);
-      await carregarApiKey();
+      const nova = await criarApiKey(novoNomeChave.trim());
+      setChaveRevelada(nova);
+      setNovoNomeChave("");
+      await carregarApiKeys();
     } catch (err) {
-      setErroChave(err instanceof ApiError ? err.message : "Não foi possível regenerar a API key.");
+      setErroChaves(err instanceof ApiError ? err.message : "Não foi possível gerar a nova chave.");
     } finally {
-      setRegenerando(false);
+      setCriandoChave(false);
+    }
+  }
+
+  async function handleRevogar(id) {
+    setRevogandoId(id);
+    setErroChaves("");
+    try {
+      await revogarApiKey(id);
+      setConfirmandoRevogarId(null);
+      await carregarApiKeys();
+    } catch (err) {
+      setErroChaves(err instanceof ApiError ? err.message : "Não foi possível revogar a chave.");
+    } finally {
+      setRevogandoId(null);
     }
   }
 
   async function handleCopiar() {
-    if (!novaChave) return;
+    if (!chaveRevelada?.chave) return;
     try {
-      await navigator.clipboard.writeText(novaChave);
+      await navigator.clipboard.writeText(chaveRevelada.chave);
       setCopiado(true);
       setTimeout(() => setCopiado(false), 2000);
     } catch {
@@ -132,8 +177,27 @@ export default function ConfiguracoesPage() {
   }
 
   function fecharRevelacao() {
-    setNovaChave(null);
+    setChaveRevelada(null);
     setCopiado(false);
+  }
+
+  async function handleSalvarWebhookCadastro() {
+    if (!novoWebhookCadastro.trim()) return;
+    setSalvandoWebhookCadastro(true);
+    setErroWebhookCadastro("");
+    setWebhookCadastroSalvo(false);
+    try {
+      const data = await atualizarWebhookCadastroUrl(novoWebhookCadastro.trim());
+      setWebhookCadastroUrl(data.n8n_webhook_cadastro_url);
+      setWebhookCadastroSalvo(true);
+      setTimeout(() => setWebhookCadastroSalvo(false), 2500);
+    } catch (err) {
+      setErroWebhookCadastro(
+        err instanceof ApiError ? err.message : "Não foi possível salvar a URL do webhook."
+      );
+    } finally {
+      setSalvandoWebhookCadastro(false);
+    }
   }
 
   async function handleSalvarAsaasChave() {
@@ -187,75 +251,180 @@ export default function ConfiguracoesPage() {
         </p>
       </div>
 
-      {/* Chave de API */}
+      {/* Chaves de API */}
       <section className="rounded-2xl border border-border-soft bg-surface p-5 shadow-lg shadow-black/20">
         <div className="flex items-center gap-3">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
             <IconKey className="h-4.5 w-4.5" />
           </span>
-          <h3 className="text-sm font-semibold text-foreground">Chave de API</h3>
+          <h3 className="text-sm font-semibold text-foreground">Chaves de API</h3>
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          Usada por integrações externas (ex.: n8n) para autenticar chamadas em{" "}
+          Usadas por integrações externas (ex.: n8n) para autenticar chamadas em{" "}
           <code className="rounded bg-surface-elevated px-1 py-0.5 font-mono text-[11px]">
             POST /api/sync
           </code>{" "}
-          e demais endpoints protegidos.
+          e demais endpoints protegidos. Gere uma chave por integração para poder revogar uma sem
+          derrubar as outras.
         </p>
 
-        {erroChave && (
+        {erroChaves && (
           <div className="mt-3">
-            <ErrorBanner message={erroChave} onRetry={carregarApiKey} />
+            <ErrorBanner message={erroChaves} onRetry={carregarApiKeys} />
           </div>
         )}
 
-        <div className="mt-4 flex w-full min-w-0 items-center gap-3">
-          <code
-            className="scrollbar-thin block min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 font-mono text-sm text-foreground"
-            title={apiKeyMascarada || undefined}
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+          <input
+            type="text"
+            value={novoNomeChave}
+            onChange={(e) => setNovoNomeChave(e.target.value)}
+            placeholder="Nome da chave (ex.: n8n - Sync Cobrança)"
+            disabled={criandoChave}
+            className="w-full min-w-0 flex-1 rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          <button
+            type="button"
+            onClick={handleCriarChave}
+            disabled={!novoNomeChave.trim() || criandoChave}
+            className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {carregandoChave ? <Spinner className="h-4 w-4" /> : apiKeyMascarada || "—"}
-          </code>
+            {criandoChave && <Spinner className="h-3.5 w-3.5" />}
+            Gerar nova chave
+          </button>
         </div>
 
-        <div className="mt-4">
-          {!confirmandoRegenerar ? (
-            <button
-              type="button"
-              onClick={() => setConfirmandoRegenerar(true)}
-              className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover"
-            >
-              Regenerar API Key
-            </button>
-          ) : (
-            <div className="space-y-3 rounded-xl border border-status-yellow/40 bg-status-yellow/10 p-4">
-              <p className="text-sm text-foreground">
-                Isso vai gerar uma chave nova e <strong>invalidar a chave atual imediatamente</strong>.
-                Qualquer integração ativa (ex.: automações no n8n) vai parar de funcionar até ser
-                atualizada com a nova chave. Tem certeza?
-              </p>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setConfirmandoRegenerar(false)}
-                  disabled={regenerando}
-                  className="rounded-lg px-3.5 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRegenerar}
-                  disabled={regenerando}
-                  className="flex items-center gap-2 rounded-lg bg-status-yellow px-3.5 py-2 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {regenerando && <Spinner className="h-3.5 w-3.5" />}
-                  Confirmar regeneração
-                </button>
-              </div>
+        <div className="mt-4 space-y-2">
+          {carregandoChaves ? (
+            <div className="flex justify-center py-6">
+              <Spinner className="h-5 w-5" />
             </div>
+          ) : apiKeys.length === 0 ? (
+            <p className="py-4 text-center text-xs text-muted-foreground">Nenhuma chave cadastrada ainda.</p>
+          ) : (
+            apiKeys.map((chave) => (
+              <div
+                key={chave.id}
+                className={`rounded-xl border p-3.5 ${
+                  chave.ativa ? "border-border-soft bg-surface-elevated" : "border-border-soft/60 bg-surface-elevated/40 opacity-70"
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-foreground">{chave.nome}</span>
+                      {chave.ativa ? (
+                        <span className="inline-flex items-center rounded-full bg-status-green/15 px-2 py-0.5 text-[11px] font-medium text-status-green">
+                          Ativa
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-full bg-status-red/15 px-2 py-0.5 text-[11px] font-medium text-status-red">
+                          Revogada
+                        </span>
+                      )}
+                    </div>
+                    <code className="mt-1 block break-all font-mono text-xs text-muted-foreground">
+                      {chave.chave_mascarada}
+                    </code>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Criada em {formatDateTime(chave.criada_em)}
+                      {chave.ultimo_uso_em
+                        ? ` · Último uso em ${formatDateTime(chave.ultimo_uso_em)}`
+                        : " · Nunca usada"}
+                    </p>
+                  </div>
+
+                  {chave.ativa &&
+                    (confirmandoRevogarId === chave.id ? (
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmandoRevogarId(null)}
+                          disabled={revogandoId === chave.id}
+                          className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRevogar(chave.id)}
+                          disabled={revogandoId === chave.id}
+                          className="flex items-center gap-1.5 rounded-lg bg-status-red px-3 py-1.5 text-xs font-semibold text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {revogandoId === chave.id && <Spinner className="h-3 w-3" />}
+                          Confirmar
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmandoRevogarId(chave.id)}
+                        className="shrink-0 rounded-lg border border-status-red/40 px-3 py-1.5 text-xs font-medium text-status-red transition-colors hover:bg-status-red/10"
+                      >
+                        Revogar
+                      </button>
+                    ))}
+                </div>
+              </div>
+            ))
           )}
         </div>
+      </section>
+
+      {/* Webhook de Cadastro/Faturamento */}
+      <section className="rounded-2xl border border-border-soft bg-surface p-5 shadow-lg shadow-black/20">
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+            <IconKey className="h-4.5 w-4.5" />
+          </span>
+          <h3 className="text-sm font-semibold text-foreground">Webhook de Cadastro/Faturamento</h3>
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          URL do fluxo do n8n chamada por{" "}
+          <code className="rounded bg-surface-elevated px-1 py-0.5 font-mono text-[11px]">
+            POST /api/cadastros
+          </code>{" "}
+          (tela{" "}
+          <Link href="/cadastro" className="text-accent hover:underline">
+            Cadastro
+          </Link>
+          ) para criar cliente/cobrança no Bling e no Asaas.
+        </p>
+
+        {erroWebhookCadastro && (
+          <div className="mt-3">
+            <ErrorBanner message={erroWebhookCadastro} onRetry={carregarWebhookCadastro} />
+          </div>
+        )}
+
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+          <input
+            type="url"
+            value={novoWebhookCadastro}
+            onChange={(e) => setNovoWebhookCadastro(e.target.value)}
+            placeholder="https://..."
+            disabled={carregandoWebhookCadastro || salvandoWebhookCadastro}
+            className="w-full min-w-0 flex-1 rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 font-mono text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          <button
+            type="button"
+            onClick={handleSalvarWebhookCadastro}
+            disabled={!novoWebhookCadastro.trim() || salvandoWebhookCadastro || carregandoWebhookCadastro}
+            className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {salvandoWebhookCadastro && <Spinner className="h-3.5 w-3.5" />}
+            Salvar
+          </button>
+        </div>
+
+        {!carregandoWebhookCadastro && !webhookCadastroUrl && (
+          <p className="mt-2 text-xs text-status-yellow">
+            Ainda não configurada — o envio de cadastros vai falhar até uma URL ser salva.
+          </p>
+        )}
+        {webhookCadastroSalvo && (
+          <span className="mt-2 block text-xs font-medium text-status-green">Salvo com sucesso.</span>
+        )}
       </section>
 
       {/* Chave de API do Asaas */}
@@ -283,7 +452,7 @@ export default function ConfiguracoesPage() {
 
         <div className="mt-4 flex w-full min-w-0 items-center gap-3">
           <code
-            className="scrollbar-thin block min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 font-mono text-sm text-foreground"
+            className="block min-w-0 flex-1 break-all rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 font-mono text-sm text-foreground"
             title={asaasKeyMascarada || undefined}
           >
             {carregandoAsaasKey ? <Spinner className="h-4 w-4" /> : asaasKeyMascarada || "Não configurada"}
@@ -442,7 +611,7 @@ export default function ConfiguracoesPage() {
       </section>
 
       {/* Modal de revelação da nova chave */}
-      {novaChave && (
+      {chaveRevelada && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
           onClick={fecharRevelacao}
@@ -451,16 +620,18 @@ export default function ConfiguracoesPage() {
             className="w-full max-w-lg rounded-3xl border border-border-soft bg-surface p-6 shadow-2xl shadow-black/50"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="font-display text-lg font-bold text-foreground">Nova API Key gerada</h3>
+            <h3 className="font-display text-lg font-bold text-foreground">
+              Chave &ldquo;{chaveRevelada.nome}&rdquo; gerada
+            </h3>
             <p className="mt-2 text-sm text-muted-foreground">
               Guarde esta chave agora — por segurança, ela <strong>não será exibida completa
-              novamente</strong>. Atualize imediatamente qualquer sistema integrado (ex.: automações no
-              n8n) com o novo valor abaixo.
+              novamente</strong>. Atualize imediatamente o sistema integrado (ex.: automação no n8n)
+              com o novo valor abaixo.
             </p>
 
             <div className="mt-4 flex min-w-0 items-center gap-2">
-              <code className="scrollbar-thin block min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 font-mono text-xs text-foreground">
-                {novaChave}
+              <code className="block min-w-0 flex-1 break-all rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 font-mono text-xs text-foreground">
+                {chaveRevelada.chave}
               </code>
               <button
                 type="button"
