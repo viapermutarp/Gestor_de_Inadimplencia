@@ -140,6 +140,24 @@ async function setDiasTolerancia(dias) {
   return dias;
 }
 
+const CHAVE_DRIVE_PASTA_RAIZ_ID = 'drive_pasta_raiz_id';
+
+/**
+ * Id da pasta raiz no Google Drive dentro da qual as subpastas por
+ * Cadastro (nomeadas pelo campo "Nome da pasta") são criadas — ver
+ * src/services/drive.service.js e a geração automática de contratos em
+ * src/services/contratosGeracao.service.js. Sem fallback de variável de
+ * ambiente: se não estiver configurada, a geração de contratos é pulada
+ * de forma tratada (não derruba o envio do Cadastro em si).
+ */
+async function getDrivePastaRaizId() {
+  return getConfigValor(CHAVE_DRIVE_PASTA_RAIZ_ID);
+}
+
+async function setDrivePastaRaizId(id) {
+  return setConfigValor(CHAVE_DRIVE_PASTA_RAIZ_ID, id);
+}
+
 module.exports = {
   getApiKey,
   setApiKey,
@@ -158,4 +176,7 @@ module.exports = {
   getDiasTolerancia,
   setDiasTolerancia,
   CHAVE_DIAS_TOLERANCIA,
+  getDrivePastaRaizId,
+  setDrivePastaRaizId,
+  CHAVE_DRIVE_PASTA_RAIZ_ID,
 };

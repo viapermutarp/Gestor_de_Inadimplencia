@@ -9,6 +9,7 @@ const NAV_LINKS = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/inadimplencia", label: "Taxa de Inadimplência %" },
   { href: "/cadastro", label: "Cadastro" },
+  { href: "/contratos", label: "Contratos" },
   { href: "/configuracoes", label: "Configurações" },
 ];
 

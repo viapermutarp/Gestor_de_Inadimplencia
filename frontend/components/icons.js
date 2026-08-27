@@ -232,3 +232,21 @@ export function IconTag({ className = "h-5 w-5" }) {
     </svg>
   );
 }
+
+export function IconFileText({ className = "h-5 w-5" }) {
+  return (
+    <svg {...base} className={className}>
+      <path d="M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" />
+      <path d="M14 3v4h4" />
+      <path d="M9 13h6M9 16.5h6M9 9.5h2" />
+    </svg>
+  );
+}
+
+export function IconPlus({ className = "h-5 w-5" }) {
+  return (
+    <svg {...base} className={className}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}

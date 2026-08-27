@@ -346,3 +346,50 @@ export function criarExclusao({ asaasPaymentId, motivo }) {
 export function removerExclusao(id) {
   return request(`/api/inadimplencia/exclusoes/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
+
+/**
+ * GET /api/contratos — lista todos os modelos de contrato (ativos e
+ * inativos), mais recentes primeiro. `ativo` (opcional): true|false, pra
+ * filtrar — a tela de Cadastro usa `{ ativo: true }` em "Contratos a gerar".
+ */
+export function listarContratos({ ativo } = {}) {
+  const params = new URLSearchParams();
+  if (ativo !== undefined) params.set("ativo", String(ativo));
+  const query = params.toString();
+  return request(`/api/contratos${query ? `?${query}` : ""}`);
+}
+
+export function getContrato(id) {
+  return request(`/api/contratos/${encodeURIComponent(id)}`);
+}
+
+/** POST /api/contratos — body { nome, tipo: "TERMO"|"ADITIVO", conteudo }. */
+export function criarContrato({ nome, tipo, conteudo }) {
+  return request("/api/contratos", { method: "POST", body: { nome, tipo, conteudo } });
+}
+
+/** PATCH /api/contratos/:id — body: qualquer subconjunto de { nome, tipo, conteudo, ativo }. */
+export function atualizarContrato(id, dados) {
+  return request(`/api/contratos/${encodeURIComponent(id)}`, { method: "PATCH", body: dados });
+}
+
+/** DELETE /api/contratos/:id — soft-delete (ativo: false), nunca remove de verdade. */
+export function removerContrato(id) {
+  return request(`/api/contratos/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/**
+ * GET /api/config/drive-pasta-raiz — { drive_pasta_raiz_id }, null quando
+ * ainda não configurada.
+ */
+export function getDrivePastaRaiz() {
+  return request("/api/config/drive-pasta-raiz");
+}
+
+/** PATCH /api/config/drive-pasta-raiz — body { drive_pasta_raiz_id }. Aceita id puro ou link completo da pasta. */
+export function atualizarDrivePastaRaiz(valor) {
+  return request("/api/config/drive-pasta-raiz", {
+    method: "PATCH",
+    body: { drive_pasta_raiz_id: valor },
+  });
+}

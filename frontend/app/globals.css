@@ -131,3 +131,55 @@ input:-webkit-autofill:focus {
   background: var(--primary);
   border-radius: 9999px;
 }
+
+/* Conteúdo do editor rich text (Tiptap) da tela de Contratos — sem plugin
+   de typography (não faz parte da stack), então os estilos de heading/
+   negrito/lista numerada do próprio HTML editável vão aqui. */
+.prose-contrato {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--foreground);
+}
+
+.prose-contrato p {
+  margin: 0.75em 0;
+}
+
+.prose-contrato h1,
+.prose-contrato h2,
+.prose-contrato h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--foreground);
+  margin: 1em 0 0.5em;
+}
+
+.prose-contrato h1 {
+  font-size: 1.375rem;
+}
+
+.prose-contrato h2 {
+  font-size: 1.125rem;
+}
+
+.prose-contrato h3 {
+  font-size: 1rem;
+}
+
+.prose-contrato strong {
+  font-weight: 700;
+}
+
+.prose-contrato ol {
+  list-style: decimal;
+  padding-left: 1.5em;
+  margin: 0.75em 0;
+}
+
+.prose-contrato li {
+  margin: 0.25em 0;
+}
+
+.prose-contrato:focus-within {
+  outline: none;
+}

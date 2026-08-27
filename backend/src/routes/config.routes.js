@@ -15,6 +15,8 @@ router.get('/config/palavras-excluidas', auth, ctrl.obterPalavrasExcluidas);
 router.patch('/config/palavras-excluidas', auth, ctrl.atualizarPalavrasExcluidas);
 router.get('/config/tolerancia-dias', auth, ctrl.obterToleranciaDias);
 router.patch('/config/tolerancia-dias', auth, ctrl.atualizarToleranciaDias);
+router.get('/config/drive-pasta-raiz', auth, ctrl.obterDrivePastaRaiz);
+router.patch('/config/drive-pasta-raiz', auth, ctrl.atualizarDrivePastaRaiz);
 router.get('/config/sync-log', auth, ctrl.syncLog);
 
 module.exports = router;

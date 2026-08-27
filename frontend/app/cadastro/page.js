@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { criarCadastro, ApiError } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { criarCadastro, listarContratos, ApiError } from "@/lib/api";
 import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
 import DatePicker from "@/components/DatePicker";
@@ -45,7 +45,16 @@ const ESTADO_INICIAL = {
   numeroParcelas: "1",
   dataVencimento: "",
   observacoes: "",
+  nomePasta: "",
+  creditosVps: "0",
+  modelosContratoIds: [],
 };
+
+const OPCOES_CREDITOS_VPS = [
+  { valor: "0", label: "Nenhum" },
+  { valor: "2000", label: "2.000" },
+  { valor: "8000", label: "8.000" },
+];
 
 const INPUT =
   "w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-60";
@@ -92,12 +101,36 @@ export default function CadastroPage() {
   // do lado de lá, não só porque a chamada HTTP ao nosso backend voltou 201.
   const [linkPagamento, setLinkPagamento] = useState("");
 
+  // Modelos de contrato ativos, pra montar a lista de checkboxes de
+  // "Contratos a gerar" — carregados uma vez ao abrir a tela.
+  const [modelosDisponiveis, setModelosDisponiveis] = useState([]);
+  const [carregandoModelos, setCarregandoModelos] = useState(true);
+
+  useEffect(() => {
+    listarContratos({ ativo: true })
+      .then((dados) => setModelosDisponiveis(Array.isArray(dados) ? dados : []))
+      .catch(() => setModelosDisponiveis([]))
+      .finally(() => setCarregandoModelos(false));
+  }, []);
+
   function atualizarCampo(campo, valor) {
     setForm((prev) => ({ ...prev, [campo]: valor }));
   }
 
   function handleTipoPessoa(tipo) {
     setForm((prev) => ({ ...prev, tipoPessoa: tipo, cnpjCpf: "" }));
+  }
+
+  function toggleModeloContrato(id) {
+    setForm((prev) => {
+      const jaSelecionado = prev.modelosContratoIds.includes(id);
+      return {
+        ...prev,
+        modelosContratoIds: jaSelecionado
+          ? prev.modelosContratoIds.filter((x) => x !== id)
+          : [...prev.modelosContratoIds, id],
+      };
+    });
   }
 
   function limparFormulario() {
@@ -153,6 +186,12 @@ export default function CadastroPage() {
       "Data Vencimento": form.dataVencimento,
       "Observações": form.observacoes.trim(),
       "Desconto Parcela": centavosParaDecimalString(descontoParcelaCentavos),
+      "Créditos VP$": form.creditosVps,
+      // "nomePasta"/"modelosContratoIds" são metadados internos da geração
+      // de contratos (backend os separa do restante do payload antes de
+      // repassar ao n8n — nunca chegam lá).
+      nomePasta: form.nomePasta.trim(),
+      modelosContratoIds: form.modelosContratoIds,
     };
 
     setEnviando(true);
@@ -423,6 +462,63 @@ export default function CadastroPage() {
                 </option>
               ))}
             </select>
+          </Campo>
+
+          <Campo label="Nome da pasta" opcional>
+            <input
+              type="text"
+              className={INPUT}
+              value={form.nomePasta}
+              onChange={(e) => atualizarCampo("nomePasta", e.target.value)}
+              placeholder="ex.: Empresa XYZ Ltda"
+              disabled={enviando}
+            />
+          </Campo>
+
+          <Campo label="Créditos VP$" opcional>
+            <select
+              className={INPUT}
+              value={form.creditosVps}
+              onChange={(e) => atualizarCampo("creditosVps", e.target.value)}
+              disabled={enviando}
+            >
+              {OPCOES_CREDITOS_VPS.map((opcao) => (
+                <option key={opcao.valor} value={opcao.valor}>
+                  {opcao.label}
+                </option>
+              ))}
+            </select>
+          </Campo>
+
+          <Campo label="Contratos a gerar" opcional className="sm:col-span-2">
+            {carregandoModelos ? (
+              <div className="flex items-center gap-2 py-1 text-xs text-muted-foreground">
+                <Spinner className="h-3.5 w-3.5" />
+                Carregando modelos...
+              </div>
+            ) : modelosDisponiveis.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Nenhum modelo de contrato ativo cadastrado.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-x-5 gap-y-2">
+                {modelosDisponiveis.map((modelo) => (
+                  <label
+                    key={modelo.id}
+                    className="flex cursor-pointer items-center gap-2 text-sm text-foreground"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.modelosContratoIds.includes(modelo.id)}
+                      onChange={() => toggleModeloContrato(modelo.id)}
+                      disabled={enviando}
+                      className="h-4 w-4 rounded border-border-soft text-primary focus:ring-primary/40"
+                    />
+                    {modelo.nome}
+                  </label>
+                ))}
+              </div>
+            )}
           </Campo>
 
           <Campo label="Valor da Entrada" opcional>

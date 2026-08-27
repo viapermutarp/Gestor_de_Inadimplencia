@@ -6,6 +6,7 @@ Painel web da **Via Permuta** para controle de cobrança. Next.js (App Router) +
 
 - Next.js 16 (App Router, React 19)
 - Tailwind CSS v4
+- [Tiptap](https://tiptap.dev/) (`@tiptap/react` + `@tiptap/starter-kit`) — editor de texto rico usado na tela `/contratos`
 - Tema visual **Sinal** (skill frontend-design) — ver seção própria abaixo
 - Autenticação via JWT armazenado em `localStorage`
 
@@ -90,14 +91,20 @@ npm run start
   - **Identificação**: Tipo de Pessoa (toggle PF/PJ), Razão Social, Nome Fantasia, CNPJ/CPF (máscara dinâmica conforme o tipo selecionado — `000.000.000-00` para PF, `00.000.000/0000-00` para PJ).
   - **Endereço**: CEP (máscara `00000-000`), Endereço, Número, Complemento (opcional), Bairro, Cidade, UF (dropdown com as 27 siglas de estado).
   - **Contato**: Contato, Celular (máscara `(00) 00000-0000`/`(00) 0000-0000` conforme a quantidade de dígitos), E-mail (validado por formato antes do envio).
-  - **Faturamento**: Descrição do Serviço (dropdown travado nas 4 opções exatas exigidas pelo backend), Valor da Entrada (opcional, campo monetário R$), Número de Parcelas (dropdown 1x–12x), Valor Total, Data Vencimento (calendário customizado com navegação por mês, `components/DatePicker.js`), Observações (textarea) e Desconto Parcela (opcional, campo monetário).
+  - **Faturamento**: Descrição do Serviço (dropdown travado nas 4 opções exatas exigidas pelo backend), **Nome da pasta** (opcional, texto livre — nome da pasta do associado a ser criada no Google Drive), **Créditos VP$** (opcional, dropdown Nenhum/2.000/8.000), **Contratos a gerar** (opcional, checkboxes com os modelos de contrato **ativos** carregados de `GET /api/contratos?ativo=true`), Valor da Entrada (opcional, campo monetário R$), Número de Parcelas (dropdown 1x–12x), Valor Total, Data Vencimento (calendário customizado com navegação por mês, `components/DatePicker.js`), Observações (textarea) e Desconto Parcela (opcional, campo monetário).
+
+  **"Créditos VP$" é um campo novo, sem pedido explícito** — adicionado porque a função `creditosVps()` do backend (usada na geração automática de contratos) só aceita os valores 8000/2000/0, e nenhum campo existente do formulário mapeava pra isso; ver "Premissas assumidas" no README do backend.
 
   Os campos monetários (`Valor da Entrada`, `Valor Total`, `Desconto Parcela`) usam uma máscara "de digitação": o estado guarda o valor em centavos e a exibição é formatada como moeda BRL a cada tecla (`lib/mascaras.js`); no envio, são convertidos para string decimal (`"1500.00"`), igual ao formato usado nos testes do backend.
 
   Depois de `POST /api/cadastros` responder, quem decide o que mostrar é o campo `status` do corpo, não o status HTTP (que é sempre `201` — ver README do backend): `status: "enviado"` mostra a mensagem de sucesso e, se `link_pagamento` vier preenchido, um link clicável pro pagamento gerado pelo n8n (Asaas); `status: "erro"` mostra o motivo real vindo de `resposta_n8n` (timeout, CPF inválido, cliente já existe no Bling etc.) em vez de assumir sucesso — o formulário só é limpo quando `status` é `"enviado"`. `criarCadastro` usa um timeout de 65s no fetch (o backend espera até 60s pelo n8n, que encadeia Bling + Asaas com retries).
 
   Validação client-side antes do `POST /api/cadastros`, espelhando exatamente as regras do backend: `CNPJ/CPF` obrigatório, `Razão Social` **ou** `Contato` obrigatório, `Descrição do Serviço` obrigatório, `Valor Total` obrigatório, e `E-mail` (quando preenchido) precisa ter formato válido — erros aparecem num banner listando cada mensagem, sem chegar a enviar a requisição. O payload é montado com as chaves **exatamente** como o backend espera (em português, com acento/espaço: `"Tipo de Pessoa"`, `"Razão Social"`, `"CNPJ/CPF"`, `"Descrição do Serviço"` etc. — ver `criarCadastro` em `lib/api.js`). Após um envio bem-sucedido, um banner verde de confirmação aparece e o formulário inteiro é limpo para o próximo cadastro; erros de rede/API (ex.: 400 de validação vindo do backend) aparecem no `ErrorBanner` padrão do app.
-- **`/configuracoes`** — também protegida, acessível pelo link "Configurações" no cabeçalho. Mostra a API key mascarada (`GET /api/config/api-key`), botão para regenerá-la com confirmação (`POST /api/config/api-key/regenerar`) que revela a chave completa uma única vez num modal com botão de copiar e aviso para atualizar integrações (ex.: n8n), uma seção para a **chave de API do Asaas** (campo mascarado + input + botão "Salvar", mesmo padrão visual da chave interna — mas sem o fluxo de regeneração aleatória, já que essa chave é colada manualmente pelo usuário, vinda do painel do Asaas; usa `GET`/`PATCH /api/config/asaas-key`, com link direto para a tela `/inadimplencia`), e uma tabela com o log das últimas 20 sincronizações (`GET /api/config/sync-log`).
+- **`/contratos`** — protegida, acessível pelo link "Contratos" no cabeçalho (entre Cadastro e Configurações). CRUD dos modelos usados na geração automática de contratos:
+  - **Lista**: nome, badge de tipo (Termo de Associação/Aditivo Contratual) e badge Ativo/Inativo, ordenados mais recentes primeiro (`GET /api/contratos`, sem filtro — traz ativos e inativos).
+  - **Novo modelo / Editar**: formulário inline com Nome (texto), Tipo (select) e Conteúdo — um editor de texto rico (`components/RichTextEditor.js`, [Tiptap](https://tiptap.dev/)) com negrito, títulos (H1/H2/H3) e lista numerada, exportando/importando HTML puro. Um banner amarelo avisa que as variáveis devem ser digitadas como texto simples no formato `{{Nome Da Variável}}` **sem formatação parcial** (ex.: não deixar só `{{Razão` em negrito) — a substituição no backend procura a chave inteira dentro da tag HTML e não encontra se ela for cortada por uma tag de formatação no meio.
+  - **Desativar/Reativar**: soft-delete only (`PATCH { ativo: false }`/`{ ativo: true }` via `DELETE`/`PATCH /api/contratos/:id`) — nunca remove de verdade, pra não quebrar cadastros antigos que referenciam esse modelo (`modelosContratoIds`). Desativar tem confirmação em duas etapas, mesmo padrão de "Revogar" em Chaves de API.
+- **`/configuracoes`** — também protegida, acessível pelo link "Configurações" no cabeçalho. Mostra a API key mascarada (`GET /api/config/api-key`), botão para regenerá-la com confirmação (`POST /api/config/api-key/regenerar`) que revela a chave completa uma única vez num modal com botão de copiar e aviso para atualizar integrações (ex.: n8n), uma seção para a **chave de API do Asaas** (campo mascarado + input + botão "Salvar", mesmo padrão visual da chave interna — mas sem o fluxo de regeneração aleatória, já que essa chave é colada manualmente pelo usuário, vinda do painel do Asaas; usa `GET`/`PATCH /api/config/asaas-key`, com link direto para a tela `/inadimplencia`), um card **"Pasta raiz do Google Drive"** (input + botão "Salvar", aceita ID puro ou link completo da pasta — `GET`/`PATCH /api/config/drive-pasta-raiz` — usada pela geração automática de contratos pra saber onde criar a pasta de cada associado), e uma tabela com o log das últimas 20 sincronizações (`GET /api/config/sync-log`).
 
 ### Faixas de cor por atraso (cores fixas, fora da paleta do tema)
 
@@ -136,11 +143,13 @@ app/
   inadimplencia/page.js    # Taxa de Inadimplência: filtros, cards, gráfico de faixas, top devedores
   cadastro/layout.js       # guarda de autenticação + cabeçalho
   cadastro/page.js         # formulário de Cadastro/Faturamento (POST /api/cadastros)
+  contratos/layout.js      # guarda de autenticação + cabeçalho
+  contratos/page.js        # CRUD de modelos de contrato (GET/POST/PATCH/DELETE /api/contratos)
   configuracoes/layout.js  # guarda de autenticação + cabeçalho
-  configuracoes/page.js    # API key mascarada/regeneração, chave do Asaas, log de sincronizações
-  globals.css              # tema Sinal + cores semânticas de atraso
+  configuracoes/page.js    # API key mascarada/regeneração, chave do Asaas, pasta raiz do Drive, log de sincronizações
+  globals.css              # tema Sinal + cores semânticas de atraso + estilos .prose-contrato (conteúdo dos modelos de contrato)
 components/
-  AppHeader.js              # cabeçalho com navegação (Dashboard / Taxa de Inadimplência % / Cadastro / Configurações) + Sair
+  AppHeader.js              # cabeçalho com navegação (Dashboard / Taxa de Inadimplência % / Cadastro / Contratos / Configurações) + Sair
   RequireAuth.js            # wrapper de proteção de rota, usado pelos layouts
   ResumoCards.js            # cards de resumo do dashboard (consome GET /api/associados/resumo direto)
   ResumoInadimplenciaCards.js # cards de /inadimplencia, com a Taxa (%) em destaque visual maior
@@ -149,13 +158,14 @@ components/
   PaginacaoControles.js     # anterior/próxima, "Página X de Y", total de registros
   SemContatoIndicador.js    # ponto amarelo com tooltip, indicador de "sem contato recente"
   DatePicker.js              # calendário customizado com navegação por mês (usado em /cadastro e /inadimplencia)
+  RichTextEditor.js          # editor de texto rico (Tiptap) usado no Conteúdo dos modelos de contrato em /contratos
   icons.js                  # conjunto de ícones SVG inline (traço único, sem dependência externa)
   AssociadoDetalheModal.js
   NegociacaoToggle.js        # toggle genérico (negociação, bloqueio, jurídico)
   StatusAtrasoBadge.js
   ErrorBanner.js / Spinner.js
 lib/
-  api.js       # client HTTP (fetch) com Authorization: Bearer <token>; getAssociados aceita { emNegociacao, bloqueado, emJuridico, busca, page, limit }; getResumo aceita { busca }; criarCadastro(payload) faz POST /api/cadastros; getResumoInadimplencia({ vencDe, vencAte, renegociacao }) faz GET /api/inadimplencia/resumo; getAsaasKeyMascarada/atualizarAsaasKey(chave) fazem GET/PATCH /api/config/asaas-key
+  api.js       # client HTTP (fetch) com Authorization: Bearer <token>; getAssociados aceita { emNegociacao, bloqueado, emJuridico, busca, page, limit }; getResumo aceita { busca }; criarCadastro(payload) faz POST /api/cadastros; getResumoInadimplencia({ vencDe, vencAte, renegociacao }) faz GET /api/inadimplencia/resumo; getAsaasKeyMascarada/atualizarAsaasKey(chave) fazem GET/PATCH /api/config/asaas-key; listarContratos/getContrato/criarContrato/atualizarContrato/removerContrato fazem CRUD em /api/contratos; getDrivePastaRaiz/atualizarDrivePastaRaiz fazem GET/PATCH /api/config/drive-pasta-raiz
   auth.js      # leitura/gravação do token em localStorage
   atraso.js    # cálculo da cobrança mais crítica, soma em aberto, faixas de cor (a ordenação em si é feita pelo backend, não mais aqui)
   contato.js   # indicador "sem contato recente" e formatação de "Última observação: há Xd"
@@ -233,3 +243,11 @@ Três ajustes na tela `/configuracoes`, acompanhando a troca do backend de uma A
 - **Não testado neste ambiente** (mesma limitação de Chromium headless de sempre): interação real de UI — digitar o nome e clicar em "Gerar nova chave", confirmar a revogação em duas etapas, copiar a chave revelada no modal, e salvar a URL do webhook. A lógica de cada handler foi revisada manualmente contra o novo contrato de `lib/api.js`/backend; recomendamos um teste manual (`npm run dev`) contra a API real antes do deploy, cobrindo: gerar uma chave nova e confirmar que ela autentica em `POST /api/sync`; revogar e confirmar 401; e salvar a URL do webhook e confirmar que `GET /api/config/webhook-cadastro` reflete o novo valor.
 
 **Cadastro — link de pagamento e erro real do n8n (`app/cadastro/page.js`)** — `npm run lint` e `npm run build` rodados de ponta a ponta depois da mudança, ambos limpos. Comportamento validado por leitura de código (o backend já foi testado com Postgres real + mock do n8n cobrindo os mesmos cenários — ver README do backend): `status: "enviado"` com `link_pagamento` mostra o link clicável no banner de sucesso; `status: "erro"` mostra `resposta_n8n` no `ErrorBanner` em vez de assumir sucesso, e **não** limpa o formulário (permite corrigir e reenviar). `criarCadastro` passou a usar `timeoutMs: 65000`.
+
+### Geração automática de contratos: nova aba `/contratos`, campos novos em `/cadastro` e card da pasta raiz do Drive em `/configuracoes`
+
+- **Nova tela `/contratos`**: CRUD completo dos modelos de contrato, incluindo o editor de texto rico (`components/RichTextEditor.js`, Tiptap com `StarterKit` — negrito, H1/H2/H3, lista numerada) e o fluxo de soft-delete (Desativar/Reativar) — ver seção "Telas" acima para o comportamento detalhado.
+- **`app/cadastro/page.js`**: adicionados os 3 campos novos ("Nome da pasta", "Créditos VP$", "Contratos a gerar") logo após "Descrição do Serviço", antes de "Valor da Entrada". "Contratos a gerar" carrega os modelos ativos uma vez ao montar a tela (`listarContratos({ ativo: true })`) e mostra um spinner curto enquanto isso; se a lista vier vazia, mostra "Nenhum modelo de contrato ativo cadastrado." em vez de uma lista de checkboxes vazia. O payload de `POST /api/cadastros` passou a incluir `"Créditos VP$"` (no dicionário de variáveis, junto dos demais campos em português) e `nomePasta`/`modelosContratoIds` (metadados internos — o backend os separa do resto do payload antes de repassar ao n8n, nunca chegam lá).
+- **`app/configuracoes/page.js`**: novo card "Pasta raiz do Google Drive", mesmo padrão visual/de estado do card "Webhook de Cadastro/Faturamento" (input + botão Salvar, aviso amarelo quando ainda não configurada, mensagem "Salvo com sucesso.").
+- `npm run lint` e `npm run build` (cópia fresh em `/tmp`, `npm install` limpo) — sem erros; as 8 rotas (`/`, `/cadastro`, `/configuracoes`, `/contratos`, `/dashboard`, `/inadimplencia`, `/login`, `/_not-found`) prerenderizam normalmente. Um warning de eslint (`Unused eslint-disable directive`) apareceu no `RichTextEditor.js` numa primeira passada — a lista de dependências do `useEffect` de sincronização já cobria tudo que o hook precisava, então o comentário `eslint-disable-next-line` era desnecessário; removido, lint voltou a ficar 100% limpo (0 erros, 0 warnings).
+- **Não testado neste ambiente** (mesma limitação de Chromium headless de sempre): interação real de UI — digitar/formatar texto no editor Tiptap (negrito, títulos, lista numerada) e conferir o HTML exportado, marcar/desmarcar os checkboxes de "Contratos a gerar", desativar e depois reativar um modelo, e salvar a pasta raiz do Drive colando um link completo (em vez do ID puro) e conferir que o backend extrai o ID corretamente. A lógica de cada uma dessas interações foi revisada manualmente e o CRUD/geração do lado do backend já foi validado com Postgres real + mock do Drive (ver README do backend). Recomendamos um teste manual completo (`npm run dev`) antes do deploy: criar um modelo de contrato com variáveis `{{...}}`, selecioná-lo num Cadastro novo, e conferir que o .docx sobe pro Drive com os valores certos substituídos.

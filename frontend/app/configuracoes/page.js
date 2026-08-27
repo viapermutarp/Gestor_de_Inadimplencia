@@ -13,12 +13,14 @@ import {
   atualizarWebhookCadastroUrl,
   getToleranciaDias,
   atualizarToleranciaDias,
+  getDrivePastaRaiz,
+  atualizarDrivePastaRaiz,
   ApiError,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
-import { IconKey, IconHistory, IconClock } from "@/components/icons";
+import { IconKey, IconHistory, IconClock, IconFileText } from "@/components/icons";
 
 export default function ConfiguracoesPage() {
   const [apiKeys, setApiKeys] = useState([]);
@@ -57,6 +59,13 @@ export default function ConfiguracoesPage() {
   const [toleranciaInput, setToleranciaInput] = useState("");
   const [salvandoTolerancia, setSalvandoTolerancia] = useState(false);
   const [toleranciaSalva, setToleranciaSalva] = useState(false);
+
+  const [drivePastaRaizId, setDrivePastaRaizId] = useState(null);
+  const [carregandoDrivePastaRaiz, setCarregandoDrivePastaRaiz] = useState(true);
+  const [erroDrivePastaRaiz, setErroDrivePastaRaiz] = useState("");
+  const [novoDrivePastaRaiz, setNovoDrivePastaRaiz] = useState("");
+  const [salvandoDrivePastaRaiz, setSalvandoDrivePastaRaiz] = useState(false);
+  const [drivePastaRaizSalva, setDrivePastaRaizSalva] = useState(false);
 
   const carregarApiKeys = useCallback(async () => {
     setCarregandoChaves(true);
@@ -127,13 +136,37 @@ export default function ConfiguracoesPage() {
     }
   }, []);
 
+  const carregarDrivePastaRaiz = useCallback(async () => {
+    setCarregandoDrivePastaRaiz(true);
+    setErroDrivePastaRaiz("");
+    try {
+      const data = await getDrivePastaRaiz();
+      setDrivePastaRaizId(data.drive_pasta_raiz_id);
+      setNovoDrivePastaRaiz(data.drive_pasta_raiz_id || "");
+    } catch (err) {
+      setErroDrivePastaRaiz(
+        err instanceof ApiError ? err.message : "Erro ao carregar a pasta raiz do Drive."
+      );
+    } finally {
+      setCarregandoDrivePastaRaiz(false);
+    }
+  }, []);
+
   useEffect(() => {
     carregarApiKeys();
     carregarWebhookCadastro();
     carregarLogs();
     carregarAsaasKey();
     carregarTolerancia();
-  }, [carregarApiKeys, carregarWebhookCadastro, carregarLogs, carregarAsaasKey, carregarTolerancia]);
+    carregarDrivePastaRaiz();
+  }, [
+    carregarApiKeys,
+    carregarWebhookCadastro,
+    carregarLogs,
+    carregarAsaasKey,
+    carregarTolerancia,
+    carregarDrivePastaRaiz,
+  ]);
 
   async function handleCriarChave() {
     if (!novoNomeChave.trim()) return;
@@ -197,6 +230,26 @@ export default function ConfiguracoesPage() {
       );
     } finally {
       setSalvandoWebhookCadastro(false);
+    }
+  }
+
+  async function handleSalvarDrivePastaRaiz() {
+    if (!novoDrivePastaRaiz.trim()) return;
+    setSalvandoDrivePastaRaiz(true);
+    setErroDrivePastaRaiz("");
+    setDrivePastaRaizSalva(false);
+    try {
+      const data = await atualizarDrivePastaRaiz(novoDrivePastaRaiz.trim());
+      setDrivePastaRaizId(data.drive_pasta_raiz_id);
+      setNovoDrivePastaRaiz(data.drive_pasta_raiz_id || "");
+      setDrivePastaRaizSalva(true);
+      setTimeout(() => setDrivePastaRaizSalva(false), 2500);
+    } catch (err) {
+      setErroDrivePastaRaiz(
+        err instanceof ApiError ? err.message : "Não foi possível salvar a pasta raiz do Drive."
+      );
+    } finally {
+      setSalvandoDrivePastaRaiz(false);
     }
   }
 
@@ -423,6 +476,63 @@ export default function ConfiguracoesPage() {
           </p>
         )}
         {webhookCadastroSalvo && (
+          <span className="mt-2 block text-xs font-medium text-status-green">Salvo com sucesso.</span>
+        )}
+      </section>
+
+      {/* Pasta raiz do Google Drive */}
+      <section className="rounded-2xl border border-border-soft bg-surface p-5 shadow-lg shadow-black/20">
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+            <IconFileText className="h-4.5 w-4.5" />
+          </span>
+          <h3 className="text-sm font-semibold text-foreground">Pasta raiz do Google Drive</h3>
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Pasta-mãe onde ficam as pastas de cada associado. Usada na{" "}
+          <Link href="/cadastro" className="text-accent hover:underline">
+            geração automática de contratos
+          </Link>{" "}
+          para criar a pasta do associado e subir os .docx gerados a partir dos modelos em{" "}
+          <Link href="/contratos" className="text-accent hover:underline">
+            Contratos
+          </Link>
+          . Aceita o ID da pasta ou o link completo do Drive.
+        </p>
+
+        {erroDrivePastaRaiz && (
+          <div className="mt-3">
+            <ErrorBanner message={erroDrivePastaRaiz} onRetry={carregarDrivePastaRaiz} />
+          </div>
+        )}
+
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+          <input
+            type="text"
+            value={novoDrivePastaRaiz}
+            onChange={(e) => setNovoDrivePastaRaiz(e.target.value)}
+            placeholder="ID da pasta ou https://drive.google.com/drive/folders/..."
+            disabled={carregandoDrivePastaRaiz || salvandoDrivePastaRaiz}
+            className="w-full min-w-0 flex-1 rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 font-mono text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          <button
+            type="button"
+            onClick={handleSalvarDrivePastaRaiz}
+            disabled={!novoDrivePastaRaiz.trim() || salvandoDrivePastaRaiz || carregandoDrivePastaRaiz}
+            className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {salvandoDrivePastaRaiz && <Spinner className="h-3.5 w-3.5" />}
+            Salvar
+          </button>
+        </div>
+
+        {!carregandoDrivePastaRaiz && !drivePastaRaizId && (
+          <p className="mt-2 text-xs text-status-yellow">
+            Ainda não configurada — contratos com modelos selecionados não vão subir pro Drive até uma
+            pasta raiz ser salva.
+          </p>
+        )}
+        {drivePastaRaizSalva && (
           <span className="mt-2 block text-xs font-medium text-status-green">Salvo com sucesso.</span>
         )}
       </section>

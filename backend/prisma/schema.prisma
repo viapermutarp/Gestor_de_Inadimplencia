@@ -139,11 +139,48 @@ model CadastroEnviado {
   linkPagamento  String?  @map("link_pagamento")
   clienteAsaasId String?  @map("cliente_asaas_id")
   pedidoBlingId  String?  @map("pedido_bling_id")
+  /// Nome usado para a pasta criada no Google Drive (ver
+  /// src/services/contratos-geracao.service.js) — preenchido pelo campo
+  /// "Nome da pasta" do formulário de Cadastro, opcional.
+  nomePasta         String?  @map("nome_pasta")
+  /// Ids de ModeloContrato selecionados no formulário ("Contratos a
+  /// gerar") — snapshot do que foi escolhido no momento do envio; não é
+  /// afetado se o modelo referenciado for desativado depois (soft-delete).
+  modelosContratoIds String[] @map("modelos_contrato_ids")
+  /// Preenchido de forma assíncrona depois que a pasta é criada no Drive —
+  /// null enquanto a geração ainda não rodou ou se ela falhar.
+  pastaDriveId   String?  @map("pasta_drive_id")
+  /// Array de { modeloContratoId, nome, driveFileId, driveFileUrl } — um
+  /// item por contrato gerado com sucesso. Preenchido de forma assíncrona,
+  /// junto com pastaDriveId.
+  arquivosGerados Json?   @map("arquivos_gerados")
   criadoEm       DateTime @default(now()) @map("criado_em")
 
   @@index([criadoEm])
   @@index([status])
   @@map("cadastros_enviados")
+}
+
+/// Modelos de contrato (HTML rich-text com placeholders {{...}}) usados
+/// para gerar automaticamente documentos .docx ao salvar um Cadastro (ver
+/// tela /contratos e src/services/contratos-geracao.service.js). Nunca é
+/// hard-deletado (ver DELETE /api/contratos/:id) — só marcado
+/// ativo=false, pra não quebrar CadastroEnviado.modelosContratoIds de
+/// envios antigos que já referenciam esse modelo.
+model ModeloContrato {
+  id           String   @id @default(uuid())
+  nome         String
+  /// "TERMO" | "ADITIVO" — só pra organizar a listagem na tela /contratos.
+  tipo         String
+  /// HTML gerado pelo editor rich text (Tiptap), com placeholders no
+  /// formato {{Nome Da Variável}} como texto simples dentro do conteúdo.
+  conteudo     String   @db.Text
+  ativo        Boolean  @default(true)
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  @@index([ativo])
+  @@map("modelos_contrato")
 }
 
 /// Lista manual de cobranças do Asaas a excluir do cálculo de Taxa de

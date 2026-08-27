@@ -9,6 +9,8 @@ const {
   setPalavrasExcluidas,
   getDiasTolerancia,
   setDiasTolerancia,
+  getDrivePastaRaizId,
+  setDrivePastaRaizId,
 } = require('../services/config.service');
 const { listarChaves, criarChave, revogarChave } = require('../services/apiKeys.service');
 
@@ -231,6 +233,46 @@ exports.atualizarToleranciaDias = async (req, res, next) => {
     const salvo = await setDiasTolerancia(dias);
     cache.clear();
     res.json({ dias: salvo });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/config/drive-pasta-raiz
+ * Retorna o id vigente da pasta raiz do Google Drive usada pela geração
+ * automática de contratos (ver src/services/drive.service.js) —
+ * `drive_pasta_raiz_id: null` quando ainda não foi configurada.
+ */
+exports.obterDrivePastaRaiz = async (req, res, next) => {
+  try {
+    const id = await getDrivePastaRaizId();
+    res.json({ drive_pasta_raiz_id: id });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PATCH /api/config/drive-pasta-raiz
+ * Body: { "drive_pasta_raiz_id": "1a2B3c..." }
+ * Atualiza (cria ou substitui) o id da pasta raiz na tabela "configuracoes".
+ * Aceita tanto o id puro quanto o link completo da pasta
+ * (https://drive.google.com/drive/folders/<id>), extraindo o id nesse caso.
+ */
+exports.atualizarDrivePastaRaiz = async (req, res, next) => {
+  try {
+    const { drive_pasta_raiz_id: valor } = req.body || {};
+
+    if (typeof valor !== 'string' || valor.trim() === '') {
+      return res.status(400).json({ error: '"drive_pasta_raiz_id" é obrigatório.' });
+    }
+
+    const match = valor.trim().match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    const id = match ? match[1] : valor.trim();
+
+    const salvo = await setDrivePastaRaizId(id);
+    res.json({ drive_pasta_raiz_id: salvo });
   } catch (err) {
     next(err);
   }

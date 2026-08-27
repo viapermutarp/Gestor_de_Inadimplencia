@@ -1,5 +1,6 @@
 const prisma = require('../config/prisma');
 const { getWebhookCadastroUrl } = require('../services/config.service');
+const { gerarContratosParaCadastro } = require('../services/contratosGeracao.service');
 
 const LIMITE_PADRAO = 100;
 const LIMITE_MAXIMO = 100;
@@ -147,6 +148,10 @@ function serializeCadastro(cadastro) {
     link_pagamento: cadastro.linkPagamento,
     cliente_asaas_id: cadastro.clienteAsaasId,
     pedido_bling_id: cadastro.pedidoBlingId,
+    nome_pasta: cadastro.nomePasta,
+    modelos_contrato_ids: cadastro.modelosContratoIds,
+    pasta_drive_id: cadastro.pastaDriveId,
+    arquivos_gerados: cadastro.arquivosGerados,
     criado_em: cadastro.criadoEm,
   };
 }
@@ -172,18 +177,43 @@ function serializeCadastro(cadastro) {
  *   "status" do corpo (ver serializeCadastro), não o status HTTP. Assim o
  *   frontend sempre recebe uma resposta pra mostrar (sucesso com link, ou
  *   erro com o motivo), sem a chamada "travar" nem virar uma exceção.
+ *
+ *   5. Se o body trouxer "modelosContratoIds" (array de ids de
+ *      ModeloContrato — campo "Contratos a gerar" do formulário), a
+ *      geração dos .docx e o upload pro Drive rodam em segundo plano
+ *      DEPOIS da resposta HTTP já ter sido enviada (ver
+ *      gerarContratosParaCadastro em contratosGeracao.service.js) — nunca
+ *      atrasa nem trava o envio do cadastro. "nomePasta" (campo "Nome da
+ *      pasta") e "modelosContratoIds" são metadados internos: não entram
+ *      no "payload" salvo/repassado ao n8n, só nos campos dedicados do
+ *      registro (nome_pasta, modelos_contrato_ids). O resultado
+ *      (pasta_drive_id, arquivos_gerados) é preenchido de forma
+ *      assíncrona — consulte GET /api/cadastros depois pra ver o status.
  */
 exports.criar = async (req, res, next) => {
   try {
-    const payload = req.body || {};
+    // "nomePasta" e "modelosContratoIds" são metadados internos da
+    // geração de contratos (ver contratosGeracao.service.js) — não fazem
+    // parte do contrato de payload que o n8n espera, então são extraídos
+    // aqui e nunca repassados pra "payload" (nem salvos nem enviados ao n8n).
+    const { nomePasta, modelosContratoIds, ...payload } = req.body || {};
 
     const erros = validarPayload(payload);
     if (erros.length > 0) {
       return res.status(400).json({ error: erros.join(' ') });
     }
 
+    const modelosIds = Array.isArray(modelosContratoIds)
+      ? modelosContratoIds.filter((id) => typeof id === 'string' && id.trim() !== '')
+      : [];
+
     let cadastro = await prisma.cadastroEnviado.create({
-      data: { payload, status: 'enviado' },
+      data: {
+        payload,
+        status: 'enviado',
+        nomePasta: typeof nomePasta === 'string' && nomePasta.trim() !== '' ? nomePasta.trim() : null,
+        modelosContratoIds: modelosIds,
+      },
     });
 
     const resultadoN8n = await enviarParaN8n(payload);
@@ -201,6 +231,19 @@ exports.criar = async (req, res, next) => {
           clienteAsaasId: resultadoN8n.clienteAsaasId,
           pedidoBlingId: resultadoN8n.pedidoBlingId,
         },
+      });
+    }
+
+    // Geração dos contratos selecionados: roda em segundo plano, depois
+    // da resposta HTTP já ter sido enviada (ver abaixo) — nunca deve
+    // atrasar nem travar o formulário. gerarContratosParaCadastro nunca
+    // lança (qualquer falha só é logada); o resultado (pastaDriveId /
+    // arquivosGerados) é salvo direto no registro quando terminar.
+    if (modelosIds.length > 0) {
+      setImmediate(() => {
+        gerarContratosParaCadastro(cadastro.id).catch((err) => {
+          console.error(`[cadastros] Erro inesperado ao gerar contratos (cadastro ${cadastro.id}):`, err.message);
+        });
       });
     }
 
