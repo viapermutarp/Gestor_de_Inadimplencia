@@ -44,6 +44,7 @@ const ESTADO_INICIAL = {
   descricaoServico: "",
   numeroParcelas: "1",
   dataVencimento: "",
+  dataEntrada: "",
   observacoes: "",
   nomePasta: "",
   creditosVps: "0",
@@ -184,6 +185,7 @@ export default function CadastroPage() {
       "Número de Parcelas": form.numeroParcelas,
       "Valor Total": centavosParaDecimalString(valorTotalCentavos),
       "Data Vencimento": form.dataVencimento,
+      "Data da Entrada": form.dataEntrada,
       "Observações": form.observacoes.trim(),
       "Desconto Parcela": centavosParaDecimalString(descontoParcelaCentavos),
       "Créditos VP$": form.creditosVps,
@@ -531,6 +533,17 @@ export default function CadastroPage() {
               placeholder="R$ 0,00"
               disabled={enviando}
             />
+          </Campo>
+
+          <Campo label="Data da Entrada" opcional>
+            <DatePicker
+              value={form.dataEntrada}
+              onChange={(iso) => atualizarCampo("dataEntrada", iso)}
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Relevante quando houver &ldquo;Valor da Entrada&rdquo;. Se ficar vazio, assume-se a
+              data de envio deste cadastro.
+            </p>
           </Campo>
 
           <Campo label="Número de Parcelas">

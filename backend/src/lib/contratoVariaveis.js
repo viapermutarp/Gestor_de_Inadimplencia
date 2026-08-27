@@ -3,10 +3,16 @@
 // resolução de variáveis dos modelos de contrato (ver
 // src/services/contratos-geracao.service.js).
 //
-// Copiadas verbatim (sem alteração) do texto fornecido pelo usuário —
+// Copiadas verbatim do texto originalmente fornecido pelo usuário —
 // validadas contra 2 contratos reais já assinados, batendo palavra por
 // palavra (ver test-contrato-variaveis.js). NÃO alterar o comportamento
 // destas funções sem re-rodar esse teste de aceitação.
+//
+// Única alteração desde a versão verbatim original: `clausulaPagamentoParcelado`
+// e `clausulaPagamentoRecorrente` passaram a incluir o valor da parcela por
+// extenso — "de R$ 420,00 (quatrocentos e vinte reais)" em vez de só
+// "de R$ 420,00" — a pedido explícito do usuário numa rodada posterior. Os
+// testes de aceitação foram atualizados junto (ver test-contrato-variaveis.js).
 
 // ---------- Número por extenso (português, valores em Reais) ----------
 const UNIDADES = ['zero','um','dois','três','quatro','cinco','seis','sete','oito','nove'];
@@ -125,7 +131,7 @@ function clausulaPagamentoParcelado({ valorTotal, valorEntrada, dataEntrada, par
   if (desconto > 0) {
     trechoDesconto = `, sendo concedido desconto de R$ ${formatarMoeda(desconto)} (${valorEmReaisPorExtenso(desconto)}) para os pagamentos realizados até a data de vencimento de cada parcela`;
   }
-  return `O ASSOCIADO pagará adesão ao FRANQUEADO, no ato da assinatura do presente instrumento, o valor de R$ ${formatarMoeda(valorTotal)} (${valorEmReaisPorExtenso(valorTotal)})${trechoEntrada}, restando o valor de R$ ${formatarMoeda(valorSaldo)} (${valorEmReaisPorExtenso(valorSaldo)}) parcelado em ${qtdParcelas} (${qtdExtenso}) ${substantivoParcela} ${verboParcela} de R$ ${formatarMoeda(valorParcela)}, por meio de ${formaPagamento}, ${trechoVencimentos}${trechoDesconto}, a título de anuidade.`;
+  return `O ASSOCIADO pagará adesão ao FRANQUEADO, no ato da assinatura do presente instrumento, o valor de R$ ${formatarMoeda(valorTotal)} (${valorEmReaisPorExtenso(valorTotal)})${trechoEntrada}, restando o valor de R$ ${formatarMoeda(valorSaldo)} (${valorEmReaisPorExtenso(valorSaldo)}) parcelado em ${qtdParcelas} (${qtdExtenso}) ${substantivoParcela} ${verboParcela} de R$ ${formatarMoeda(valorParcela)} (${valorEmReaisPorExtenso(valorParcela)}), por meio de ${formaPagamento}, ${trechoVencimentos}${trechoDesconto}, a título de anuidade.`;
 }
 function clausulaPagamentoRecorrente({ valorTotal, valorEntrada, dataEntrada, qtdParcelas, valorParcela, primeiraData, desconto }) {
   const valorSaldo = valorTotal - valorEntrada;
@@ -140,9 +146,15 @@ function clausulaPagamentoRecorrente({ valorTotal, valorEntrada, dataEntrada, qt
   if (desconto > 0) {
     trechoDesconto = `, sendo concedido desconto de R$ ${formatarMoeda(desconto)} (${valorEmReaisPorExtenso(desconto)}) para os pagamentos realizados até a data de vencimento de cada parcela`;
   }
-  return `O ASSOCIADO pagará adesão ao FRANQUEADO, no ato da assinatura do presente instrumento, o valor de R$ ${formatarMoeda(valorTotal)} (${valorEmReaisPorExtenso(valorTotal)})${trechoEntrada}, restando o valor de R$ ${formatarMoeda(valorSaldo)} (${valorEmReaisPorExtenso(valorSaldo)}) parcelado em ${qtdParcelas} (${qtdExtenso}) ${substantivoParcela} ${verboParcela} de R$ ${formatarMoeda(valorParcela)}, por meio de pagamento recorrente no cartão de crédito, com a primeira parcela vencendo em ${primeiraData}${trechoDesconto}, a título de anuidade.`;
+  return `O ASSOCIADO pagará adesão ao FRANQUEADO, no ato da assinatura do presente instrumento, o valor de R$ ${formatarMoeda(valorTotal)} (${valorEmReaisPorExtenso(valorTotal)})${trechoEntrada}, restando o valor de R$ ${formatarMoeda(valorSaldo)} (${valorEmReaisPorExtenso(valorSaldo)}) parcelado em ${qtdParcelas} (${qtdExtenso}) ${substantivoParcela} ${verboParcela} de R$ ${formatarMoeda(valorParcela)} (${valorEmReaisPorExtenso(valorParcela)}), por meio de pagamento recorrente no cartão de crédito, com a primeira parcela vencendo em ${primeiraData}${trechoDesconto}, a título de anuidade.`;
 }
 module.exports = {
   valorEmReaisPorExtenso, numeroPorExtenso, qualificacaoDetalhe, creditosVps,
-  clausulaPagamentoAvista, clausulaPagamentoParcelado, clausulaPagamentoRecorrente
+  clausulaPagamentoAvista, clausulaPagamentoParcelado, clausulaPagamentoRecorrente,
+  // Exportadas a partir desta rodada (não fazem parte da lista original
+  // "sem alterar" — só adicionamos ao module.exports, nenhuma função foi
+  // tocada) porque contratosGeracao.service.js passou a precisar delas
+  // diretamente pra montar os tokens soltos do dicionário ("Número de
+  // Parcelas Por Extenso", "Valor Total", etc. — ver README).
+  numeroPorExtensoFeminino, formatarMoeda,
 };

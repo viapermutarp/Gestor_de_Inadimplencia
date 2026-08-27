@@ -5,6 +5,9 @@ const {
   clausulaPagamentoAvista,
   clausulaPagamentoParcelado,
   clausulaPagamentoRecorrente,
+  valorEmReaisPorExtenso,
+  numeroPorExtensoFeminino,
+  formatarMoeda,
 } = require('../lib/contratoVariaveis');
 const { gerarDocxBuffer } = require('./docx.service');
 const { obterClienteDrive, criarPasta, uploadDocx } = require('./drive.service');
@@ -60,9 +63,26 @@ function arredondar2(valor) {
 }
 
 /**
+ * Resolve a "Data da Entrada" a ser usada nas cláusulas de pagamento e no
+ * token solto {{Data da Entrada}}: usa o campo "Data da Entrada" do
+ * formulário quando preenchido (mesmo formato de "Data Vencimento",
+ * YYYY-MM-DD); se vier vazio, cai no fallback antigo — a data em que o
+ * Cadastro foi enviado (`criado_em`), assumindo que a entrada foi paga "no
+ * ato da assinatura". O fallback existe só como rede de segurança pra
+ * cadastros antigos (anteriores a este campo) e pra quem não preencher —
+ * nunca trava a geração por falta desse campo.
+ */
+function resolverDataEntrada(payload, dataCadastro) {
+  const dataEntradaCampo = formatarDataBr(payload['Data da Entrada']);
+  if (dataEntradaCampo) return dataEntradaCampo;
+  return formatarDataBr(dataCadastro.toISOString().slice(0, 10));
+}
+
+/**
  * Decide qual cláusula de pagamento usar e monta o texto final, a partir
  * do payload de POST /api/cadastros e da data em que o registro foi
- * criado (usada como "data da entrada" — ver premissas no README).
+ * criado (usada como fallback de "data da entrada" — ver
+ * `resolverDataEntrada`).
  *
  * Roteamento: "Descrição do Serviço" === Recorrência -> sempre recorrente;
  * caso contrário, "Número de Parcelas" <= 1 -> à vista, > 1 -> parcelado
@@ -76,9 +96,7 @@ function resolverClausulaPagamento(payload, dataCadastro) {
   const desconto = paraNumero(payload['Desconto Parcela']);
   const numeroParcelas = Math.max(parseInt(payload['Número de Parcelas'], 10) || 1, 1);
   const dataVencimento = formatarDataBr(payload['Data Vencimento']);
-  // A entrada é paga "no ato da assinatura" — na prática, no momento em
-  // que o cadastro é enviado, então usamos a data de criação do registro.
-  const dataEntrada = formatarDataBr(dataCadastro.toISOString().slice(0, 10));
+  const dataEntrada = resolverDataEntrada(payload, dataCadastro);
 
   if (descricao === DESCRICAO_RECORRENCIA) {
     const valorParcela = arredondar2((valorTotal - valorEntrada) / numeroParcelas);
@@ -145,6 +163,18 @@ function resolverDicionario(payload, dataCadastro) {
   const creditosVpsValor = parseInt(payload['Créditos VP$'], 10) || 0;
   const creditos = creditosVps(creditosVpsValor);
 
+  // Peças soltas de pagamento — os mesmos dados que já alimentam
+  // "Cláusula de Pagamento" (resolverClausulaPagamento, acima), expostos
+  // como tokens individuais pra quem quiser montar a própria redação em
+  // vez de usar o bloco pronto. Não é lógica nova: {{Cláusula de
+  // Pagamento}} continua funcionando exatamente como antes, coexistindo
+  // com estes tokens.
+  const valorTotal = paraNumero(payload['Valor Total']);
+  const valorEntrada = paraNumero(payload['Valor da Entrada']);
+  const numeroParcelas = Math.max(parseInt(payload['Número de Parcelas'], 10) || 1, 1);
+  const valorParcela = arredondar2((valorTotal - valorEntrada) / numeroParcelas);
+  const dataEntrada = resolverDataEntrada(payload, dataCadastro);
+
   return {
     'Razão Social': payload['Razão Social'] || '',
     'Nome Fantasia': payload['Nome Fantasia'] || '',
@@ -165,6 +195,15 @@ function resolverDicionario(payload, dataCadastro) {
     'Créditos VP$ Quantidade': creditos.qtd,
     'Créditos VP$ Valor': creditos.valor,
     'Cláusula de Pagamento': resolverClausulaPagamento(payload, dataCadastro),
+    'Número de Parcelas': payload['Número de Parcelas'] || '',
+    'Número de Parcelas Por Extenso': numeroPorExtensoFeminino(numeroParcelas),
+    'Valor Total': formatarMoeda(valorTotal),
+    'Valor Total Por Extenso': valorEmReaisPorExtenso(valorTotal),
+    'Valor da Entrada': formatarMoeda(valorEntrada),
+    'Valor da Entrada Por Extenso': valorEmReaisPorExtenso(valorEntrada),
+    'Data da Entrada': dataEntrada,
+    'Valor da Parcela': formatarMoeda(valorParcela),
+    'Valor da Parcela Por Extenso': valorEmReaisPorExtenso(valorParcela),
   };
 }
 

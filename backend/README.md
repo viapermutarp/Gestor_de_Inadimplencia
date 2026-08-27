@@ -766,9 +766,28 @@ Os placeholders usados no HTML de um `ModeloContrato` são resolvidos contra est
 
 Direto do payload do Cadastro: `Razão Social`, `Nome Fantasia`, `CNPJ/CPF`, `Endereço`, `Número`, `Complemento`, `Bairro`, `Cidade`, `UF`, `CEP`, `E-mail`, `Celular`, `Contato`, `Tipo de Pessoa`.
 
-Calculados: `Nome do Associado` (Razão Social pra PJ, Contato pra PF — com fallback cruzado se um dos dois estiver vazio), `Qualificação`, `Créditos VP$ Quantidade`/`Créditos VP$ Valor` e `Cláusula de Pagamento` — usando as funções em `src/lib/contratoVariaveis.js` (copiadas verbatim do texto fornecido, validadas contra os 2 exemplos de aceitação fornecidos, que batem caractere por caractere — ver `test-contrato-variaveis.js`).
+Calculados: `Nome do Associado` (Razão Social pra PJ, Contato pra PF — com fallback cruzado se um dos dois estiver vazio), `Qualificação`, `Créditos VP$ Quantidade`/`Créditos VP$ Valor` e `Cláusula de Pagamento` (bloco pronto, frase inteira já montada) — usando as funções em `src/lib/contratoVariaveis.js` (copiadas verbatim do texto fornecido, validadas contra os 2 exemplos de aceitação fornecidos, que batem caractere por caractere — ver `test-contrato-variaveis.js`).
+
+**Tokens soltos** (mesmos dados que já alimentam `Cláusula de Pagamento`, expostos individualmente pra quem quiser montar a própria redação em vez de usar o bloco pronto — as duas formas coexistem, usar uma não impede usar a outra):
+
+- `Número de Parcelas` — valor cru do campo do formulário (ex.: `"11"`).
+- `Número de Parcelas Por Extenso` — via `numeroPorExtensoFeminino` (ex.: `"onze"`).
+- `Valor Total` / `Valor Total Por Extenso`.
+- `Valor da Entrada` / `Valor da Entrada Por Extenso`.
+- `Data da Entrada` — ver campo novo abaixo.
+- `Valor da Parcela` / `Valor da Parcela Por Extenso` — `(Valor Total - Valor da Entrada) / Número de Parcelas`, mesmo cálculo usado internamente por `Cláusula de Pagamento`.
 
 A substituição é feita direto na string HTML (`content.replace(/\{\{([^}]+)\}\}/g, ...)`), sem tentar interpretar o HTML como árvore — por isso, **nunca formate uma placeholder pela metade** (ex.: deixar só `{{Razão` em negrito e `Social}}` sem) na tela de Contratos, ou a substituição não vai encontrar a chave inteira. Placeholders sem correspondência no dicionário (typo no nome da variável) são deixados como estão no documento final, em vez de travar a geração inteira — revise o `.docx` gerado se um trecho aparecer literalmente como `{{...}}`.
+
+### Campo "Data da Entrada"
+
+Novo campo no formulário de Cadastro (mesmo componente de calendário de "Data Vencimento"), opcional — relevante quando há "Valor da Entrada" > 0, mas não bloqueia o envio se ficar vazio. Persistido dentro do JSON `cadastros_enviados.payload` (não precisou de coluna nova).
+
+Usado como `dataEntrada` nas três funções de cláusula (à vista/parcelado/recorrente) e no token solto `{{Data da Entrada}}`. Se vier vazio **e** houver "Valor da Entrada" > 0, cai no fallback antigo (a data em que o Cadastro foi enviado, `criado_em`, assumindo que a entrada foi paga "no ato da assinatura") — ver `resolverDataEntrada` em `contratosGeracao.service.js`. O fallback é só uma rede de segurança pra cadastros antigos (anteriores a este campo) ou pra quem não preencher; nunca trava a geração.
+
+### Valor da parcela também por extenso
+
+`clausulaPagamentoParcelado` e `clausulaPagamentoRecorrente` passaram a incluir o valor de cada parcela por extenso, no mesmo padrão dos demais valores da cláusula: antes "... de R$ 420,00, por meio de ...", agora "... de R$ 420,00 (quatrocentos e vinte reais), por meio de ...". Único ponto onde as funções verbatim originais foram alteradas (ver comentário no topo de `src/lib/contratoVariaveis.js`) — os 2 testes de aceitação foram atualizados junto, continuam batendo caractere por caractere.
 
 ### Premissas assumidas (campos que não existiam no formulário)
 
@@ -776,7 +795,7 @@ O formulário de Cadastro/Faturamento, antes desta feature, não tinha campos su
 
 - **Roteamento da cláusula**: `Descrição do Serviço === "Recorrência Cartão de Crédito (Anuidade)"` → sempre `clausulaPagamentoRecorrente`; caso contrário, `Número de Parcelas <= 1` → `clausulaPagamentoAvista`, `> 1` → `clausulaPagamentoParcelado` (independente de PIX/Boleto/Cartão, já que qualquer um pode ser parcelado em mais de 1x no formulário atual).
 - **Forma de pagamento** (texto usado nas cláusulas à vista/parcelado): `"Anuidade (PIX)"` → "PIX", `"Anuidade (Boleto)"` → "boleto bancário", `"Anuidade (Cartão de Crédito)"` → "cartão de crédito".
-- **Data da entrada** (`dataEntrada`, usada quando há "Valor da Entrada"): não existe campo próprio no formulário — assumimos que a entrada é paga "no ato da assinatura", ou seja, na data em que o Cadastro foi enviado (`criado_em`).
+- ~~**Data da entrada**: não existe campo próprio no formulário...~~ — **resolvida**: "Data da Entrada" agora é um campo de verdade no formulário (ver seção acima); o que era premissa virou só um fallback de segurança.
 - **Vencimento de cada parcela**: computado somando 1 mês por parcela a partir de "Data Vencimento" (ex.: parcela 1 = "Data Vencimento", parcela 2 = +1 mês, ...), com ajuste automático pro último dia do mês quando o dia de origem não existir no mês de destino (ex.: 31/01 + 1 mês → 28/02 ou 29/02).
 - **Valor de cada parcela**: `(Valor Total - Valor da Entrada) / Número de Parcelas`, dividido igualmente (arredondado a 2 casas decimais).
 - **Créditos VP$**: a função `creditosVps` só aceita 8.000, 2.000 ou 0 — como não havia nenhum campo existente de onde derivar esse valor, foi adicionado um **3º campo novo ao formulário de Cadastro** (dropdown "Créditos VP$": 8.000 / 2.000 / Nenhum), além dos 2 campos pedidos ("Nome da pasta" e "Contratos a gerar") — ver README do frontend.
@@ -1000,3 +1019,13 @@ Antes do primeiro deploy real, recomendamos rodar `docker-compose up --build` lo
 - **Wiring em `POST /api/cadastros`** (`test-cadastro-campos-contrato.js`, 15/15, com Postgres real + mock do webhook n8n): `nomePasta`/`modelosContratoIds` no corpo da requisição são persistidos e devolvidos como `nome_pasta`/`modelos_contrato_ids`; confirmado que **nenhum dos dois vaza pro payload repassado ao n8n** (só os campos em português do formulário original chegam lá); compatibilidade retroativa confirmada (`POST` sem esses 2 campos continua funcionando, `nome_pasta: null`, `modelos_contrato_ids: []`); `pasta_drive_id`/`arquivos_gerados` continuam `null` logo após a resposta (a geração roda em segundo plano); `GET /api/cadastros` traz os campos novos na listagem.
 - **Migração do schema** (`20260827090000_add_contratos`) validada rodando `prisma migrate deploy` do zero contra um Postgres real, junto com todas as migrações anteriores, sem erros.
 - Suíte dedicada a esta correção: **24/24 asserções passaram**.
+
+**Geração de contratos — "Data da Entrada" como campo real, parcela por extenso e tokens soltos** (`test-contrato-variaveis.js`, 7/7; mais um teste de integração dedicado com Postgres real + cliente Drive fake, 4/4):
+
+- Os 2 exemplos de aceitação originais (`clausulaPagamentoParcelado` e `clausulaPagamentoRecorrente`) foram **atualizados** para incluir o valor da parcela por extenso e continuam batendo **caractere por caractere** com o novo texto esperado (ex.: "...de R$ 1.660,00 (mil e seiscentos e sessenta reais), por meio de..." e "...de R$ 420,00 (quatrocentos e vinte reais), por meio de...").
+- `resolverClausulaPagamento` usa `payload["Data da Entrada"]` quando preenchida (confirmado que o texto gerado usa exatamente essa data) e cai no fallback `criado_em` quando o campo vem vazio (confirmado com um payload sem o campo).
+- O exemplo de aceitação de tokens soltos pedido explicitamente — colar `{{Número de Parcelas}} ({{Número de Parcelas Por Extenso}})` num modelo e resolver contra o cenário de 11 parcelas — resolve exatamente pra `"11 (onze)"`.
+- Os demais tokens soltos (`Valor Total`/`Valor da Entrada`/`Valor da Parcela`, cada um com e sem "Por Extenso", e `Data da Entrada`) validados contra os valores esperados do mesmo cenário (4.980,00 total, 360,00 de entrada, 420,00 por parcela).
+- `{{Cláusula de Pagamento}}` (bloco pronto) confirmado que continua resolvendo normalmente lado a lado com os tokens soltos — nenhuma regressão no comportamento existente.
+- **Teste de integração** (Postgres real, `gerarContratosParaCadastro` chamada de ponta a ponta com um `ModeloContrato` usando `{{Data da Entrada}}` + todos os tokens soltos + o bloco pronto no mesmo HTML, cliente Drive fake capturando o `.docx` gerado): pasta e arquivo criados corretamente, `.docx` resultante é um ZIP válido (assinatura `PK`) — confirma que a mudança no dicionário não quebrou a integração com `docx.service.js`/`drive.service.js`.
+- Nenhuma migração de schema nesta rodada — "Data da Entrada" vai dentro do JSON `cadastros_enviados.payload`, que já existia.
