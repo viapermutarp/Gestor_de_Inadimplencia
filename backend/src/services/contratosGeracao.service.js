@@ -204,6 +204,12 @@ function resolverDicionario(payload, dataCadastro) {
     'Data da Entrada': dataEntrada,
     'Valor da Parcela': formatarMoeda(valorParcela),
     'Valor da Parcela Por Extenso': valorEmReaisPorExtenso(valorParcela),
+    // Valor bruto do campo "Data Vencimento" (data da primeira/única
+    // parcela), formatado dd/mm/aaaa — não é a lista completa de
+    // vencimentos de cada parcela (isso só existe hoje dentro do texto
+    // montado por resolverClausulaPagamento), só a data única do campo do
+    // formulário, solta.
+    'Data Vencimento': formatarDataBr(payload['Data Vencimento']),
   };
 }
 

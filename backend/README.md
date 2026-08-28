@@ -780,6 +780,7 @@ Calculados: `Nome do Associado` (Razão Social pra PJ, Contato pra PF — com fa
 - `Valor da Entrada` / `Valor da Entrada Por Extenso`.
 - `Data da Entrada` — ver campo novo abaixo.
 - `Valor da Parcela` / `Valor da Parcela Por Extenso` — `(Valor Total - Valor da Entrada) / Número de Parcelas`, mesmo cálculo usado internamente por `Cláusula de Pagamento`.
+- `Data Vencimento` — valor bruto do campo "Data Vencimento" do formulário (data da primeira/única parcela), formatado `dd/mm/aaaa`. Não é a lista de vencimentos de cada parcela (isso só existe hoje dentro do texto montado por `Cláusula de Pagamento`) — só a data única do campo, solta.
 
 A substituição é feita direto na string HTML (`content.replace(/\{\{([^}]+)\}\}/g, ...)`), sem tentar interpretar o HTML como árvore — por isso, **nunca formate uma placeholder pela metade** (ex.: deixar só `{{Razão` em negrito e `Social}}` sem) na tela de Contratos, ou a substituição não vai encontrar a chave inteira. Placeholders sem correspondência no dicionário (typo no nome da variável) são deixados como estão no documento final, em vez de travar a geração inteira — revise o `.docx` gerado se um trecho aparecer literalmente como `{{...}}`.
 
