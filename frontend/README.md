@@ -6,7 +6,7 @@ Painel web da **Via Permuta** para controle de cobrança. Next.js (App Router) +
 
 - Next.js 16 (App Router, React 19)
 - Tailwind CSS v4
-- [Tiptap](https://tiptap.dev/) (`@tiptap/react` + `@tiptap/starter-kit` + `@tiptap/extension-text-align`) — editor de texto rico usado na tela `/contratos`
+- [Tiptap](https://tiptap.dev/) (`@tiptap/react` + `@tiptap/starter-kit` + `@tiptap/extension-text-align` + `@tiptap/extension-text-style`) — editor de texto rico usado na tela `/contratos`
 - Tema visual **Sinal** (skill frontend-design) — ver seção própria abaixo
 - Autenticação via JWT armazenado em `localStorage`
 
@@ -267,4 +267,14 @@ Quatro formatos novos na barra de ferramentas do `RichTextEditor` (tela `/contra
 - **Alinhamento de texto** (esquerda/centro/direita/justificado) é a única extensão nova de fato: `@tiptap/extension-text-align`, configurada pra `types: ["heading", "paragraph"]`. Ícones de alinhamento desenhados como SVG inline (mesmo padrão de traço do resto do app), sem depender de `components/icons.js`.
 - `.prose-contrato` (`app/globals.css`) ganhou `ul { list-style: disc; padding-left: 1.5em }` (Tailwind zera a lista por padrão via preflight, mesma razão pela qual `ol` já precisava do equivalente) e estilos explícitos pra `em`/`u`, garantindo que o preview do editor renderize os novos formatos visualmente, não só no HTML exportado.
 - `npm run lint` e `npm run build` (cópia fresh em `/tmp`) — limpos, 0 erros/warnings, as 8 rotas continuam prerenderizando normalmente.
-- **A geração de `.docx` a partir desses formatos novos foi validada e exigiu uma correção no backend** — dois bugs reais foram encontrados na lib `html-to-docx` (itálico isolado sendo ignorado, e combinações de negrito+itálico+sublinhado perdendo a formatação das tags mais externas), corrigidos com um preprocessamento do HTML antes de gerar o `.docx`. Ver README do backend, seção "Dois bugs reais do `html-to-docx` 1.8.0 (e o fix aplicado)", pra o diagnóstico completo e os 18 testes que comprovam a correção.
+- **A geração de `.docx` a partir desses formatos novos foi validada e exigiu uma correção no backend** — dois bugs reais foram encontrados na lib `html-to-docx` (itálico isolado sendo ignorado, e combinações de negrito+itálico+sublinhado perdendo a formatação das tags mais externas), corrigidos com um preprocessamento do HTML antes de gerar o `.docx`. Ver README do backend, seção "Três bugs reais do `html-to-docx` 1.8.0 (e o fix aplicado)", pra o diagnóstico completo e os testes que comprovam a correção.
+
+### Editor de Contratos: fonte e tamanho
+
+Dois seletores novos na barra de ferramentas do `RichTextEditor`, depois do grupo de alinhamento:
+
+- **Fonte** (`<select>`): Fonte padrão, Courier New, Arial, Times New Roman, Calibri — as 4 fontes usadas nos contratos reais da Via Permuta.
+- **Tamanho** (`<select>`): 8pt a 14pt (8, 9, 10, 11, 12, 13, 14), cobrindo os tamanhos usados nos contratos reais (9pt e 12pt) e a faixa toda pedida.
+- Implementado com `@tiptap/extension-text-style` (pacote **oficial** do Tiptap — `TextStyle` + `FontFamily` + `FontSize` prontos, sem precisar de extensão de terceiros nem de atributo customizado; rejeitamos o pacote de terceiros `tiptap-extension-font-size` cotado como opção porque ele embute uma cópia do Tiptap v2 como dependência direta, incompatível com a v3 usada aqui). Os dois `<select>` refletem o estado atual da seleção (`editor.getAttributes("textStyle")`) e aplicam via `setFontFamily`/`setFontSize` (ou `unsetFontFamily`/`unsetFontSize` na opção "padrão"), no mesmo padrão dos demais controles — aplica na seleção atual do cursor.
+- `npm run lint` e `npm run build` (cópia fresh em `/tmp`) — limpos, 0 erros/warnings, as 8 rotas continuam prerenderizando normalmente.
+- **Geração de `.docx` validada explicitamente**, isolado e combinado com negrito/itálico/sublinhado (o cenário mais arriscado, dado o histórico de bugs de formatação combinada nessa lib) — e essa validação encontrou um **3º bug real** na lib `html-to-docx`: nomes de fonte com espaço (Courier New, Times New Roman) saíam quebrados no `.docx`, corrigido no mesmo preprocessamento do backend. Ver README do backend, seções "Três bugs reais do `html-to-docx` 1.8.0" e "Fonte e tamanho no editor de Contratos", pra o diagnóstico completo e os 20 testes que comprovam a correção.

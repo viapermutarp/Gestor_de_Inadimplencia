@@ -1,4 +1,4 @@
-// Contorna duas limitações reais encontradas em "html-to-docx" 1.8.0
+// Contorna três limitações reais encontradas em "html-to-docx" 1.8.0
 // (confirmadas lendo o código-fonte da lib e validadas gerando .docx reais
 // e inspecionando o XML resultante — não é suposição):
 //
@@ -17,6 +17,24 @@
 //    EXATAMENTE como o Tiptap serializa uma seleção com múltiplas marcas
 //    — ex.: negrito+itálico+sublinhado vira <strong><em><u>texto</u></em></strong>,
 //    sem nenhum irmão) a formatação da tag externa é descartada.
+//    Isso vale também quando o <strong><em>...</em></strong> vem dentro
+//    de um <span style="..."> (caso de fonte/tamanho combinados com
+//    negrito/itálico) — o span tem seu próprio caminho de código
+//    (buildRunOrRuns), mas ele delega pro mesmo buildRun problemático
+//    pra processar a cadeia de formatação interna, então o mesmo bug (e o
+//    mesmo fix) se aplica.
+//
+// 3) A lib NÃO decodifica entidades HTML (ex.: &quot;) dentro do valor do
+//    atributo style antes de interpretar font-family. Nomes de fonte com
+//    mais de uma palavra (ex.: "Courier New", "Times New Roman") são
+//    naturalmente serializados pelo Tiptap/DOM como
+//    style="font-family: &quot;Courier New&quot;" (aspas reais viram
+//    entidade ao virar string HTML — isso é serialização HTML padrão, não
+//    peculiaridade do Tiptap). A lib usa esse valor cru sem decodificar a
+//    entidade, então o nome da fonte sai truncado/quebrado no .docx
+//    (confirmado gerando o arquivo e inspecionando w:rFonts). Fontes de
+//    uma palavra só (Arial, Calibri) não têm esse problema, só as com
+//    espaço.
 //
 // O fix: (a) normaliza <em> -> <i>; (b) pra cada tag de formatação com
 // exatamente 1 filho que também é uma tag de formatação, injeta um
@@ -24,11 +42,17 @@
 // texto/placeholders já resolvidos) como um filho irmão extra — isso
 // tira o código da lib do caminho com bug, sem qualquer efeito visual no
 // documento final. Repetido em loop até estabilizar, pra cobrir cadeias
-// de 3 níveis (negrito+itálico+sublinhado juntos).
+// de 3 níveis (negrito+itálico+sublinhado juntos); (c) remove aspas
+// (simples ou duplas) de cada nome dentro de font-family no atributo
+// style — como o cheerio já decodifica a entidade ao ler o atributo, a
+// remoção acontece nos caracteres reais, e o valor final (sem aspas) sai
+// sem precisar de entidade nenhuma na hora de serializar de volta pra
+// HTML, contornando o bug 3 por completo (nomes com espaço continuam
+// funcionando sem aspas, já testado).
 //
-// Ver test-docx-formatacao-combinada.js pra a suíte de regressão que
-// gera .docx reais e confere o XML gerado, cobrindo exatamente os casos
-// que motivaram este arquivo.
+// Ver test-docx-formatacao-combinada.js e test-docx-fonte-tamanho.js pra
+// as suítes de regressão que geram .docx reais e conferem o XML gerado,
+// cobrindo exatamente os casos que motivaram este arquivo.
 
 const cheerio = require('cheerio');
 
@@ -36,7 +60,22 @@ const ESPACO_LARGURA_ZERO = '​';
 const TAGS_FORMATACAO = new Set(['strong', 'b', 'i', 'u', 'ins']);
 
 /**
- * Aplica os dois ajustes acima num HTML antes de mandar pro
+ * Remove aspas simples/duplas de cada nome de fonte dentro do valor de
+ * font-family (ex.: 'font-family: "Courier New", Arial' vira
+ * 'font-family: Courier New, Arial'). Ver bug 3 acima.
+ */
+function removerAspasDeFontFamily(styleValue) {
+  return styleValue.replace(/font-family\s*:\s*([^;]+)/i, (match, valor) => {
+    const semAspas = valor
+      .split(',')
+      .map((parte) => parte.trim().replace(/^['"]+|['"]+$/g, ''))
+      .join(', ');
+    return `font-family: ${semAspas}`;
+  });
+}
+
+/**
+ * Aplica os três ajustes acima num HTML antes de mandar pro
  * `html-to-docx`. Idempotente e segura de rodar em qualquer HTML — não
  * assume nada além de que <em>/<strong>/<i>/<u>/<b>/<ins> seguem a
  * semântica HTML padrão (sem atributos customizados nessas tags, que é
@@ -50,6 +89,14 @@ function corrigirHtmlParaDocx(html) {
   $('em').each((_, el) => {
     el.tagName = 'i';
     el.name = 'i';
+  });
+
+  $('[style*="font-family"]').each((_, el) => {
+    const $el = $(el);
+    const styleAtual = $el.attr('style');
+    if (styleAtual) {
+      $el.attr('style', removerAspasDeFontFamily(styleAtual));
+    }
   });
 
   let mudou = true;

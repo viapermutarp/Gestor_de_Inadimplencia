@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import TextAlign from "@tiptap/extension-text-align";
+import { TextStyle, FontFamily, FontSize } from "@tiptap/extension-text-style";
 
 const BOTAO_BASE =
   "flex h-8 min-w-8 items-center justify-center rounded-lg px-2 text-xs font-semibold transition-colors";
@@ -59,6 +60,25 @@ const ALINHAMENTOS = [
   { valor: "justify", titulo: "Justificar" },
 ];
 
+// Fontes usadas nos contratos reais da Via Permuta. Nomes com espaço
+// (Courier New, Times New Roman) exigem o fix em htmlParaDocxFix.js no
+// backend (ver test-docx-fonte-tamanho.js) — sem ele o .docx gerado sai
+// com o nome da fonte quebrado.
+const FONTES = [
+  { valor: "", rotulo: "Fonte padrão" },
+  { valor: "Courier New", rotulo: "Courier New" },
+  { valor: "Arial", rotulo: "Arial" },
+  { valor: "Times New Roman", rotulo: "Times New Roman" },
+  { valor: "Calibri", rotulo: "Calibri" },
+];
+
+// Cobre pelo menos a faixa 8-14pt pedida (9pt e 12pt são os tamanhos
+// usados nos contratos reais).
+const TAMANHOS_FONTE = [8, 9, 10, 11, 12, 13, 14];
+
+const SELECT_BASE =
+  "h-8 rounded-lg border border-border-soft bg-surface px-2 text-xs text-foreground transition-colors focus:outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-40";
+
 /**
  * Editor rich text (Tiptap) usado na tela de Contratos pra montar o
  * conteúdo dos modelos. Exporta/importa HTML com <strong>, <em>, <u>,
@@ -74,6 +94,15 @@ const ALINHAMENTOS = [
  * expostos na barra de ferramentas antes. Alinhamento de texto não faz
  * parte do StarterKit, por isso a extensão `@tiptap/extension-text-align`
  * separada, aplicada a parágrafos e títulos.
+ *
+ * Fonte (font-family) e tamanho (font-size) usam `@tiptap/extension-text-style`
+ * (pacote oficial do Tiptap — inclui TextStyle, FontFamily e FontSize
+ * prontos, sem precisar de extensão de terceiros nem de atributo
+ * customizado). Os dois atributos ficam na mesma mark "textStyle" e saem
+ * como um único <span style="font-family: ...; font-size: ..."> no HTML —
+ * validado (test-docx-fonte-tamanho.js, backend) que esse span, mesmo
+ * combinado com negrito/itálico/sublinhado, gera .docx com fonte e
+ * tamanho corretos.
  *
  * "value"/"onChange" seguem o padrão de um input controlado — "onChange"
  * é chamado com o HTML atual (editor.getHTML()) a cada edição.
@@ -94,6 +123,9 @@ export default function RichTextEditor({ value, onChange, disabled }) {
       TextAlign.configure({
         types: ["heading", "paragraph"],
       }),
+      TextStyle,
+      FontFamily,
+      FontSize,
     ],
     content: value || "",
     editable: !disabled,
@@ -204,6 +236,48 @@ export default function RichTextEditor({ value, onChange, disabled }) {
             {ALINHAMENTO_ICONE[a.valor]}
           </BotaoToolbar>
         ))}
+        <span className="mx-1 h-5 w-px bg-border-soft" />
+        <select
+          title="Fonte"
+          disabled={disabled}
+          className={`${SELECT_BASE} w-36`}
+          value={editor.getAttributes("textStyle").fontFamily || ""}
+          onChange={(e) => {
+            const valor = e.target.value;
+            if (valor) {
+              editor.chain().focus().setFontFamily(valor).run();
+            } else {
+              editor.chain().focus().unsetFontFamily().run();
+            }
+          }}
+        >
+          {FONTES.map((f) => (
+            <option key={f.valor} value={f.valor}>
+              {f.rotulo}
+            </option>
+          ))}
+        </select>
+        <select
+          title="Tamanho da fonte"
+          disabled={disabled}
+          className={`${SELECT_BASE} w-24`}
+          value={(editor.getAttributes("textStyle").fontSize || "").replace("pt", "")}
+          onChange={(e) => {
+            const valor = e.target.value;
+            if (valor) {
+              editor.chain().focus().setFontSize(`${valor}pt`).run();
+            } else {
+              editor.chain().focus().unsetFontSize().run();
+            }
+          }}
+        >
+          <option value="">Tamanho</option>
+          {TAMANHOS_FONTE.map((tamanho) => (
+            <option key={tamanho} value={tamanho}>
+              {tamanho}pt
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="px-3.5 py-3">
