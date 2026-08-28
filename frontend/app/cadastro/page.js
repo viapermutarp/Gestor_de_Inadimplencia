@@ -134,6 +134,20 @@ export default function CadastroPage() {
     });
   }
 
+  // Preview de "Valor da Parcela" — só exibição, mesma fórmula usada de
+  // verdade no backend na hora de gerar o contrato (token {{Valor da
+  // Parcela}} em contratosGeracao.service.js). Recalculada a cada render a
+  // partir dos campos já existentes, sem estado próprio. Com 1 parcela (ou
+  // sem "Valor Total" ainda preenchido) fica em branco — não é validação,
+  // só não faz sentido mostrar um "valor da parcela" nesses casos.
+  const numeroParcelasPreview = parseInt(form.numeroParcelas, 10) || 1;
+  const valorParcelaPreview =
+    numeroParcelasPreview > 1 && valorTotalCentavos
+      ? formatCentavosInput(
+          Math.round(((valorTotalCentavos || 0) - (valorEntradaCentavos || 0)) / numeroParcelasPreview)
+        )
+      : "";
+
   function limparFormulario() {
     setForm(ESTADO_INICIAL);
     setValorEntradaCentavos(null);
@@ -559,6 +573,20 @@ export default function CadastroPage() {
                 </option>
               ))}
             </select>
+          </Campo>
+
+          <Campo label="Valor da Parcela" opcional>
+            <input
+              type="text"
+              readOnly
+              disabled
+              className={`${INPUT_MONO} cursor-not-allowed`}
+              value={valorParcelaPreview}
+              placeholder="R$ 0,00"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Só um preview — o cálculo de verdade é feito na geração do contrato.
+            </p>
           </Campo>
 
           <Campo label="Valor Total">
