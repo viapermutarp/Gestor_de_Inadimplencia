@@ -72,6 +72,13 @@ async function criarPasta(nome, drive) {
       parents: [pastaRaizId],
     },
     fields: 'id, webViewLink',
+    // Necessário sempre que a pasta raiz (ou qualquer coisa dentro dela)
+    // vive num Drive Compartilhado (Shared Drive) — sem isso a API trata
+    // esse conteúdo como inexistente e o create falha com "File not
+    // found" no id do parent, mesmo com a pasta corretamente compartilhada
+    // com a conta de serviço. Não tem efeito quando o conteúdo é do "Meu
+    // Drive" normal, então é seguro deixar sempre ligado.
+    supportsAllDrives: true,
   });
 
   return { id: resposta.data.id, url: resposta.data.webViewLink };
@@ -83,6 +90,9 @@ async function uploadDocx({ nome, buffer, pastaId, drive }) {
     requestBody: { name: nome, parents: [pastaId] },
     media: { mimeType: MIME_DOCX, body: Readable.from(buffer) },
     fields: 'id, webViewLink',
+    // Ver comentário em criarPasta — mesma necessidade aqui, já que o
+    // upload também tem um "parents" que pode estar num Drive Compartilhado.
+    supportsAllDrives: true,
   });
 
   return { id: resposta.data.id, url: resposta.data.webViewLink };

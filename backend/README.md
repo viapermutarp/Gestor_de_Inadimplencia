@@ -760,6 +760,10 @@ Testado com um HTML representativo (título, negrito, duas listas numeradas sepa
 
 Sem `GOOGLE_SERVICE_ACCOUNT_JSON` configurada, ou sem a pasta raiz definida, a geração é **pulada de forma silenciosa** (só loga um aviso no console) — o Cadastro em si continua sendo salvo normalmente, só fica sem `pasta_drive_id`/`arquivos_gerados`.
 
+### Pasta raiz dentro de um Drive Compartilhado (Shared Drive)
+
+Se a pasta raiz configurada (`drive_pasta_raiz_id`) vive dentro de um **Drive Compartilhado** (não do "Meu Drive" comum), toda chamada da API do Drive que toca nela precisa do parâmetro `supportsAllDrives: true` — sem isso, a API trata o conteúdo do Shared Drive como inexistente e as chamadas falham com `File not found: <id da pasta>`, mesmo com a pasta corretamente compartilhada com a conta de serviço (permissão de Editor/Administrador de conteúdo). `criarPasta` e `uploadDocx` em `src/services/drive.service.js` já enviam `supportsAllDrives: true` em toda chamada `files.create` — não tem efeito quando a pasta é do "Meu Drive" normal, então fica sempre ligado por padrão, sem precisar saber de antemão qual tipo de Drive será usado.
+
 ### Dicionário de variáveis (`{{...}}`)
 
 Os placeholders usados no HTML de um `ModeloContrato` são resolvidos contra este dicionário (ver `src/services/contratosGeracao.service.js`):
@@ -1029,3 +1033,10 @@ Antes do primeiro deploy real, recomendamos rodar `docker-compose up --build` lo
 - `{{Cláusula de Pagamento}}` (bloco pronto) confirmado que continua resolvendo normalmente lado a lado com os tokens soltos — nenhuma regressão no comportamento existente.
 - **Teste de integração** (Postgres real, `gerarContratosParaCadastro` chamada de ponta a ponta com um `ModeloContrato` usando `{{Data da Entrada}}` + todos os tokens soltos + o bloco pronto no mesmo HTML, cliente Drive fake capturando o `.docx` gerado): pasta e arquivo criados corretamente, `.docx` resultante é um ZIP válido (assinatura `PK`) — confirma que a mudança no dicionário não quebrou a integração com `docx.service.js`/`drive.service.js`.
 - Nenhuma migração de schema nesta rodada — "Data da Entrada" vai dentro do JSON `cadastros_enviados.payload`, que já existia.
+
+**Correção: geração falhando com "File not found: `<id da pasta raiz>`" quando a pasta raiz é um Drive Compartilhado** (`test-shared-drive.js`, 5/5, Postgres real + cliente Drive fake):
+
+- Causa confirmada: `criarPasta`/`uploadDocx` em `src/services/drive.service.js` não enviavam `supportsAllDrives: true` nas chamadas `files.create` — a API do Drive trata conteúdo de Shared Drives como inexistente sem esse parâmetro, mesmo com a pasta corretamente compartilhada (Editor/Administrador de conteúdo) com a conta de serviço.
+- Corrigido adicionando `supportsAllDrives: true` às duas chamadas `files.create` (criação da subpasta do associado e upload de cada `.docx`).
+- Teste de regressão dedicado usa um cliente Drive fake que **reproduz fielmente o bug real**: lança `Error("File not found: <id do parent>")` se `supportsAllDrives` não vier `true` em qualquer chamada `files.create` — exatamente o comportamento reportado pelo usuário, com o mesmo id de pasta raiz do relato (`1q1Yld0RpdF0z3eEg7dK2Gc-Q2G5IkGC8`). Confirmado que, com a correção, tanto a criação da pasta quanto o upload do `.docx` completam com sucesso e o registro do Cadastro é atualizado com `pastaDriveId`/`arquivosGerados` normalmente.
+- `supportsAllDrives: true` não tem efeito quando a pasta raiz é do "Meu Drive" comum (não-Shared Drive), então a mudança é segura por padrão — não é preciso saber de antemão qual tipo de pasta o cliente vai configurar.
