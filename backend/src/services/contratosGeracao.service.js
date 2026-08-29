@@ -14,6 +14,47 @@ const { obterClienteDrive, criarPasta, uploadDocx } = require('./drive.service')
 
 const DESCRICAO_RECORRENCIA = 'Recorrência Cartão de Crédito (Anuidade)';
 
+// Mesmo rótulo exibido na tela /contratos (frontend) pro campo "Tipo" do
+// modelo — o banco guarda só o código ("TERMO"/"ADITIVO"), a tela é quem
+// traduz pro texto completo. Precisamos do mesmo texto aqui pra montar o
+// nome do arquivo (ver `nomeArquivoContrato`), então replicamos o mapeamento
+// (mantém os dois em sincronia se um novo tipo for adicionado).
+const TIPO_MODELO_LABEL = {
+  TERMO: 'Termo de Associação',
+  ADITIVO: 'Aditivo Contratual',
+};
+
+// Caracteres inválidos/problemáticos em nome de arquivo (Windows: < > : " /
+// \ | ? * e controles; "/" é o mais provável de aparecer por engano, ex.:
+// alguém colando um CNPJ formatado junto da Razão Social). Substituídos por
+// espaço, nunca removidos "colados" (evita grudar duas palavras), com os
+// espaços resultantes colapsados e aparados no fim.
+// eslint-disable-next-line no-control-regex
+const CARACTERES_INVALIDOS_ARQUIVO = /[\\/:*?"<>|\x00-\x1f]/g;
+
+function sanitizarNomeArquivo(texto) {
+  return String(texto || '')
+    .replace(CARACTERES_INVALIDOS_ARQUIVO, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Nome do arquivo .docx de um contrato gerado: "{Tipo} - {Razão Social}.docx".
+ * "{Tipo}" é o rótulo do campo "Tipo" do ModeloContrato (Termo de
+ * Associação/Aditivo Contratual — não o campo "Nome", que pode ter texto
+ * extra tipo "(Pessoa Jurídica)"). "{Razão Social}" vem sempre do payload do
+ * Cadastro, PF ou PJ (aqui esse campo é sempre preenchido na prática,
+ * independente do tipo de pessoa). Cada contrato gerado tem seu próprio
+ * nome, mesmo quando várias saem juntas pro mesmo Cadastro.
+ */
+function nomeArquivoContrato(modelo, dicionario) {
+  const tipoLabel = TIPO_MODELO_LABEL[modelo.tipo] || modelo.tipo;
+  const razaoSocial = dicionario['Razão Social'] || '';
+  const base = sanitizarNomeArquivo(`${tipoLabel} - ${razaoSocial}`);
+  return `${base}.docx`;
+}
+
 // Mapeia "Descrição do Serviço" pro texto de "forma de pagamento" usado nas
 // cláusulas à vista/parcelado — não existe um campo próprio de forma de
 // pagamento no formulário hoje, então derivamos daqui. Ajustar esta tabela
@@ -286,7 +327,7 @@ async function gerarContratosParaCadastro(cadastroId) {
     try {
       const htmlFinal = resolverPlaceholders(modelo.conteudo, dicionario);
       const buffer = await gerarDocxBuffer(htmlFinal);
-      const nomeArquivo = `${modelo.nome}.docx`;
+      const nomeArquivo = nomeArquivoContrato(modelo, dicionario);
       const arquivo = await uploadDocx({ nome: nomeArquivo, buffer, pastaId: pasta.id, drive });
       arquivosGerados.push({
         modeloContratoId: modelo.id,
@@ -318,5 +359,7 @@ module.exports = {
   resolverClausulaPagamento,
   formatarDataBr,
   somarMeses,
+  nomeArquivoContrato,
+  sanitizarNomeArquivo,
   gerarContratosParaCadastro,
 };
