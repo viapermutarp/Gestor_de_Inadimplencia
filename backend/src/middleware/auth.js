@@ -36,7 +36,20 @@ module.exports = async function auth(req, res, next) {
     // contra o banco aqui (manteria o access token stateless/rápido); a
     // revogação de uma sessão específica faz efeito no próximo refresh
     // (POST /api/refresh), não neste middleware.
-    req.auth = { type: 'jwt', user: payload.sub, jti: payload.jti };
+    //
+    // "papel"/"franquiaId": claims novos da Fase 2 (multi-franquia) — só
+    // existem em tokens emitidos depois desse deploy; um access token
+    // antigo (emitido antes, ainda não expirado) simplesmente não tem
+    // esses campos no payload, então ficam null aqui. Nada hoje lê
+    // req.auth.papel/franquiaId ainda (chega na Fase 3), então isso não
+    // muda nenhum comportamento agora — só prepara o terreno.
+    req.auth = {
+      type: 'jwt',
+      user: payload.sub,
+      jti: payload.jti,
+      papel: payload.papel ?? null,
+      franquiaId: payload.franquiaId ?? null,
+    };
     return next();
   } catch (err) {
     return res.status(401).json({ error: 'Token de autenticação inválido ou expirado.' });

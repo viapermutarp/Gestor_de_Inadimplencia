@@ -21,20 +21,50 @@ const env = require('../config/env');
  * por request (manteria o JWT stateless/rápido), mas o refresh sempre
  * checa, então revogar uma sessão bloqueia o usuário assim que o access
  * token atual expirar (few minutes, não dias).
+ *
+ * Multi-franquia, Fase 2, Passo 2 (ver docs/plano-multi-franquia.md, seção
+ * 2, e a conversa que aprovou este desenho): o campo "usuario" desta
+ * tabela NÃO mudou de forma — continua uma coluna de texto livre, sem
+ * migração de schema. O que mudou é o que ele guarda: a partir de agora,
+ * sempre o `id` (uuid) de um `Usuario`, nunca mais um nome de login cru.
+ * Isso foi escolhido deliberadamente em vez de renomear a coluna pra
+ * "usuario_id" com uma migração de backfill — o mesmo padrão de risco que
+ * causou o incidente pós-deploy da Fase 1 (mudar a forma de uma coluna
+ * que código existente já lê, exigindo todo esse código ser atualizado no
+ * mesmo passo). Sem schema novo, o efeito é limpo e previsível: uma sessão
+ * criada ANTES deste deploy tem "usuario" = a string crua do login antigo
+ * (ex.: "admin") — `rotacionar` abaixo não acha nenhum `Usuario` com esse
+ * `id` e trata como sessão inválida (401, mesmo caminho de "sessão
+ * expirada/revogada" que já existe). Como o access token já é curto
+ * (`JWT_EXPIRES_IN`, 15min por padrão), o efeito prático é: toda sessão
+ * ativa antes do deploy pede um login novo dentro de, no máximo, 15
+ * minutos — uma vez, esperado, sem perda de dado nem de nenhuma
+ * funcionalidade (diferente do incidente da Fase 1, que foi silencioso).
  */
 
 function gerarHash(valor) {
   return crypto.createHash('sha256').update(String(valor), 'utf8').digest('hex');
 }
 
+/**
+ * `usuario`: o registro completo de `Usuario` (precisa de `id`, `papel`,
+ * `franquiaId`) — não mais uma string crua. O access token passa a
+ * carregar `papel`/`franquiaId` como claims, usados a partir da Fase 3
+ * pela extension de isolamento; hoje (Fase 2) ainda não são lidos por
+ * nada, só viajam no token.
+ */
 function gerarAccessToken(usuario, jti) {
-  return jwt.sign({ sub: usuario, jti }, env.jwtSecret, { expiresIn: env.jwtExpiresIn });
+  return jwt.sign(
+    { sub: usuario.id, papel: usuario.papel, franquiaId: usuario.franquiaId, jti },
+    env.jwtSecret,
+    { expiresIn: env.jwtExpiresIn }
+  );
 }
 
 /**
- * Cria uma sessão nova: um RefreshToken (persistido, hasheado) + um access
- * token cujo "jti" aponta pra ele. Usado tanto no login quanto na rotação
- * do refresh (ver `rotacionar`).
+ * Cria uma sessão nova: um RefreshToken (persistido, hasheado, guardando
+ * o id do Usuario) + um access token cujo "jti" aponta pra ele. Usado
+ * tanto no login quanto na rotação do refresh (ver `rotacionar`).
  */
 async function criarSessao(usuario) {
   const refreshTokenValor = crypto.randomBytes(48).toString('hex');
@@ -43,7 +73,7 @@ async function criarSessao(usuario) {
   const registro = await prisma.refreshToken.create({
     data: {
       tokenHash: gerarHash(refreshTokenValor),
-      usuario,
+      usuario: usuario.id,
       expiraEm,
     },
   });
@@ -59,13 +89,15 @@ async function criarSessao(usuario) {
 
 /**
  * POST /api/refresh — troca um refresh token válido (existente, não
- * revogado, não expirado) por uma sessão nova: revoga o refresh token
- * usado e cria outro (rotação — um refresh token só pode ser trocado uma
- * vez; se alguém tentar reusar um já trocado, cai no `null` abaixo e é
- * tratado como sessão inválida, já que o valor original não existe mais
- * ativo no banco). Retorna null se o token não existir, já tiver sido
- * revogado, ou estiver expirado — quem chama decide como reagir (o
- * controller responde 401, pedindo login de novo).
+ * revogado, não expirado, e cujo Usuario associado ainda existe e está
+ * ativo — junto com a franquia dele, se tiver uma) por uma sessão nova:
+ * revoga o refresh token usado e cria outro (rotação — um refresh token
+ * só pode ser trocado uma vez; se alguém tentar reusar um já trocado, cai
+ * no `null` abaixo). Retorna null se o token não existir, já tiver sido
+ * revogado, estiver expirado, ou se o Usuario dono da sessão não existir
+ * mais / estiver desativado / a franquia dele estiver desativada — em
+ * todos os casos, quem chama decide como reagir (o controller responde
+ * 401, pedindo login de novo).
  */
 async function rotacionar(refreshTokenValor) {
   const registro = await prisma.refreshToken.findUnique({
@@ -81,7 +113,21 @@ async function rotacionar(refreshTokenValor) {
     data: { revogadoEm: new Date(), ultimoUsoEm: new Date() },
   });
 
-  return criarSessao(registro.usuario);
+  // "registro.usuario" é o id do Usuario dono da sessão (ver nota no topo
+  // do arquivo). Sessões criadas antes deste deploy guardam a string crua
+  // do login antigo (ex.: "admin"), que nunca bate com nenhum id de
+  // Usuario — cai em "não encontrado" abaixo, tratado como sessão
+  // inválida, de propósito.
+  const usuario = await prisma.usuario.findUnique({
+    where: { id: registro.usuario },
+    include: { franquia: true },
+  });
+
+  if (!usuario) return null;
+  if (!usuario.ativo) return null;
+  if (usuario.franquia && !usuario.franquia.ativo) return null;
+
+  return criarSessao(usuario);
 }
 
 /**
@@ -103,15 +149,23 @@ async function revogar(refreshTokenValor) {
 
 /**
  * Revoga TODAS as sessões ativas de um usuário — ainda não exposta por
- * nenhum endpoint (não há multi-usuário hoje), mas é exatamente o que o
- * futuro "bloquear acesso" do item 2 (multi-franquia) vai chamar quando um
- * usuário for desativado: revogar todos os refresh tokens dele barra login
- * de novo imediatamente, e os access tokens já emitidos ainda funcionam
- * até expirar sozinhos (minutos, não dias — ver JWT_EXPIRES_IN).
+ * nenhum endpoint (chega na Fase 3, junto com a tela de Controle Geral),
+ * mas é exatamente o que "desativar um usuário" vai chamar: revogar todos
+ * os refresh tokens dele barra login de novo imediatamente, e os access
+ * tokens já emitidos ainda funcionam até expirar sozinhos (minutos, não
+ * dias — ver JWT_EXPIRES_IN). Note que revogar já não é estritamente
+ * necessário pra bloquear o acesso — `rotacionar` acima já nega o refresh
+ * de um Usuario com `ativo: false` — mas revogar também garante que
+ * qualquer refresh token ainda não usado desse usuário fica invalidado de
+ * uma vez, sem depender dele tentar renovar pra ser barrado.
+ *
+ * "usuarioId": o `id` do Usuario (mesmo valor guardado em
+ * "refresh_tokens.usuario" a partir da Fase 2 — ver nota no topo do
+ * arquivo). Renomeado de "usuario" pra deixar isso explícito.
  */
-async function revogarTodasDoUsuario(usuario) {
+async function revogarTodasDoUsuario(usuarioId) {
   await prisma.refreshToken.updateMany({
-    where: { usuario, revogadoEm: null },
+    where: { usuario: usuarioId, revogadoEm: null },
     data: { revogadoEm: new Date() },
   });
 }
