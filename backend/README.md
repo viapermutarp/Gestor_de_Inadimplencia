@@ -21,13 +21,38 @@ API de controle de cobrança da **Via Permuta**. Node.js + Express + PostgreSQL 
 - **cadastros_enviados**: `id`, `payload` (json — corpo completo enviado pelo formulário), `status` (`enviado` | `erro`), `resposta_n8n` (texto, nullable — motivo do erro quando o repasse ao n8n falha ou reporta `sucesso: false`), `link_pagamento`/`cliente_asaas_id`/`pedido_bling_id` (texto, nullable — só preenchidos em caso de sucesso, vindos da resposta do n8n), `nome_pasta` (texto, nullable — campo "Nome da pasta" do formulário), `modelos_contrato_ids` (array de texto — ids de `modelos_contrato` selecionados em "Contratos a gerar"), `pasta_drive_id`/`arquivos_gerados` (nullable, preenchidos de forma assíncrona depois que a geração de contratos termina — ver seção "Geração automática de contratos" abaixo), `criado_em` — uma linha por chamada a `POST /api/cadastros` (fluxo de Cadastro/Faturamento, substitui o gatilho do Kommo)
 - **cobrancas_ignoradas**: `id`, `asaas_payment_id` (único, indexado), `motivo` (texto, nullable), `criado_em` — lista manual de cobranças do Asaas a excluir do cálculo de Taxa de Inadimplência (ver seção própria abaixo)
 - **modelos_contrato**: `id`, `nome`, `tipo` (`"TERMO"` | `"ADITIVO"`, só organizacional), `conteudo` (HTML do editor rich text, com placeholders `{{...}}`), `ativo` (soft-delete — `false` quando "removido" via `DELETE /api/contratos/:id`, nunca é hard-deletado), `criado_em`, `atualizado_em` — ver seção "Geração automática de contratos" abaixo
+- **refresh_tokens**: `id` (uuid, usado como `jti` no access token da sessão), `token_hash` (SHA-256, único — o valor em texto puro nunca é persistido), `usuario`, `criado_em`, `expira_em`, `revogado_em` (nullable — `null` = sessão ativa), `ultimo_uso_em` — sessões do painel, ver "Autenticação do painel: access token curto + refresh token" abaixo
 
 ## Autenticação
 
 Todas as rotas em `/api/*` exigem o header `Authorization: Bearer <token>`, **exceto** `POST /api/login`. O token pode ser:
 
 1. **Qualquer API key ativa** cadastrada em `api_keys` — para integrações externas (ex.: n8n em `POST /api/sync` e `POST /api/cadastros`).
-2. Um **JWT** obtido via `POST /api/login` — para uso do painel administrativo.
+2. Um **JWT (access token)** obtido via `POST /api/login` — para uso do painel administrativo. Ver seção seguinte.
+
+### Autenticação do painel: access token curto + refresh token
+
+**Diagnóstico do bug relatado** ("sessão expira, peço login de novo, mas o token continua sendo o mesmo depois de logar de novo"): não era cache do frontend nem o formulário deixando de submeter — era a própria assinatura do JWT. `jwt.sign` (HS256) é **determinístico**: mesmo header + mesmo payload + mesmo segredo sempre produzem a mesma assinatura, byte a byte. O login antigo assinava só `{ sub: usuario }`, e a única coisa que varia de um login pro outro é o claim automático `iat` (issued-at, resolução de **1 segundo**) — então dois logins com as mesmas credenciais dentro do mesmo segundo geravam o token **idêntico**. Confirmado lendo o código e reproduzido empiricamente (`jwt.sign` chamado duas vezes seguidas no mesmo processo gera o mesmo valor) e também com o teste de ponta a ponta descrito na seção de testes abaixo (dois `POST /api/login` disparados em paralelo, mesmas credenciais — sem o fix, geravam o mesmo access token). Isso por si só já é uma falha de segurança (duas sessões deveriam sempre ser distinguíveis), e também explica por raiz por que só aumentar o tempo de expiração não resolveria nada.
+
+**Fix**: o login deixou de emitir um único JWT de vida longa e passou a emitir dois tokens:
+
+- **Access token** (`token` na resposta) — um JWT continua sendo isso, mas agora **curto** (`JWT_EXPIRES_IN`, padrão `15m`) e carrega um claim `jti` = id de um `RefreshToken` novo, único por sessão (uuid). Isso garante que **duas sessões nunca produzem o mesmo access token**, mesmo com login simultâneo e mesmas credenciais — o `jti` sempre difere, então o payload assinado sempre difere. Verificado no middleware (`src/middleware/auth.js`) do jeito de sempre (`jwt.verify`, stateless, sem tocar o banco a cada requisição).
+- **Refresh token** (`refresh_token` na resposta) — uma string aleatória (32 bytes), guardada no banco só como hash SHA-256 (`refresh_tokens.token_hash`, mesmo padrão de `api_keys` — o valor em texto puro nunca é persistido), com validade de `REFRESH_TOKEN_TTL_DIAS` dias (padrão 30). É o refresh token que sustenta a sessão de fato: quando o access token expira (a cada 15min, por design — isso é esperado, não é bug), o frontend chama `POST /api/refresh` em segundo plano pra trocar por um par novo, sem pedir a senha de novo. Um refresh token só pode ser usado **uma vez** (rotação: cada troca revoga o antigo e cria outro) — reusar um já trocado, ou um revogado, ou um expirado, responde 401 e força login de verdade.
+
+**Revogação — o motivo de existir isso tudo.** `POST /api/logout` revoga o refresh token da sessão atual imediatamente (idempotente). Mais importante pro que vem a seguir (item da expansão multi-franquia): `revogarTodasDoUsuario` em `src/services/refreshTokens.service.js` já existe pronta (ainda sem endpoint, porque hoje só existe um usuário/admin) — é exatamente o que "bloquear o acesso de um usuário imediatamente" vai chamar quando o modelo `Usuario` existir: revogar todos os refresh tokens dele barra login de novo na hora; o access token que ele já tinha em mãos continua valendo só até expirar sozinho (no máximo `JWT_EXPIRES_IN`, minutos — não mais dias como antes). Se "imediatamente" precisar ser mais estrito que isso (revogar em segundos, não em até 15min), a opção é o middleware passar a checar o `jti` contra o banco a cada requisição — um trade-off deliberado entre performance (JWT stateless) e revogação instantânea, pra decidir junto com o desenho do multi-usuário.
+
+**Endpoints:**
+
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/api/login` | Body `{ usuario, senha }`. Retorna `{ token, refresh_token, tipo: "Bearer", expira_em }`. Única rota pública que exige credenciais. |
+| POST | `/api/refresh` | Body `{ refresh_token }`. Troca por um par novo (rotação). 401 se o token não existir, já tiver sido usado, estiver revogado ou expirado — resposta igual à de um access token inválido, pra manter o frontend simples. |
+| POST | `/api/logout` | Body `{ refresh_token }`. Revoga só essa sessão; as demais (outros logins/dispositivos) continuam ativas. Sempre 204, mesmo chamado de novo ou com token já revogado/inexistente. |
+
+**Variáveis de ambiente novas/alteradas:**
+
+- `JWT_EXPIRES_IN` — mudou o **padrão** de `8h` pra `15m` (o valor antigo fazia sentido quando o JWT era a sessão inteira; agora é só o access token, renovado sozinho pelo refresh). Se você tinha essa variável setada explicitamente no `.env`/EasyPanel esperando 8h de sessão sem reforço, pode remover — o refresh token (30 dias) é quem sustenta a sessão agora.
+- `REFRESH_TOKEN_TTL_DIAS` — novo, padrão `30`. Quantos dias um refresh token vale sem uso.
 
 ### Múltiplas API keys
 
@@ -81,7 +106,9 @@ Isso vale inclusive para chamadas **sem nenhum filtro** — antes, `GET /api/ass
 
 | Método | Rota | Descrição |
 |---|---|---|
-| POST | `/api/login` | Login fixo (`ADMIN_USER`/`ADMIN_PASSWORD`), retorna JWT. Única rota pública. |
+| POST | `/api/login` | Login fixo (`ADMIN_USER`/`ADMIN_PASSWORD`). Retorna `{ token, refresh_token, tipo, expira_em }` — ver "Autenticação do painel" acima. |
+| POST | `/api/refresh` | Body `{ refresh_token }`. Troca por um access token + refresh token novos (rotação). 401 se inválido/revogado/expirado. |
+| POST | `/api/logout` | Body `{ refresh_token }`. Revoga a sessão. Sempre 204. |
 | POST | `/api/sync` | Recebe array de associados (com `cobrancas` aninhadas) e faz upsert. Cada associado aceita `cpf_cnpj`, `nome`, `telefone` (obrigatórios) e `email` (opcional). Registra uma linha em `sync_log` a cada chamada. |
 | POST | `/api/sync/atualizar` | Sem corpo. Dispara sob demanda o webhook do n8n (`N8N_SYNC_WEBHOOK_URL`) que sincroniza com o Asaas e chama `POST /api/sync` internamente — usado pelo botão "Atualizar" do Dashboard. Timeout de 30s. Ver seção própria abaixo. |
 | GET | `/api/associados` | **Paginada** (`page`, `limit` — padrão 1/100, máximo 100). Filtros `em_negociacao`, `em_juridico`, `bloqueado` (`true`\|`false`, combináveis via AND) e `busca` (nome, cpf_cnpj ou telefone, contains case-insensitive). Sem filtro/busca: cada associado vem com todas as cobranças; com algum filtro/busca ativo: só com as em aberto (`pending`/`overdue`). **Sem nenhum dos três toggles de status (aba "Todos" — `busca` sozinho não conta)**: só retorna associados com pelo menos 1 cobrança `pending`/`overdue`, mesmo critério do card de resumo — assim que qualquer toggle é informado, essa exigência some (ver seção própria abaixo). Ordenada pelo `dias_diferenca` mais crítico (mais negativo) em aberto, calculado e aplicado **no banco antes da paginação** (ver seção própria abaixo). Resposta: `{ dados, paginacao }` — ver aviso de breaking change acima. |
@@ -713,6 +740,7 @@ curl http://localhost:3000/health
 curl -X POST http://localhost:3000/api/login \
   -H "Content-Type: application/json" \
   -d '{"usuario":"admin","senha":"troque-esta-senha"}'
+# {"token":"...", "refresh_token":"...", "tipo":"Bearer", "expira_em":"15m"}
 ```
 
 Para rodar em background: `docker-compose up -d --build`. Para derrubar: `docker-compose down` (use `docker-compose down -v` para também apagar o volume do Postgres).
@@ -734,7 +762,8 @@ npm run dev
    - `API_KEY` → gere uma chave forte você mesmo (ex.: `openssl rand -hex 32`) e defina fixa aqui; ela só é usada como semente da migração automática pra `api_keys` na primeira inicialização (ver seção "Múltiplas API keys" acima) — depois disso, gerencie chaves por `POST /api/config/api-keys`
    - `JWT_SECRET` → idem, gere com `openssl rand -hex 48`
    - `ADMIN_USER` / `ADMIN_PASSWORD` → credenciais do painel
-   - `JWT_EXPIRES_IN` → opcional, padrão `8h`
+   - `JWT_EXPIRES_IN` → opcional, padrão `15m` (duração do access token — não precisa aumentar pra "a sessão durar mais"; quem sustenta a sessão é o refresh token, ver "Autenticação do painel" acima)
+   - `REFRESH_TOKEN_TTL_DIAS` → opcional, padrão `30` (duração da sessão de fato)
    - `PORT` → `3000` (ou o que o EasyPanel exigir)
 3. Configure a porta exposta do serviço como `3000` (a mesma do `EXPOSE` do Dockerfile).
 4. No deploy, o `docker-entrypoint.sh` roda `prisma migrate deploy` automaticamente antes de iniciar a API — não é necessário rodar migrações manualmente, mas o serviço de banco precisa estar acessível no boot.
@@ -1090,3 +1119,12 @@ Antes do primeiro deploy real, recomendamos rodar `docker-compose up --build` lo
 - `nomeArquivoContrato` usa o rótulo do campo "Tipo" (`TERMO` → "Termo de Associação", `ADITIVO` → "Aditivo Contratual"), não o campo "Nome" do modelo (testado com um modelo cujo "Nome" tem texto extra — `"Termo de Associação (Pessoa Jurídica)"` — confirmando que o texto extra não vaza pro nome do arquivo).
 - `sanitizarNomeArquivo` substitui por espaço cada um de `\ / : * ? " < > |` e caracteres de controle, colapsa espaços múltiplos e apara as pontas — testado isoladamente e no cenário real pedido (Razão Social com um CNPJ colado junto, contendo "/").
 - **Teste de integração de ponta a ponta**: Postgres real (`embedded-postgres`, migrações aplicadas), 2 `ModeloContrato` (`TERMO`/`ADITIVO`) e 1 `CadastroEnviado` selecionando os dois, cliente Drive fake (`_definirClienteParaTeste`, mesma técnica de `test-shared-drive.js`) capturando o `requestBody.name` de cada `files.create`. Confirmado: (a) saem 2 arquivos com nomes diferentes pro mesmo Cadastro; (b) o nome de cada um bate com a regra; (c) o nome efetivamente enviado ao Drive (`requestBody.name`) é idêntico ao persistido em `cadastros_enviados.arquivos_gerados` — sem essa checagem, um bug em `uploadDocx` poderia fazer os dois divergirem sem nenhum teste pegar; (d) um segundo Cadastro com Razão Social suja (`"ACME LTDA 12.345.678/0001-90"`) gera o arquivo já sanitizado, sem lançar erro.
+
+**Autenticação do painel: access token curto + refresh token** (`test-auth-refresh.js`, 22/22, servidor Express real — não mocks de rede — com `JWT_EXPIRES_IN=2s` pra testar expiração de verdade em segundos em vez de esperar minutos):
+
+- Reproduz e confirma a causa raiz do bug relatado: dois `POST /api/login` disparados **em paralelo** (mesmas credenciais, `Promise.all`) geram `token` e `refresh_token` **diferentes** em cada resposta — antes do fix (payload do JWT sem `jti`), esse mesmo cenário gerava o access token idêntico, porque `jwt.sign` é determinístico e o único campo que varia (`iat`) só muda a cada segundo.
+- Fluxo completo validado: login → chamada autenticada funciona → access token expira sozinho (2s) → mesma chamada com o token vencido responde 401 com a mensagem exata reportada pelo usuário ("Token de autenticação inválido ou expirado.") → `POST /api/refresh` com o refresh token troca por um par **novo** (access E refresh diferentes dos anteriores) → chamada autenticada volta a funcionar com o access token novo.
+- Rotação: reusar o refresh token antigo (já trocado por um novo via `/refresh`) falha com 401 — cada refresh token só serve uma vez.
+- Revogação: `POST /api/logout` revoga a sessão; depois disso, nem `/refresh` nem nada derivado dela funciona. Idempotente (chamar de novo com o mesmo token já revogado continua 204). Revogar uma sessão **não** afeta outra sessão independente (mesmo usuário, login simultâneo diferente) — pré-requisito confirmado pro "bloquear usuário imediatamente" do item de expansão multi-franquia.
+- Validações básicas: `/refresh` sem `refresh_token` no body → 400; `/refresh` com um valor que nunca existiu → 401 (não 500); `/login` com senha errada → 401 (comportamento antigo preservado).
+- `npm install` (backend): nenhuma dependência nova (usa só `jsonwebtoken`, `crypto`, já presentes).

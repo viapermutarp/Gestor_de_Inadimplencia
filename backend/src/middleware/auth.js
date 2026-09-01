@@ -31,7 +31,12 @@ module.exports = async function auth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, env.jwtSecret);
-    req.auth = { type: 'jwt', user: payload.sub };
+    // "jti" identifica a sessão (RefreshToken) que originou este access
+    // token — ver src/services/refreshTokens.service.js. Não é checado
+    // contra o banco aqui (manteria o access token stateless/rápido); a
+    // revogação de uma sessão específica faz efeito no próximo refresh
+    // (POST /api/refresh), não neste middleware.
+    req.auth = { type: 'jwt', user: payload.sub, jti: payload.jti };
     return next();
   } catch (err) {
     return res.status(401).json({ error: 'Token de autenticação inválido ou expirado.' });

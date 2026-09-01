@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { clearToken } from "@/lib/auth";
+import { logout } from "@/lib/api";
 import { IconLogout } from "@/components/icons";
 
 const NAV_LINKS = [
@@ -18,6 +19,12 @@ export default function AppHeader() {
   const router = useRouter();
 
   function handleLogout() {
+    // Revoga a sessão no servidor (o refresh token fica inválido, então
+    // ninguém consegue renová-la de novo) — best-effort, dispara e não
+    // espera: se a rede falhar aqui, o usuário ainda assim sai localmente
+    // (clearToken já resolve isso do lado do navegador) e a sessão expira
+    // sozinha mais tarde. Precisa ler o refresh token ANTES de limpar.
+    logout().catch(() => {});
     clearToken();
     router.replace("/login");
   }

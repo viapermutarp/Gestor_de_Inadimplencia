@@ -65,7 +65,20 @@ function loadEnv() {
     databaseUrl: process.env.DATABASE_URL,
     apiKey: process.env.API_KEY,
     jwtSecret: process.env.JWT_SECRET,
-    jwtExpiresIn: process.env.JWT_EXPIRES_IN || '8h',
+    // Access token curto de propósito (ver "Autenticação: access token
+    // curto + refresh token" no README) — a sessão em si dura
+    // REFRESH_TOKEN_TTL_DIAS, renovada em segundo plano pelo frontend via
+    // POST /api/refresh sempre que o access token expira. Mudou de "8h"
+    // (valor antigo, quando só existia um token de vida longa) pra "15m":
+    // se você tinha JWT_EXPIRES_IN configurado explicitamente esperando o
+    // token durar o dia inteiro sozinho, isso agora é papel do refresh
+    // token, não do access token.
+    jwtExpiresIn: process.env.JWT_EXPIRES_IN || '15m',
+    // Quantos dias um refresh token (a sessão de fato) fica válido sem uso.
+    // Revogar (POST /api/logout, ou desativar o usuário — item 2) barra o
+    // login de novo imediatamente; o access token já emitido continua
+    // válido só até expirar sozinho (minutos, não dias).
+    refreshTokenTtlDias: Number(process.env.REFRESH_TOKEN_TTL_DIAS) || 30,
     adminUser: process.env.ADMIN_USER,
     adminPassword: process.env.ADMIN_PASSWORD,
   };

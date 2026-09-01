@@ -1,4 +1,4 @@
-import { getToken, clearToken } from "./auth";
+import { getToken, getRefreshToken, setSession, clearToken } from "./auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -10,7 +10,72 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path, { method = "GET", body, auth = true, timeoutMs } = {}) {
+async function fetchJson(path, { method, headers, body, signal }) {
+  const res = await fetch(`${API_URL}${path}`, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
+  });
+
+  let data = null;
+  const text = await res.text();
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+  }
+
+  return { res, data };
+}
+
+// Garante uma única chamada a POST /api/refresh por vez, mesmo se várias
+// chamadas autenticadas levarem 401 (access token vencido) ao mesmo tempo
+// — o backend ROTACIONA o refresh token a cada uso (um refresh token só
+// funciona uma vez), então duas chamadas concorrentes de refresh
+// invalidariam uma à outra se não esperassem a mesma promise. Todo mundo
+// que chega aqui enquanto uma renovação já está em andamento espera o
+// mesmo resultado em vez de disparar a sua própria.
+let renovacaoEmAndamento = null;
+
+async function renovarSessao() {
+  if (renovacaoEmAndamento) return renovacaoEmAndamento;
+
+  renovacaoEmAndamento = (async () => {
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) return false;
+
+    try {
+      const { res, data } = await fetchJson("/api/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: { refresh_token: refreshToken },
+      });
+      if (!res.ok || !data?.token) return false;
+      setSession({ token: data.token, refreshToken: data.refresh_token });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  try {
+    return await renovacaoEmAndamento;
+  } finally {
+    renovacaoEmAndamento = null;
+  }
+}
+
+/**
+ * `permitirRenovacao` controla se um 401 nesta chamada deve disparar uma
+ * tentativa de renovação silenciosa via refresh token antes de desistir —
+ * fica `false` na segunda tentativa (depois de já ter renovado uma vez)
+ * pra nunca entrar em loop, e nas próprias chamadas de /login e /refresh
+ * (que não fazem sentido "renovar").
+ */
+async function request(path, { method = "GET", body, auth = true, timeoutMs, permitirRenovacao = true } = {}) {
   if (!API_URL) {
     throw new ApiError(
       "NEXT_PUBLIC_API_URL não está configurada. Defina a URL da API no .env.local.",
@@ -33,13 +98,9 @@ async function request(path, { method = "GET", body, auth = true, timeoutMs } = 
   const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
   let res;
+  let data;
   try {
-    res = await fetch(`${API_URL}${path}`, {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: controller?.signal,
-    });
+    ({ res, data } = await fetchJson(path, { method, headers, body, signal: controller?.signal }));
   } catch (err) {
     if (err.name === "AbortError") {
       throw new ApiError("Tempo esgotado ao aguardar resposta da API.", 0);
@@ -49,18 +110,22 @@ async function request(path, { method = "GET", body, auth = true, timeoutMs } = 
     if (timeoutId) clearTimeout(timeoutId);
   }
 
-  let data = null;
-  const text = await res.text();
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = null;
-    }
-  }
-
   if (!res.ok) {
-    if (res.status === 401 && auth) clearToken();
+    // 401 numa chamada autenticada quase sempre é access token vencido
+    // (dura poucos minutos por design) — tenta renovar em segundo plano
+    // com o refresh token e refazer ESTA MESMA chamada uma única vez,
+    // antes de considerar a sessão de fato encerrada. Só desiste (limpa a
+    // sessão) se a renovação também falhar (refresh token ausente,
+    // expirado ou revogado).
+    if (res.status === 401 && auth && permitirRenovacao) {
+      const renovou = await renovarSessao();
+      if (renovou) {
+        return request(path, { method, body, auth, timeoutMs, permitirRenovacao: false });
+      }
+      clearToken();
+    } else if (res.status === 401 && auth) {
+      clearToken();
+    }
     throw new ApiError(data?.error || `Erro na requisição (${res.status}).`, res.status);
   }
 
@@ -69,6 +134,13 @@ async function request(path, { method = "GET", body, auth = true, timeoutMs } = 
 
 export function login(usuario, senha) {
   return request("/api/login", { method: "POST", body: { usuario, senha }, auth: false });
+}
+
+/** POST /api/logout — revoga a sessão no servidor. Best-effort: quem chama decide o que fazer se falhar (ver AppHeader). */
+export function logout() {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return Promise.resolve();
+  return request("/api/logout", { method: "POST", body: { refresh_token: refreshToken }, auth: false });
 }
 
 /**

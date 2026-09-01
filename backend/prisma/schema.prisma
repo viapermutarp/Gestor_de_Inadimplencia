@@ -183,6 +183,33 @@ model ModeloContrato {
   @@map("modelos_contrato")
 }
 
+/// Refresh tokens da sessão do painel (ver src/services/refreshTokens.service.js
+/// e "Autenticação: access token curto + refresh token" no README). Guarda só
+/// o hash SHA-256 do valor real (nunca o token em texto puro — mesmo padrão
+/// de ApiKey), com um "id" próprio (uuid) usado como "jti" (claim único)
+/// dentro do access token correspondente — isso garante que dois logins
+/// nunca produzem o mesmo access token, mesmo com as mesmas credenciais no
+/// mesmo segundo (jwt.sign é determinístico: mesmo header+payload+segredo
+/// sempre gera a mesma assinatura; sem um "jti" único por sessão, dois
+/// logins dentro do mesmo segundo geravam tokens byte-a-byte idênticos).
+/// "usuario" hoje é sempre o admin único (ADMIN_USER); quando o modelo
+/// Usuario (multi-franquia) existir, este campo dá lugar a um
+/// usuarioId (FK) — a troca é direta, sem mudar o resto do fluxo.
+/// "revogadoEm" null = sessão ativa; nunca deletado, mantém histórico.
+model RefreshToken {
+  id          String    @id @default(uuid())
+  tokenHash   String    @unique @map("token_hash")
+  usuario     String
+  criadoEm    DateTime  @default(now()) @map("criado_em")
+  expiraEm    DateTime  @map("expira_em")
+  revogadoEm  DateTime? @map("revogado_em")
+  ultimoUsoEm DateTime? @map("ultimo_uso_em")
+
+  @@index([usuario])
+  @@index([revogadoEm])
+  @@map("refresh_tokens")
+}
+
 /// Lista manual de cobranças do Asaas a excluir do cálculo de Taxa de
 /// Inadimplência (ver GET /api/inadimplencia/resumo), independente da
 /// exclusão automática por palavra-chave (ver "configuracoes" ->
