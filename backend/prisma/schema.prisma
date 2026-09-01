@@ -8,8 +8,61 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// Franquia (unidade Via Permuta) — base do isolamento multi-tenant (ver
+/// docs/plano-multi-franquia.md). Cada franquia tem seus próprios dados,
+/// credenciais/integrações (seção 3 do plano) e exatamente 1 Usuario (ver
+/// @@unique([franquiaId]) em Usuario) — SUPER_ADMIN é a única exceção, sem
+/// franquia própria, com acesso a todas.
+model Franquia {
+  id       String   @id @default(uuid())
+  nome     String
+  ativo    Boolean  @default(true)
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  usuarios           Usuario[]
+  associados         Associado[]
+  cadastrosEnviados  CadastroEnviado[]
+  modelosContrato    ModeloContrato[]
+  cobrancasIgnoradas CobrancaIgnorada[]
+  syncLogs           SyncLog[]
+  apiKeys            ApiKey[]
+  configuracoes      Configuracao[]
+
+  @@map("franquias")
+}
+
+/// Usuário do painel — substitui o antigo login único via ADMIN_USER/
+/// ADMIN_PASSWORD (ver docs/plano-multi-franquia.md, seção 2, e
+/// src/services/refreshTokens.service.js). "papel": "SUPER_ADMIN" (sem
+/// franquia, vê todas) ou "FRANQUIA" (acesso completo à própria franquia —
+/// Dashboard/Cadastro/Contratos/Inadimplência/Jurídico/Configurações).
+/// Validado como string livre em código, não enum do Postgres, pra permitir
+/// reintroduzir papéis mais granulares (ex.: ADMIN_FRANQUIA/OPERADOR) sem
+/// migração de schema, se a trava de 1-usuário-por-franquia for revista.
+/// @@unique([franquiaId]) trava 1 usuário por franquia no nível do banco
+/// (não só na tela de Controle Geral) — Postgres ignora NULL em índice
+/// único, então múltiplos SUPER_ADMIN (franquiaId: null) continuam
+/// permitidos.
+model Usuario {
+  id            String    @id @default(uuid())
+  nome          String
+  email         String    @unique
+  senhaHash     String    @map("senha_hash")
+  papel         String
+  franquiaId    String?   @map("franquia_id")
+  franquia      Franquia? @relation(fields: [franquiaId], references: [id])
+  ativo         Boolean   @default(true)
+  criadoEm      DateTime  @default(now()) @map("criado_em")
+  ultimoLoginEm DateTime? @map("ultimo_login_em")
+
+  @@unique([franquiaId])
+  @@map("usuarios")
+}
+
 model Associado {
   id                     String    @id @default(uuid())
+  franquiaId             String    @map("franquia_id")
+  franquia               Franquia  @relation(fields: [franquiaId], references: [id])
   cpfCnpj                String    @unique @map("cpf_cnpj")
   nome                   String
   telefone               String
@@ -27,6 +80,7 @@ model Associado {
   historicoStatus HistoricoStatusAssociado[]
 
   @@index([cpfCnpj])
+  @@index([franquiaId])
   @@map("associados")
 }
 
@@ -78,13 +132,21 @@ model HistoricoStatusAssociado {
   @@map("historico_status_associado")
 }
 
-/// Tabela de configurações persistidas em runtime (ex.: API_KEY atual),
-/// para permitir leitura/alteração sem depender só de variáveis de ambiente.
+/// Tabela de configurações persistidas em runtime (ex.: asaas_api_key,
+/// drive_pasta_raiz_id, google_service_account_json — ver
+/// docs/plano-multi-franquia.md, seção 3), para permitir leitura/alteração
+/// sem depender só de variáveis de ambiente. Chave primária composta
+/// (chave, franquia_id): cada franquia tem sua própria linha por chave de
+/// configuração, sem enxergar a das outras.
 model Configuracao {
-  chave        String   @id
+  chave        String
+  franquiaId   String   @map("franquia_id")
+  franquia     Franquia @relation(fields: [franquiaId], references: [id])
   valor        String
   atualizadoEm DateTime @updatedAt @map("atualizado_em")
 
+  @@id([chave, franquiaId])
+  @@index([franquiaId])
   @@map("configuracoes")
 }
 
@@ -102,6 +164,8 @@ model Configuracao {
 /// migrarChaveLegadaSeNecessario em apiKeys.service.js.
 model ApiKey {
   id                String    @id @default(uuid())
+  franquiaId        String    @map("franquia_id")
+  franquia          Franquia  @relation(fields: [franquiaId], references: [id])
   nome              String
   hash              String    @unique
   tamanho           Int
@@ -111,17 +175,21 @@ model ApiKey {
   revogadaEm        DateTime? @map("revogada_em")
 
   @@index([revogadaEm])
+  @@index([franquiaId])
   @@map("api_keys")
 }
 
 /// Registro de cada execução de POST /api/sync, usado por GET /api/config/sync-log.
 model SyncLog {
   id                         String   @id @default(uuid())
+  franquiaId                 String   @map("franquia_id")
+  franquia                   Franquia @relation(fields: [franquiaId], references: [id])
   executadoEm                DateTime @default(now()) @map("executado_em")
   totalAssociadosProcessados Int      @map("total_associados_processados")
   sucesso                    Boolean
 
   @@index([executadoEm])
+  @@index([franquiaId])
   @@map("sync_log")
 }
 
@@ -130,6 +198,8 @@ model SyncLog {
 /// o resultado do repasse para o webhook do n8n (ver POST /api/cadastros).
 model CadastroEnviado {
   id             String   @id @default(uuid())
+  franquiaId     String   @map("franquia_id")
+  franquia       Franquia @relation(fields: [franquiaId], references: [id])
   payload        Json
   status         String   @default("enviado")
   respostaN8n    String?  @map("resposta_n8n")
@@ -158,6 +228,7 @@ model CadastroEnviado {
 
   @@index([criadoEm])
   @@index([status])
+  @@index([franquiaId])
   @@map("cadastros_enviados")
 }
 
@@ -169,6 +240,8 @@ model CadastroEnviado {
 /// envios antigos que já referenciam esse modelo.
 model ModeloContrato {
   id           String   @id @default(uuid())
+  franquiaId   String   @map("franquia_id")
+  franquia     Franquia @relation(fields: [franquiaId], references: [id])
   nome         String
   /// "TERMO" | "ADITIVO" — só pra organizar a listagem na tela /contratos.
   tipo         String
@@ -180,6 +253,7 @@ model ModeloContrato {
   atualizadoEm DateTime @updatedAt @map("atualizado_em")
 
   @@index([ativo])
+  @@index([franquiaId])
   @@map("modelos_contrato")
 }
 
@@ -192,9 +266,12 @@ model ModeloContrato {
 /// mesmo segundo (jwt.sign é determinístico: mesmo header+payload+segredo
 /// sempre gera a mesma assinatura; sem um "jti" único por sessão, dois
 /// logins dentro do mesmo segundo geravam tokens byte-a-byte idênticos).
-/// "usuario" hoje é sempre o admin único (ADMIN_USER); quando o modelo
-/// Usuario (multi-franquia) existir, este campo dá lugar a um
-/// usuarioId (FK) — a troca é direta, sem mudar o resto do fluxo.
+/// "usuario" hoje é sempre o admin único (ADMIN_USER). O modelo Usuario já
+/// existe (multi-franquia, ver acima), mas a troca deste campo por um
+/// usuarioId (FK) fica pra Fase 2 (autenticação) da migração multi-franquia
+/// — só faz sentido backfillar depois que o SUPER_ADMIN é semeado a partir
+/// de ADMIN_USER/ADMIN_PASSWORD (docs/plano-multi-franquia.md, seção 2),
+/// que é lógica de aplicação, não de migração SQL.
 /// "revogadoEm" null = sessão ativa; nunca deletado, mantém histórico.
 model RefreshToken {
   id          String    @id @default(uuid())
@@ -217,9 +294,12 @@ model RefreshToken {
 /// GET/POST/DELETE /api/inadimplencia/exclusoes.
 model CobrancaIgnorada {
   id             String   @id @default(uuid())
+  franquiaId     String   @map("franquia_id")
+  franquia       Franquia @relation(fields: [franquiaId], references: [id])
   asaasPaymentId String   @unique @map("asaas_payment_id")
   motivo         String?
   criadoEm       DateTime @default(now()) @map("criado_em")
 
+  @@index([franquiaId])
   @@map("cobrancas_ignoradas")
 }
