@@ -1,4 +1,5 @@
 const prisma = require('../config/prisma');
+const { obterFranquiaIdPadrao } = require('../services/franquiaPadrao.service');
 
 const STATUS_VALIDOS = ['pending', 'overdue', 'paid'];
 
@@ -24,8 +25,9 @@ const TIMEOUT_WEBHOOK_ATUALIZAR_MS = Number(process.env.SYNC_WEBHOOK_TIMEOUT_MS)
  */
 async function registrarSyncLog({ total, sucesso }) {
   try {
+    const franquiaId = await obterFranquiaIdPadrao();
     await prisma.syncLog.create({
-      data: { totalAssociadosProcessados: total, sucesso },
+      data: { franquiaId, totalAssociadosProcessados: total, sucesso },
     });
   } catch (err) {
     console.error('[sync] Falha ao registrar sync_log:', err.message);
@@ -147,6 +149,8 @@ exports.sync = async (req, res, next) => {
 
     totalAssociadosProcessados = registros.length;
 
+    const franquiaId = await obterFranquiaIdPadrao();
+
     let associadosCriados = 0;
     let associadosAtualizados = 0;
     let cobrancasCriadas = 0;
@@ -171,7 +175,7 @@ exports.sync = async (req, res, next) => {
       const associado = await prisma.associado.upsert({
         where: { cpfCnpj },
         update: { nome, telefone, email: email ?? null },
-        create: { cpfCnpj, nome, telefone, email: email ?? null },
+        create: { franquiaId, cpfCnpj, nome, telefone, email: email ?? null },
       });
 
       if (existente) {

@@ -1,5 +1,6 @@
 const prisma = require('../config/prisma');
 const env = require('../config/env');
+const { obterFranquiaIdPadrao } = require('./franquiaPadrao.service');
 
 const CHAVE_API_KEY = 'api_key';
 const CHAVE_WEBHOOK_CADASTRO_URL = 'n8n_webhook_cadastro_url';
@@ -10,10 +11,20 @@ const CHAVE_ASAAS_API_KEY = 'asaas_api_key';
  * por qualquer configuração persistida em runtime que não precise de um
  * fallback especial (diferente de `getApiKey`, que cai para a variável de
  * ambiente `API_KEY` quando a tabela ainda não tem registro).
+ *
+ * Desde a Fase 1 do multi-franquia, "configuracoes" tem chave primária
+ * composta (chave, franquia_id) — cada franquia tem sua própria linha por
+ * chave. `franquia_id` é resolvido via `obterFranquiaIdPadrao()` (ver esse
+ * arquivo — ponte temporária até a Fase 3 injetar a franquia da sessão
+ * autenticada). O seletor único correto pro Prisma é o nome do campo
+ * composto gerado a partir da ordem do `@@id` no schema: `chave_franquiaId`.
  */
 async function getConfigValor(chave) {
   try {
-    const registro = await prisma.configuracao.findUnique({ where: { chave } });
+    const franquiaId = await obterFranquiaIdPadrao();
+    const registro = await prisma.configuracao.findUnique({
+      where: { chave_franquiaId: { chave, franquiaId } },
+    });
     return registro?.valor ?? null;
   } catch (err) {
     console.error(`[config] Falha ao ler "${chave}" da tabela configuracoes:`, err.message);
@@ -22,10 +33,11 @@ async function getConfigValor(chave) {
 }
 
 async function setConfigValor(chave, valor) {
+  const franquiaId = await obterFranquiaIdPadrao();
   await prisma.configuracao.upsert({
-    where: { chave },
+    where: { chave_franquiaId: { chave, franquiaId } },
     update: { valor },
-    create: { chave, valor },
+    create: { chave, franquiaId, valor },
   });
   return valor;
 }
@@ -40,7 +52,10 @@ async function setConfigValor(chave, valor) {
  */
 async function getApiKey() {
   try {
-    const registro = await prisma.configuracao.findUnique({ where: { chave: CHAVE_API_KEY } });
+    const franquiaId = await obterFranquiaIdPadrao();
+    const registro = await prisma.configuracao.findUnique({
+      where: { chave_franquiaId: { chave: CHAVE_API_KEY, franquiaId } },
+    });
     if (registro?.valor) return registro.valor;
   } catch (err) {
     console.error('[config] Falha ao ler api_key da tabela configuracoes, usando fallback do .env:', err.message);
@@ -50,10 +65,11 @@ async function getApiKey() {
 
 /** Persiste uma nova API_KEY na tabela "configuracoes" (cria ou substitui o registro). */
 async function setApiKey(novaChave) {
+  const franquiaId = await obterFranquiaIdPadrao();
   await prisma.configuracao.upsert({
-    where: { chave: CHAVE_API_KEY },
+    where: { chave_franquiaId: { chave: CHAVE_API_KEY, franquiaId } },
     update: { valor: novaChave },
-    create: { chave: CHAVE_API_KEY, valor: novaChave },
+    create: { chave: CHAVE_API_KEY, franquiaId, valor: novaChave },
   });
   return novaChave;
 }

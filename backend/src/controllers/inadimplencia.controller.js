@@ -2,6 +2,7 @@ const prisma = require('../config/prisma');
 const cache = require('../services/cache.service');
 const { getPalavrasExcluidas, getDiasTolerancia } = require('../services/config.service');
 const { listarPagamentos, obterClientesPorId, AsaasApiError } = require('../services/asaas.service');
+const { obterFranquiaIdPadrao } = require('../services/franquiaPadrao.service');
 
 const FILTRO_TRI_ESTADO_VALIDAS = ['todos', 'sim', 'nao'];
 const VISAO_FAIXAS_VALIDAS = ['aberto', 'historico'];
@@ -781,8 +782,9 @@ exports.criarExclusao = async (req, res, next) => {
       return res.status(400).json({ error: '"motivo" deve ser uma string.' });
     }
 
+    const franquiaId = await obterFranquiaIdPadrao();
     const registro = await prisma.cobrancaIgnorada.create({
-      data: { asaasPaymentId: asaasPaymentId.trim(), motivo: motivo?.trim() || null },
+      data: { franquiaId, asaasPaymentId: asaasPaymentId.trim(), motivo: motivo?.trim() || null },
     });
 
     cache.clear();

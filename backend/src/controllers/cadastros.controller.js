@@ -1,6 +1,7 @@
 const prisma = require('../config/prisma');
 const { getWebhookCadastroUrl } = require('../services/config.service');
 const { gerarContratosParaCadastro } = require('../services/contratosGeracao.service');
+const { obterFranquiaIdPadrao } = require('../services/franquiaPadrao.service');
 
 const LIMITE_PADRAO = 100;
 const LIMITE_MAXIMO = 100;
@@ -207,8 +208,10 @@ exports.criar = async (req, res, next) => {
       ? modelosContratoIds.filter((id) => typeof id === 'string' && id.trim() !== '')
       : [];
 
+    const franquiaId = await obterFranquiaIdPadrao();
     let cadastro = await prisma.cadastroEnviado.create({
       data: {
+        franquiaId,
         payload,
         status: 'enviado',
         nomePasta: typeof nomePasta === 'string' && nomePasta.trim() !== '' ? nomePasta.trim() : null,

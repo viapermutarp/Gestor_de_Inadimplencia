@@ -1,4 +1,5 @@
 const prisma = require('../config/prisma');
+const { obterFranquiaIdPadrao } = require('../services/franquiaPadrao.service');
 
 const TIPOS_VALIDOS = ['TERMO', 'ADITIVO'];
 
@@ -77,8 +78,9 @@ exports.criar = async (req, res, next) => {
       return res.status(400).json({ error: erros.join(' ') });
     }
 
+    const franquiaId = await obterFranquiaIdPadrao();
     const modelo = await prisma.modeloContrato.create({
-      data: { nome: nome.trim(), tipo, conteudo },
+      data: { franquiaId, nome: nome.trim(), tipo, conteudo },
     });
 
     res.status(201).json(serialize(modelo));

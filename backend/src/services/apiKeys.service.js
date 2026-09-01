@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const prisma = require('../config/prisma');
 const { getApiKey } = require('./config.service');
+const { obterFranquiaIdPadrao } = require('./franquiaPadrao.service');
 
 const CARACTERES_VISIVEIS = 6;
 
@@ -38,8 +39,10 @@ async function migrarChaveLegadaSeNecessario() {
   if (!chaveLegada) return;
 
   try {
+    const franquiaId = await obterFranquiaIdPadrao();
     await prisma.apiKey.create({
       data: {
+        franquiaId,
         nome: 'Chave padrão (migrada)',
         hash: gerarHash(chaveLegada),
         tamanho: chaveLegada.length,
@@ -61,8 +64,10 @@ async function migrarChaveLegadaSeNecessario() {
  */
 async function criarChave(nome) {
   const chave = crypto.randomBytes(32).toString('hex');
+  const franquiaId = await obterFranquiaIdPadrao();
   const registro = await prisma.apiKey.create({
     data: {
+      franquiaId,
       nome,
       hash: gerarHash(chave),
       tamanho: chave.length,
