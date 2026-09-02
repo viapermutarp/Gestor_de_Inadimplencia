@@ -70,6 +70,11 @@ const ESCOPO_DIRETO = [
   // resto dos campos "extra" que apontam pra outro tenant-model.
   'etapaJuridico',
   'cardJuridico',
+  // Log de alterações dos cards do Jurídico (ver ajuste "Log de atualização
+  // dos cards do Jurídico" e docblock do model em schema.prisma) — mesma
+  // justificativa de EtapaJuridico/CardJuridico, franquiaId direto na
+  // própria tabela.
+  'historicoCardJuridico',
 ];
 const ESCOPO_RELACAO = ['cobranca', 'historicoStatusAssociado'];
 const MODELOS_TENANT = new Set([...ESCOPO_DIRETO, ...ESCOPO_RELACAO]);

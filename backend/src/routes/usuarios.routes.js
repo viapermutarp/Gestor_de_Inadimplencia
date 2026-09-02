@@ -5,8 +5,9 @@ const ctrl = require('../controllers/usuarios.controller');
 
 const router = Router();
 
-// Bloquear/desbloquear e resetar senha de OUTRO usuário — só SUPER_ADMIN.
-router.patch('/usuarios/:id', auth, exigirSuperAdmin, ctrl.atualizarStatus);
+// Bloquear/desbloquear, trocar telas liberadas e resetar senha de OUTRO
+// usuário — só SUPER_ADMIN.
+router.patch('/usuarios/:id', auth, exigirSuperAdmin, ctrl.atualizar);
 router.post('/usuarios/:id/resetar-senha', auth, exigirSuperAdmin, ctrl.resetarSenha);
 
 // /api/perfil — as PRÓPRIAS credenciais de quem está logado. Não exige

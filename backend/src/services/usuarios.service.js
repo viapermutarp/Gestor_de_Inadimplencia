@@ -107,22 +107,26 @@ function senhaValida(senha) {
 }
 
 /**
- * Multi-franquia — Etapa 5 ("Controle Geral"). Cria o único usuário de uma
- * franquia nova, sempre com papel "FRANQUIA" (ver docs/plano-multi-franquia.md,
- * seção 1.2 — papel simplificado pra 2 valores) — chamado de dentro da
- * mesma transação que cria a Franquia (ver franquias.controller.js:criar),
- * nunca isoladamente, porque não existe franquia "vazia" sem usuário neste
- * desenho. Lança um erro com "status: 409" se o email já estiver em uso —
- * a trava real é o "@unique" do banco (franquia.franquiaId também é único,
- * então tentar um segundo usuário pra mesma franquia dentro da transação
- * também cairia aqui, mas esse caso nunca acontece porque a franquia acabou
- * de ser criada, sem nenhum usuário ainda).
+ * Multi-franquia — Etapa 5 ("Controle Geral") e ajuste "Super Admin pode
+ * adicionar mais de 1 usuário numa franquia" (ver
+ * docs/plano-multi-franquia.md, seção 8, item 8). Cria um usuário
+ * "FRANQUIA" (ver seção 1.2 do plano — papel simplificado pra 2 valores)
+ * vinculado a uma Franquia — chamado tanto de dentro da transação que cria
+ * a Franquia (ver franquias.controller.js:criar, pro usuário titular)
+ * quanto isoladamente pra adicionar um usuário EXTRA a uma franquia já
+ * existente (ver franquias.controller.js:criarUsuarioExtra). Desde que a
+ * trava @@unique([franquiaId]) foi removida do model Usuario, chamar isto
+ * mais de uma vez pra mesma franquia é esperado e suportado — cada
+ * chamada só precisa de um "recursosPermitidos" próprio (não herda nada da
+ * franquia nem de outro usuário dela). Lança um erro com "status: 409" se
+ * o email já estiver em uso — a trava real é o "@unique" do banco em
+ * "usuarios.email" (único GLOBALMENTE, não por franquia).
  */
-async function criarUsuarioFranquia({ franquiaId, nome, email, senha }, tx = prisma) {
+async function criarUsuarioFranquia({ franquiaId, nome, email, senha, recursosPermitidos }, tx = prisma) {
   const senhaHash = await bcrypt.hash(senha, BCRYPT_CUSTO);
   try {
     return await tx.usuario.create({
-      data: { nome, email, senhaHash, papel: 'FRANQUIA', franquiaId, ativo: true },
+      data: { nome, email, senhaHash, papel: 'FRANQUIA', franquiaId, ativo: true, recursosPermitidos },
     });
   } catch (err) {
     if (err.code === 'P2002') {

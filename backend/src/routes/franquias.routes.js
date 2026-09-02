@@ -13,5 +13,10 @@ const router = Router();
 router.get('/franquias', auth, exigirSuperAdmin, ctrl.listar);
 router.post('/franquias', auth, exigirSuperAdmin, ctrl.criar);
 router.patch('/franquias/:id', auth, exigirSuperAdmin, ctrl.atualizar);
+// Ajuste "Super Admin pode adicionar mais de 1 usuário numa franquia" (ver
+// docs/plano-multi-franquia.md, seção 8, item 8) — usuário EXTRA numa
+// franquia já existente, distinto do usuário titular criado junto com
+// POST /franquias.
+router.post('/franquias/:id/usuarios', auth, exigirSuperAdmin, ctrl.criarUsuarioExtra);
 
 module.exports = router;

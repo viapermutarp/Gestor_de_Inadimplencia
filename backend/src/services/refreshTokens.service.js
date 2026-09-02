@@ -48,22 +48,23 @@ function gerarHash(valor) {
 
 /**
  * `usuario`: o registro completo de `Usuario` (precisa de `id`, `papel`,
- * `franquiaId`) — não mais uma string crua. O access token passa a
- * carregar `papel`/`franquiaId` como claims, usados a partir da Fase 3
- * pela extension de isolamento.
+ * `franquiaId`, `recursosPermitidos`) — não mais uma string crua. O access
+ * token passa a carregar `papel`/`franquiaId` como claims, usados a partir
+ * da Fase 3 pela extension de isolamento.
  *
- * "recursosPermitidos" (restrição de telas por franquia — ver escopo do
- * pedido, item 2, e src/config/recursos.js): só entra no token quando
- * `usuario.franquia` já vem carregado (login/refresh sempre incluem essa
- * relação — ver usuarios.service.js:buscarPorEmail e
- * refreshTokens.service.js:rotacionar), e fica de fora pro SUPER_ADMIN
- * (sem franquia própria, sempre irrestrito). É SÓ UX no frontend (ver
- * lib/auth.js:getClaims — decide o que mostrar no menu, nunca decide
- * acesso de verdade) — a mesma ressalva de "papel"/"franquiaId": um valor
- * aqui pode ficar desatualizado até o token expirar (JWT_EXPIRES_IN, 15min
- * por padrão) se o SUPER_ADMIN mudar os recursos da franquia no meio da
- * sessão; a proteção real é sempre o backend (middleware/exigirRecurso.js),
- * que consulta o banco a cada requisição, nunca confia neste claim.
+ * "recursosPermitidos" (restrição de telas por USUÁRIO — ver
+ * docs/plano-multi-franquia.md, seção 8, item 8, e src/config/recursos.js):
+ * até o ajuste "Super Admin pode adicionar mais de 1 usuário numa
+ * franquia", vinha de `usuario.franquia.recursosPermitidos` (a franquia
+ * inteira compartilhava a mesma lista); agora vem direto de
+ * `usuario.recursosPermitidos` (cada usuário tem a sua). Fica de fora do
+ * token pro SUPER_ADMIN (sempre irrestrito, nunca precisa checar isso). É
+ * SÓ UX no frontend (ver lib/auth.js:getClaims — decide o que mostrar no
+ * menu, nunca decide acesso de verdade) — um valor aqui pode ficar
+ * desatualizado até o token expirar (JWT_EXPIRES_IN, 15min por padrão) se o
+ * SUPER_ADMIN mudar os recursos do usuário no meio da sessão; a proteção
+ * real é sempre o backend (middleware/exigirRecurso.js), que consulta o
+ * banco a cada requisição, nunca confia neste claim.
  */
 function gerarAccessToken(usuario, jti) {
   return jwt.sign(
@@ -71,7 +72,7 @@ function gerarAccessToken(usuario, jti) {
       sub: usuario.id,
       papel: usuario.papel,
       franquiaId: usuario.franquiaId,
-      recursosPermitidos: usuario.franquia ? usuario.franquia.recursosPermitidos : undefined,
+      recursosPermitidos: usuario.papel === 'SUPER_ADMIN' ? undefined : usuario.recursosPermitidos,
       jti,
     },
     env.jwtSecret,

@@ -521,11 +521,16 @@ export function atualizarGoogleServiceAccount(credencial) {
  */
 
 /**
- * GET /api/franquias — todas as franquias, cada uma já com o próprio
- * usuário embutido: [{ id, nome, ativo, criado_em, usuario: {...} | null }].
- * "usuario: null" acontece só pra franquias que nunca passaram por
- * `criarFranquia` (hoje, na prática, só a franquia semeada pela migração
- * da Fase 1, sem usuário "FRANQUIA" vinculado).
+ * GET /api/franquias — todas as franquias, cada uma já com TODOS os
+ * usuários dela embutidos (mais antigo primeiro):
+ * [{ id, nome, ativo, criado_em, usuarios: [{ id, nome, email, ativo,
+ * ultimo_login_em, recursos_permitidos }, ...] }]. "usuarios: []" acontece
+ * só pra franquias que nunca passaram por `criarFranquia` nem por
+ * `criarUsuarioExtra` (hoje, na prática, só a franquia semeada pela
+ * migração da Fase 1). Desde o ajuste "Super Admin pode adicionar mais de
+ * 1 usuário numa franquia" (ver docs/plano-multi-franquia.md, seção 8,
+ * item 8), cada usuário tem "recursos_permitidos" PRÓPRIO — a franquia em
+ * si não tem mais um "recursos_permitidos" no nível dela.
  */
 export function listarFranquias() {
   return request("/api/franquias");
@@ -533,10 +538,11 @@ export function listarFranquias() {
 
 /**
  * POST /api/franquias — body { nome, usuario: { nome, email, senha },
- * recursos_permitidos? }. Cria a franquia e o usuário titular dela juntos
- * (não existe franquia "vazia" neste desenho). "recursosPermitidos"
- * (restrição de telas — ver escopo do pedido, item 2) é opcional: sem ele,
- * o backend libera todos os recursos por padrão.
+ * recursos_permitidos? }. Cria a franquia e o usuário TITULAR dela juntos
+ * (não existe franquia "vazia" neste desenho). "recursosPermitidos" é
+ * opcional: sem ele, o titular nasce com todos os recursos liberados por
+ * padrão. Pra adicionar mais usuários a uma franquia já existente, ver
+ * `criarUsuarioExtra` abaixo.
  */
 export function criarFranquia({ nome, usuario, recursosPermitidos }) {
   return request("/api/franquias", {
@@ -550,9 +556,37 @@ export function atualizarFranquia(id, dados) {
   return request(`/api/franquias/${encodeURIComponent(id)}`, { method: "PATCH", body: dados });
 }
 
+/**
+ * POST /api/franquias/:id/usuarios — body { nome, email, senha,
+ * recursos_permitidos? }. Ajuste "Super Admin pode adicionar mais de 1
+ * usuário numa franquia" — adiciona um login EXTRA a uma franquia já
+ * existente, com telas liberadas próprias (independentes dos outros
+ * usuários dela). "recursosPermitidos" opcional: sem ele, nasce com todos
+ * os recursos liberados por padrão.
+ */
+export function criarUsuarioExtra(franquiaId, { nome, email, senha, recursosPermitidos }) {
+  return request(`/api/franquias/${encodeURIComponent(franquiaId)}/usuarios`, {
+    method: "POST",
+    body: { nome, email, senha, recursos_permitidos: recursosPermitidos },
+  });
+}
+
 /** PATCH /api/usuarios/:id — body { ativo }. Bloqueia/desbloqueia o acesso de um usuário. */
 export function atualizarStatusUsuario(id, ativo) {
   return request(`/api/usuarios/${encodeURIComponent(id)}`, { method: "PATCH", body: { ativo } });
+}
+
+/**
+ * PATCH /api/usuarios/:id — body { recursos_permitidos }. Troca as telas
+ * liberadas de um usuário específico (ver escopo do ajuste "Super Admin
+ * pode adicionar mais de 1 usuário numa franquia" — movido de
+ * `atualizarFranquia`, que não aceita mais esse campo).
+ */
+export function atualizarRecursosUsuario(id, recursosPermitidos) {
+  return request(`/api/usuarios/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: { recursos_permitidos: recursosPermitidos },
+  });
 }
 
 /** POST /api/usuarios/:id/resetar-senha — body { senha }. O SUPER_ADMIN define uma senha nova para o usuário. */
@@ -634,10 +668,12 @@ export function buscarAssociadosJuridico(busca) {
 
 /**
  * POST /api/juridico/cards — body { etapa_id, associado_id?, titulo?,
- * descricao?, responsavel?, prazo? }. Exatamente uma origem: "associadoId"
- * (vinculado) OU "titulo" (livre) — nunca os dois, nunca nenhum.
+ * descricao?, observacoes?, responsavel?, prazo? }. Exatamente uma origem:
+ * "associadoId" (vinculado) OU "titulo" (livre) — nunca os dois, nunca
+ * nenhum. "observacoes" segue a MESMA regra de "descricao": só existe pra
+ * card livre (ver ModalCard em app/juridico/page.js).
  */
-export function criarCardJuridico({ etapaId, associadoId, titulo, descricao, responsavel, prazo }) {
+export function criarCardJuridico({ etapaId, associadoId, titulo, descricao, observacoes, responsavel, prazo }) {
   return request("/api/juridico/cards", {
     method: "POST",
     body: {
@@ -645,6 +681,7 @@ export function criarCardJuridico({ etapaId, associadoId, titulo, descricao, res
       associado_id: associadoId || undefined,
       titulo: titulo || undefined,
       descricao: descricao || undefined,
+      observacoes: observacoes || undefined,
       responsavel: responsavel || undefined,
       prazo: prazo || undefined,
     },
@@ -653,8 +690,8 @@ export function criarCardJuridico({ etapaId, associadoId, titulo, descricao, res
 
 /**
  * PATCH /api/juridico/cards/:id — qualquer subconjunto de { titulo,
- * descricao, responsavel, prazo }. Nunca muda associado/etapa (pra mover
- * entre colunas, ver `moverCardJuridico`).
+ * descricao, observacoes, responsavel, prazo }. Nunca muda associado/etapa
+ * (pra mover entre colunas, ver `moverCardJuridico`).
  */
 export function atualizarCardJuridico(id, dados) {
   return request(`/api/juridico/cards/${encodeURIComponent(id)}`, { method: "PATCH", body: dados });

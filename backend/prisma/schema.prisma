@@ -9,36 +9,43 @@ datasource db {
 }
 
 /// Franquia (unidade Via Permuta) — base do isolamento multi-tenant (ver
-/// docs/plano-multi-franquia.md). Cada franquia tem seus próprios dados,
-/// credenciais/integrações (seção 3 do plano) e exatamente 1 Usuario (ver
-/// @@unique([franquiaId]) em Usuario) — SUPER_ADMIN é a única exceção, sem
-/// franquia própria, com acesso a todas.
+/// docs/plano-multi-franquia.md). Cada franquia tem seus próprios dados e
+/// credenciais/integrações (seção 3 do plano), compartilhadas por todos os
+/// usuários dela. Desde o ajuste "Super Admin pode adicionar mais de 1
+/// usuário numa franquia" (ver docs/plano-multi-franquia.md, seção 8, item
+/// 8), uma franquia pode ter 0 (só na prática impossível — toda franquia
+/// nasce com 1 usuário titular), 1 ou N usuários — a trava de
+/// @@unique([franquiaId]) em Usuario foi removida. SUPER_ADMIN é a única
+/// exceção, sem franquia própria, com acesso a todas.
 model Franquia {
   id       String   @id @default(uuid())
   nome     String
   ativo    Boolean  @default(true)
   criadoEm DateTime @default(now()) @map("criado_em")
-  /// Restrição de telas por franquia (ver docs/plano-multi-franquia.md e
-  /// src/config/recursos.js — chaves válidas: RECURSOS). Controlado pelo
-  /// SUPER_ADMIN em Controle Geral, nunca pela própria franquia. Vazio por
-  /// padrão no schema, mas a migração que introduziu este campo já
-  /// preencheu todas as franquias EXISTENTES até então com a lista
-  /// completa (ninguém perdeu acesso ao que já tinha); toda franquia criada
-  /// depois disso recebe uma lista explícita vinda do controller (ver
-  /// franquias.controller.js:criar), nunca fica vazia na prática. Nunca
-  /// afeta SUPER_ADMIN (sempre irrestrito, ver middleware/exigirRecurso.js).
+  /// LEGADO — restrição de telas ficava aqui até o ajuste "Super Admin pode
+  /// adicionar mais de 1 usuário numa franquia" (ver
+  /// docs/plano-multi-franquia.md, seção 8, item 8). Como agora pessoas
+  /// diferentes da mesma franquia podem ter telas liberadas diferentes, o
+  /// controle de verdade passou pra Usuario.recursosPermitidos — nada no
+  /// código lê mais este campo (nem exigirRecurso.js, nem
+  /// franquias.controller.js). Mantido só pra não exigir uma migração
+  /// destrutiva (DROP COLUMN); a migração que fez a troca já copiou o valor
+  /// daqui pro Usuario único que existia em cada franquia até então, então
+  /// o dado antigo está preservado nos dois lugares no momento da troca —
+  /// só o daqui é que para de ser atualizado a partir de agora.
   recursosPermitidos String[] @default([]) @map("recursos_permitidos")
 
-  usuarios           Usuario[]
-  associados         Associado[]
-  cadastrosEnviados  CadastroEnviado[]
-  modelosContrato    ModeloContrato[]
-  cobrancasIgnoradas CobrancaIgnorada[]
-  syncLogs           SyncLog[]
-  apiKeys            ApiKey[]
-  configuracoes      Configuracao[]
-  etapasJuridico     EtapaJuridico[]
-  cardsJuridico      CardJuridico[]
+  usuarios               Usuario[]
+  associados             Associado[]
+  cadastrosEnviados      CadastroEnviado[]
+  modelosContrato        ModeloContrato[]
+  cobrancasIgnoradas     CobrancaIgnorada[]
+  syncLogs               SyncLog[]
+  apiKeys                ApiKey[]
+  configuracoes          Configuracao[]
+  etapasJuridico         EtapaJuridico[]
+  cardsJuridico          CardJuridico[]
+  historicosCardJuridico HistoricoCardJuridico[]
 
   @@map("franquias")
 }
@@ -46,15 +53,22 @@ model Franquia {
 /// Usuário do painel — substitui o antigo login único via ADMIN_USER/
 /// ADMIN_PASSWORD (ver docs/plano-multi-franquia.md, seção 2, e
 /// src/services/refreshTokens.service.js). "papel": "SUPER_ADMIN" (sem
-/// franquia, vê todas) ou "FRANQUIA" (acesso completo à própria franquia —
-/// Dashboard/Cadastro/Contratos/Inadimplência/Jurídico/Configurações).
-/// Validado como string livre em código, não enum do Postgres, pra permitir
-/// reintroduzir papéis mais granulares (ex.: ADMIN_FRANQUIA/OPERADOR) sem
-/// migração de schema, se a trava de 1-usuário-por-franquia for revista.
-/// @@unique([franquiaId]) trava 1 usuário por franquia no nível do banco
-/// (não só na tela de Controle Geral) — Postgres ignora NULL em índice
-/// único, então múltiplos SUPER_ADMIN (franquiaId: null) continuam
-/// permitidos.
+/// franquia, vê todas) ou "FRANQUIA" (acesso completo aos DADOS da própria
+/// franquia — Dashboard/Cadastro/Contratos/Inadimplência/Jurídico/
+/// Configurações continuam compartilhados por todos os usuários da mesma
+/// franquia; o que varia por usuário são as TELAS liberadas, ver
+/// "recursosPermitidos" abaixo). Validado como string livre em código, não
+/// enum do Postgres, pra permitir reintroduzir papéis mais granulares
+/// (ex.: ADMIN_FRANQUIA/OPERADOR) sem migração de schema.
+///
+/// Ajuste "Super Admin pode adicionar mais de 1 usuário numa franquia" (ver
+/// docs/plano-multi-franquia.md, seção 8, item 8): a trava
+/// @@unique([franquiaId]) que existia aqui foi REMOVIDA — uma franquia
+/// passa a poder ter N usuários, cada um com login próprio, compartilhando
+/// as integrações da franquia (Asaas/webhook/Drive) mas com
+/// "recursosPermitidos" independentes. Isso NÃO muda o comportamento pra
+/// quem já tem 1 usuário só (nada é obrigatório usar) — é uma opção a mais
+/// que o SUPER_ADMIN aciona em Controle Geral quando quiser.
 model Usuario {
   id            String    @id @default(uuid())
   nome          String
@@ -66,8 +80,16 @@ model Usuario {
   ativo         Boolean   @default(true)
   criadoEm      DateTime  @default(now()) @map("criado_em")
   ultimoLoginEm DateTime? @map("ultimo_login_em")
+  /// Restrição de telas por USUÁRIO (movido de Franquia.recursosPermitidos
+  /// — ver docblock legado lá, e docs/plano-multi-franquia.md seção 8, item
+  /// 8). Chaves válidas: RECURSOS (src/config/recursos.js). Sempre vazio
+  /// (`[]`, sem sentido) pro SUPER_ADMIN — nunca lido pra esse papel (ver
+  /// middleware/exigirRecurso.js, sempre irrestrito). A migração que
+  /// introduziu este campo já copiou, pro único Usuario que cada franquia
+  /// tinha até então, exatamente o "recursos_permitidos" que estava na
+  /// Franquia dele — ninguém perdeu acesso ao que já tinha.
+  recursosPermitidos String[] @default([]) @map("recursos_permitidos")
 
-  @@unique([franquiaId])
   @@map("usuarios")
 }
 
@@ -345,12 +367,12 @@ model EtapaJuridico {
 /// Card do Kanban Jurídico — duas origens possíveis (ver escopo do
 /// pedido), mutuamente exclusivas (validado no controller, não no schema):
 ///   - Vinculado a um Associado já cadastrado ("associadoId" preenchido,
-///     "titulo"/"descricao" ficam null): nome/cpf_cnpj/telefone/valor em
-///     aberto são exibidos SEMPRE ao vivo a partir da relação — nunca
-///     copiados estaticamente pro card (ver serializeCard em
-///     juridico.controller.js, que busca a relação a cada listagem).
+///     "titulo"/"descricao"/"observacoes" ficam null): nome/cpf_cnpj/
+///     telefone/valor em aberto são exibidos SEMPRE ao vivo a partir da
+///     relação — nunca copiados estaticamente pro card (ver serializeCard
+///     em juridico.controller.js, que busca a relação a cada listagem).
 ///   - Livre ("titulo" preenchido, "associadoId" null): título + descrição
-///     próprios do card.
+///     + observações próprios do card.
 /// "responsavel"/"prazo" são opcionais e válidos pros dois casos. Também
 /// ESCOPO_DIRETO (mesma justificativa de EtapaJuridico) — o vínculo opcional
 /// com Associado é validado manualmente no controller (confirma que
@@ -370,12 +392,19 @@ model CardJuridico {
   associado   Associado? @relation(fields: [associadoId], references: [id], onDelete: Cascade)
   titulo      String?
   descricao   String?
+  /// Campo livre extra, adicionado depois do MVP inicial (ver escopo do
+  /// ajuste "Observações nos cards do Jurídico") — MESMA regra de
+  /// visibilidade de "descricao": só existe pra card livre (origem
+  /// "titulo"), nunca pra card vinculado a associado (mesma validação de
+  /// "temAssociado && campoPreenchido(...)" em juridico.controller.js).
+  observacoes String?
   responsavel String?
   prazo       DateTime?  @db.Date
   /// Preenchido (data/hora atual) toda vez que "etapaId" muda via
   /// PATCH /api/juridico/cards/:id/mover — registro simples de "quando
-  /// mudou de etapa pela última vez", sem tabela de histórico completa
-  /// (escopo pediu isso só "se for fácil", não bloqueante pro MVP).
+  /// mudou de etapa pela última vez", complementar ao log completo em
+  /// HistoricoCardJuridico (que registra o mesmo evento com mais detalhe,
+  /// ver abaixo).
   etapaAlteradaEm DateTime? @map("etapa_alterada_em")
   criadoEm     DateTime  @default(now()) @map("criado_em")
   atualizadoEm DateTime  @updatedAt @map("atualizado_em")
@@ -384,4 +413,46 @@ model CardJuridico {
   @@index([etapaId])
   @@index([associadoId])
   @@map("cards_juridico")
+}
+
+/// Histórico de alterações de um CardJuridico (ver escopo do ajuste "Log de
+/// atualização dos cards do Jurídico") — nunca sobrescreve o card, só
+/// acrescenta um registro por evento: criação ("campoAlterado" =
+/// "criacao"), edição de um campo ("campoAlterado" =
+/// "responsavel"|"prazo"|"titulo"|"descricao"|"observacoes", com
+/// "valorAnterior"/"valorNovo" preenchidos), mudança de etapa
+/// ("campoAlterado" = "etapa", "valorAnterior"/"valorNovo" = id da
+/// EtapaJuridico origem/destino) e exclusão ("campoAlterado" = "exclusao",
+/// registrado ANTES do delete de verdade — ver
+/// juridico.controller.js:removerCard). Mesmo espírito de
+/// HistoricoStatusAssociado, mas SEM foreign key pra CardJuridico nem pra
+/// Usuario, de propósito: precisa sobreviver tanto à exclusão do card (o
+/// log "exclusao" só faz sentido se continuar consultável depois que o
+/// card já não existe mais) quanto a qualquer mudança futura em como
+/// usuários são removidos/arquivados — mesmo raciocínio já documentado em
+/// RefreshToken.usuario (docs/plano-multi-franquia.md, seção 1.4): uma
+/// coluna "solta" que guarda um id, não uma relação rígida com FK, evita
+/// acoplar a integridade deste log ao ciclo de vida de outra tabela.
+/// "usuarioId" fica null quando a ação vem de uma sessão de API key (ver
+/// middleware/auth.js — "req.auth.type === 'api_key'" não tem
+/// "req.auth.user") — não deveria acontecer na prática hoje (o Kanban
+/// Jurídico não é usado por nenhuma integração externa), mas o campo aceita
+/// esse caso sem quebrar. ESCOPO_DIRETO na extension de isolamento (mesma
+/// justificativa de EtapaJuridico/CardJuridico). Sem tela própria ainda
+/// (fica pra uma rodada futura, ver escopo do ajuste) — só a estrutura e o
+/// registro acontecendo.
+model HistoricoCardJuridico {
+  id            String   @id @default(uuid())
+  cardId        String   @map("card_id")
+  franquiaId    String   @map("franquia_id")
+  franquia      Franquia @relation(fields: [franquiaId], references: [id])
+  campoAlterado String   @map("campo_alterado")
+  valorAnterior String?  @map("valor_anterior")
+  valorNovo     String?  @map("valor_novo")
+  usuarioId     String?  @map("usuario_id")
+  criadoEm      DateTime @default(now()) @map("criado_em")
+
+  @@index([cardId])
+  @@index([franquiaId])
+  @@map("historico_card_juridico")
 }

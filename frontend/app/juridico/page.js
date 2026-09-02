@@ -446,6 +446,7 @@ function CardJuridico({ card, onDragStart, onDropAntes, onEditar, onExcluir }) {
         <div className="space-y-1">
           <p className="font-semibold text-foreground">{card.titulo}</p>
           {card.descricao && <p className="text-xs text-muted-foreground">{card.descricao}</p>}
+          {card.observacoes && <p className="text-xs text-muted-foreground italic">{card.observacoes}</p>}
         </div>
       )}
 
@@ -512,6 +513,7 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
 
   const [titulo, setTitulo] = useState(ehEdicao && !ehVinculado ? cardExistente.titulo || "" : "");
   const [descricao, setDescricao] = useState(ehEdicao ? cardExistente.descricao || "" : "");
+  const [observacoes, setObservacoes] = useState(ehEdicao ? cardExistente.observacoes || "" : "");
   const [responsavel, setResponsavel] = useState(ehEdicao ? cardExistente.responsavel || "" : "");
   const [prazo, setPrazo] = useState(ehEdicao && cardExistente.prazo ? cardExistente.prazo.slice(0, 10) : "");
 
@@ -560,6 +562,7 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
         await atualizarCardJuridico(cardExistente.id, {
           titulo: ehVinculado ? undefined : titulo.trim(),
           descricao: ehVinculado ? undefined : descricao.trim() || null,
+          observacoes: ehVinculado ? undefined : observacoes.trim() || null,
           responsavel: responsavel.trim() || null,
           prazo: prazo || null,
         });
@@ -569,6 +572,7 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
           associadoId: origem === "associado" ? associadoSelecionado.id : undefined,
           titulo: origem === "livre" ? titulo.trim() : undefined,
           descricao: origem === "livre" ? descricao.trim() || undefined : undefined,
+          observacoes: origem === "livre" ? observacoes.trim() || undefined : undefined,
           responsavel: responsavel.trim() || undefined,
           prazo: prazo || undefined,
         });
@@ -688,6 +692,19 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
               <textarea
                 value={descricao}
                 onChange={(e) => setDescricao(e.target.value)}
+                disabled={salvando}
+                rows={2}
+                className="w-full resize-none rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+              />
+            </div>
+          )}
+
+          {origem === "livre" && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Observações (opcional)</label>
+              <textarea
+                value={observacoes}
+                onChange={(e) => setObservacoes(e.target.value)}
                 disabled={salvando}
                 rows={2}
                 className="w-full resize-none rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"

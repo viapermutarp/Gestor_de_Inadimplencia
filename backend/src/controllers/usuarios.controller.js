@@ -1,6 +1,7 @@
 const prisma = require('../config/prisma');
 const refreshTokens = require('../services/refreshTokens.service');
 const usuariosService = require('../services/usuarios.service');
+const { RECURSOS } = require('../config/recursos');
 
 function serializeUsuario(usuario) {
   return {
@@ -11,29 +12,68 @@ function serializeUsuario(usuario) {
     franquia_id: usuario.franquiaId,
     ativo: usuario.ativo,
     ultimo_login_em: usuario.ultimoLoginEm,
+    recursos_permitidos: usuario.recursosPermitidos,
   };
 }
 
 /**
- * PATCH /api/usuarios/:id — body { ativo: boolean }. Bloqueia/desbloqueia
- * o acesso de um usuário individual (distinto de desativar a franquia
- * inteira — ver franquias.controller.js:atualizar —, embora hoje, com 1
- * usuário por franquia, o efeito prático seja o mesmo; os dois controles
- * ficam separados no banco/API de propósito, ver escopo da Etapa 5, item
- * 3). Bloquear (`ativo: false`) também revoga todas as sessões já abertas
- * desse usuário — mesmo raciocínio do `atualizar` de franquia.
+ * Restrição de telas por usuário (ver docs/plano-multi-franquia.md, seção
+ * 8, item 8) — mesma validação usada em franquias.controller.js (duplicada
+ * de propósito, mesmo padrão de "campoPreenchido" já duplicado em vários
+ * controllers deste projeto, em vez de um módulo de utils compartilhado).
+ */
+function recursosValidos(recursos) {
+  if (!Array.isArray(recursos)) return false;
+  const unicos = new Set(recursos);
+  return unicos.size === recursos.length && recursos.every((r) => RECURSOS.includes(r));
+}
+
+/**
+ * PATCH /api/usuarios/:id — body: qualquer subconjunto de { ativo,
+ * recursos_permitidos }. Bloqueia/desbloqueia o acesso de um usuário
+ * individual (distinto de desativar a franquia inteira — ver
+ * franquias.controller.js:atualizar — que afeta TODOS os usuários dela de
+ * uma vez; os dois controles ficam separados no banco/API de propósito,
+ * ver escopo da Etapa 5, item 3) e/ou troca as telas liberadas dele (ver
+ * ajuste "Super Admin pode adicionar mais de 1 usuário numa franquia",
+ * seção 8, item 8 do plano — cada usuário tem "recursos_permitidos"
+ * próprio desde então). Bloquear (`ativo: false`) também revoga todas as
+ * sessões já abertas desse usuário — mesmo raciocínio do `atualizar` de
+ * franquia.
  *
  * Não deixa o SUPER_ADMIN bloquear a SI MESMO por aqui (evitaria se
  * trancar fora sem querer) — usa `/api/perfil` pra mexer na própria conta.
+ * Essa trava só vale pra "ativo" (trocar os próprios "recursos_permitidos"
+ * por aqui não teria o mesmo risco, mas SUPER_ADMIN nunca tem
+ * "recursos_permitidos" de verdade — sempre irrestrito — então a rota nem
+ * faz sentido pra esse caso na prática).
  */
-exports.atualizarStatus = async (req, res, next) => {
+exports.atualizar = async (req, res, next) => {
   try {
-    const { ativo } = req.body || {};
-    if (typeof ativo !== 'boolean') {
-      return res.status(400).json({ error: '"ativo" deve ser booleano.' });
+    const { ativo, recursos_permitidos: recursosPermitidos } = req.body || {};
+    const data = {};
+    const erros = [];
+
+    if (ativo !== undefined) {
+      if (typeof ativo !== 'boolean') erros.push('"ativo" deve ser booleano.');
+      else data.ativo = ativo;
+    }
+    if (recursosPermitidos !== undefined) {
+      if (!recursosValidos(recursosPermitidos)) {
+        erros.push(`"recursos_permitidos" precisa ser um array só com estas chaves (sem repetir): ${RECURSOS.join(', ')}.`);
+      } else {
+        data.recursosPermitidos = recursosPermitidos;
+      }
+    }
+    if (Object.keys(data).length === 0 && erros.length === 0) {
+      erros.push('Informe "ativo" e/ou "recursos_permitidos".');
     }
 
-    if (req.params.id === req.auth.user) {
+    if (erros.length > 0) {
+      return res.status(400).json({ error: erros.join(' ') });
+    }
+
+    if (data.ativo === false && req.params.id === req.auth.user) {
       return res.status(400).json({ error: 'Não é possível bloquear o próprio usuário por aqui.' });
     }
 
@@ -42,9 +82,9 @@ exports.atualizarStatus = async (req, res, next) => {
       return res.status(404).json({ error: 'Usuário não encontrado.' });
     }
 
-    const usuario = await prisma.usuario.update({ where: { id: req.params.id }, data: { ativo } });
+    const usuario = await prisma.usuario.update({ where: { id: req.params.id }, data });
 
-    if (ativo === false) {
+    if (data.ativo === false) {
       await refreshTokens.revogarTodasDoUsuario(usuario.id);
     }
 
