@@ -250,3 +250,22 @@ export function IconPlus({ className = "h-5 w-5" }) {
     </svg>
   );
 }
+
+export function IconBuilding({ className = "h-5 w-5" }) {
+  return (
+    <svg {...base} className={className}>
+      <rect x="4.5" y="3" width="10" height="18" rx="1" />
+      <path d="M14.5 9.5H19a1 1 0 0 1 1 1V21h-5.5" />
+      <path d="M7.5 7h4M7.5 10.5h4M7.5 14h4M7.5 17.5h4" />
+    </svg>
+  );
+}
+
+export function IconShield({ className = "h-5 w-5" }) {
+  return (
+    <svg {...base} className={className}>
+      <path d="M12 3.5 19 6v6c0 4.5-3 7.5-7 8.5-4-1-7-4-7-8.5V6l7-2.5Z" />
+      <path d="M9 12l2 2 4-4.5" />
+    </svg>
+  );
+}

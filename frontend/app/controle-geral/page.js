@@ -1,0 +1,661 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import {
+  listarFranquias,
+  criarFranquia,
+  atualizarFranquia,
+  atualizarStatusUsuario,
+  resetarSenhaUsuario,
+  getPerfil,
+  atualizarPerfil,
+  ApiError,
+} from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
+import Spinner from "@/components/Spinner";
+import ErrorBanner from "@/components/ErrorBanner";
+import { IconBuilding, IconUser, IconPlus, IconLock, IconShield } from "@/components/icons";
+
+export default function ControleGeralPage() {
+  const [franquias, setFranquias] = useState([]);
+  const [carregandoFranquias, setCarregandoFranquias] = useState(true);
+  const [erroFranquias, setErroFranquias] = useState("");
+
+  const [mostrarFormCriar, setMostrarFormCriar] = useState(false);
+  const [novaFranquiaNome, setNovaFranquiaNome] = useState("");
+  const [novoUsuarioNome, setNovoUsuarioNome] = useState("");
+  const [novoUsuarioEmail, setNovoUsuarioEmail] = useState("");
+  const [novoUsuarioSenha, setNovoUsuarioSenha] = useState("");
+  const [criandoFranquia, setCriandoFranquia] = useState(false);
+  const [erroCriarFranquia, setErroCriarFranquia] = useState("");
+
+  const [editandoNomeId, setEditandoNomeId] = useState(null);
+  const [nomeEditado, setNomeEditado] = useState("");
+  const [salvandoNomeId, setSalvandoNomeId] = useState(null);
+
+  const [confirmandoStatusFranquiaId, setConfirmandoStatusFranquiaId] = useState(null);
+  const [alterandoStatusFranquiaId, setAlterandoStatusFranquiaId] = useState(null);
+
+  const [confirmandoStatusUsuarioId, setConfirmandoStatusUsuarioId] = useState(null);
+  const [alterandoStatusUsuarioId, setAlterandoStatusUsuarioId] = useState(null);
+
+  const [resetandoSenhaId, setResetandoSenhaId] = useState(null);
+  const [novaSenhaReset, setNovaSenhaReset] = useState("");
+  const [salvandoReset, setSalvandoReset] = useState(false);
+  const [erroReset, setErroReset] = useState("");
+  const [resetOkId, setResetOkId] = useState(null);
+
+  const [erroLinha, setErroLinha] = useState({});
+
+  const [perfil, setPerfil] = useState(null);
+  const [carregandoPerfil, setCarregandoPerfil] = useState(true);
+  const [erroPerfil, setErroPerfil] = useState("");
+  const [nomePerfil, setNomePerfil] = useState("");
+  const [emailPerfil, setEmailPerfil] = useState("");
+  const [senhaAtualPerfil, setSenhaAtualPerfil] = useState("");
+  const [senhaNovaPerfil, setSenhaNovaPerfil] = useState("");
+  const [salvandoPerfil, setSalvandoPerfil] = useState(false);
+  const [erroSalvarPerfil, setErroSalvarPerfil] = useState("");
+  const [perfilSalvo, setPerfilSalvo] = useState(false);
+
+  const carregarFranquias = useCallback(async () => {
+    setCarregandoFranquias(true);
+    setErroFranquias("");
+    try {
+      const data = await listarFranquias();
+      setFranquias(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setErroFranquias(err instanceof ApiError ? err.message : "Erro ao carregar as franquias.");
+    } finally {
+      setCarregandoFranquias(false);
+    }
+  }, []);
+
+  const carregarPerfil = useCallback(async () => {
+    setCarregandoPerfil(true);
+    setErroPerfil("");
+    try {
+      const data = await getPerfil();
+      setPerfil(data);
+      setNomePerfil(data.nome || "");
+      setEmailPerfil(data.email || "");
+    } catch (err) {
+      setErroPerfil(err instanceof ApiError ? err.message : "Erro ao carregar o perfil.");
+    } finally {
+      setCarregandoPerfil(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    carregarFranquias();
+    carregarPerfil();
+  }, [carregarFranquias, carregarPerfil]);
+
+  function marcarErroLinha(id, mensagem) {
+    setErroLinha((prev) => ({ ...prev, [id]: mensagem }));
+  }
+
+  async function handleCriarFranquia(e) {
+    e.preventDefault();
+    setErroCriarFranquia("");
+
+    if (!novaFranquiaNome.trim() || !novoUsuarioNome.trim() || !novoUsuarioEmail.trim() || !novoUsuarioSenha) {
+      setErroCriarFranquia("Preencha o nome da franquia e os dados do usuário titular.");
+      return;
+    }
+
+    setCriandoFranquia(true);
+    try {
+      await criarFranquia({
+        nome: novaFranquiaNome.trim(),
+        usuario: { nome: novoUsuarioNome.trim(), email: novoUsuarioEmail.trim(), senha: novoUsuarioSenha },
+      });
+      setNovaFranquiaNome("");
+      setNovoUsuarioNome("");
+      setNovoUsuarioEmail("");
+      setNovoUsuarioSenha("");
+      setMostrarFormCriar(false);
+      await carregarFranquias();
+    } catch (err) {
+      setErroCriarFranquia(err instanceof ApiError ? err.message : "Erro ao criar a franquia.");
+    } finally {
+      setCriandoFranquia(false);
+    }
+  }
+
+  function iniciarEdicaoNome(franquia) {
+    setEditandoNomeId(franquia.id);
+    setNomeEditado(franquia.nome);
+  }
+
+  async function salvarNome(id) {
+    if (!nomeEditado.trim()) return;
+    setSalvandoNomeId(id);
+    marcarErroLinha(id, "");
+    try {
+      await atualizarFranquia(id, { nome: nomeEditado.trim() });
+      setEditandoNomeId(null);
+      await carregarFranquias();
+    } catch (err) {
+      marcarErroLinha(id, err instanceof ApiError ? err.message : "Erro ao salvar o nome.");
+    } finally {
+      setSalvandoNomeId(null);
+    }
+  }
+
+  async function alternarStatusFranquia(franquia) {
+    setAlterandoStatusFranquiaId(franquia.id);
+    marcarErroLinha(franquia.id, "");
+    try {
+      await atualizarFranquia(franquia.id, { ativo: !franquia.ativo });
+      setConfirmandoStatusFranquiaId(null);
+      await carregarFranquias();
+    } catch (err) {
+      marcarErroLinha(franquia.id, err instanceof ApiError ? err.message : "Erro ao alterar o status.");
+    } finally {
+      setAlterandoStatusFranquiaId(null);
+    }
+  }
+
+  async function alternarStatusUsuario(usuario) {
+    setAlterandoStatusUsuarioId(usuario.id);
+    marcarErroLinha(usuario.id, "");
+    try {
+      await atualizarStatusUsuario(usuario.id, !usuario.ativo);
+      setConfirmandoStatusUsuarioId(null);
+      await carregarFranquias();
+    } catch (err) {
+      marcarErroLinha(usuario.id, err instanceof ApiError ? err.message : "Erro ao alterar o status.");
+    } finally {
+      setAlterandoStatusUsuarioId(null);
+    }
+  }
+
+  function iniciarReset(usuarioId) {
+    setResetandoSenhaId(usuarioId);
+    setNovaSenhaReset("");
+    setErroReset("");
+    setResetOkId(null);
+  }
+
+  async function confirmarReset(usuarioId) {
+    if (!novaSenhaReset || novaSenhaReset.length < 8) {
+      setErroReset("A senha precisa ter pelo menos 8 caracteres.");
+      return;
+    }
+    setSalvandoReset(true);
+    setErroReset("");
+    try {
+      await resetarSenhaUsuario(usuarioId, novaSenhaReset);
+      setResetandoSenhaId(null);
+      setNovaSenhaReset("");
+      setResetOkId(usuarioId);
+      setTimeout(() => setResetOkId(null), 4000);
+    } catch (err) {
+      setErroReset(err instanceof ApiError ? err.message : "Erro ao resetar a senha.");
+    } finally {
+      setSalvandoReset(false);
+    }
+  }
+
+  async function handleSalvarPerfil(e) {
+    e.preventDefault();
+    setErroSalvarPerfil("");
+    setPerfilSalvo(false);
+
+    if (!senhaAtualPerfil) {
+      setErroSalvarPerfil('Informe a "Senha atual" para confirmar qualquer alteração.');
+      return;
+    }
+
+    setSalvandoPerfil(true);
+    try {
+      const atualizado = await atualizarPerfil({
+        nome: nomePerfil.trim() !== perfil?.nome ? nomePerfil.trim() : undefined,
+        email: emailPerfil.trim() !== perfil?.email ? emailPerfil.trim() : undefined,
+        senhaAtual: senhaAtualPerfil,
+        senhaNova: senhaNovaPerfil || undefined,
+      });
+      setPerfil(atualizado);
+      setSenhaAtualPerfil("");
+      setSenhaNovaPerfil("");
+      setPerfilSalvo(true);
+      setTimeout(() => setPerfilSalvo(false), 4000);
+    } catch (err) {
+      setErroSalvarPerfil(err instanceof ApiError ? err.message : "Erro ao salvar o perfil.");
+    } finally {
+      setSalvandoPerfil(false);
+    }
+  }
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h2 className="flex items-center gap-2 font-display text-xl font-bold text-foreground">
+          <IconShield className="h-5 w-5 text-accent" />
+          Controle Geral
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Gerencie franquias, o acesso dos usuários e as suas próprias credenciais de administrador geral.
+        </p>
+      </div>
+
+      {/* Franquias */}
+      <section className="rounded-2xl border border-border-soft bg-surface p-5 shadow-lg shadow-black/20">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+              <IconBuilding className="h-4.5 w-4.5" />
+            </span>
+            <h3 className="text-sm font-semibold text-foreground">Franquias</h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => setMostrarFormCriar((v) => !v)}
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary-hover"
+          >
+            <IconPlus className="h-3.5 w-3.5" />
+            Nova franquia
+          </button>
+        </div>
+
+        {mostrarFormCriar && (
+          <form
+            onSubmit={handleCriarFranquia}
+            className="mt-4 space-y-3 rounded-xl border border-border-soft bg-surface-elevated p-4"
+          >
+            <p className="text-xs text-muted-foreground">
+              Toda franquia nasce com exatamente 1 usuário titular — preencha os dados dele junto.
+            </p>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Nome da franquia</label>
+              <input
+                type="text"
+                value={novaFranquiaNome}
+                onChange={(e) => setNovaFranquiaNome(e.target.value)}
+                placeholder="Ex.: Via Permuta Campinas"
+                disabled={criandoFranquia}
+                className="w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Nome do usuário</label>
+                <input
+                  type="text"
+                  value={novoUsuarioNome}
+                  onChange={(e) => setNovoUsuarioNome(e.target.value)}
+                  disabled={criandoFranquia}
+                  className="w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">E-mail do usuário</label>
+                <input
+                  type="email"
+                  value={novoUsuarioEmail}
+                  onChange={(e) => setNovoUsuarioEmail(e.target.value)}
+                  disabled={criandoFranquia}
+                  className="w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Senha inicial (mín. 8 caracteres)</label>
+              <input
+                type="password"
+                value={novoUsuarioSenha}
+                onChange={(e) => setNovoUsuarioSenha(e.target.value)}
+                disabled={criandoFranquia}
+                className="w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+              />
+            </div>
+
+            {erroCriarFranquia && <ErrorBanner message={erroCriarFranquia} />}
+
+            <div className="flex items-center gap-2">
+              <button
+                type="submit"
+                disabled={criandoFranquia}
+                className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {criandoFranquia && <Spinner className="h-3.5 w-3.5" />}
+                Criar franquia
+              </button>
+              <button
+                type="button"
+                onClick={() => setMostrarFormCriar(false)}
+                disabled={criandoFranquia}
+                className="rounded-xl px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Cancelar
+              </button>
+            </div>
+          </form>
+        )}
+
+        {erroFranquias && (
+          <div className="mt-4">
+            <ErrorBanner message={erroFranquias} onRetry={carregarFranquias} />
+          </div>
+        )}
+
+        <div className="mt-4 space-y-3">
+          {carregandoFranquias ? (
+            <div className="flex justify-center py-6">
+              <Spinner className="h-5 w-5" />
+            </div>
+          ) : franquias.length === 0 ? (
+            <p className="py-4 text-center text-xs text-muted-foreground">Nenhuma franquia cadastrada ainda.</p>
+          ) : (
+            franquias.map((franquia) => (
+              <div
+                key={franquia.id}
+                className={`rounded-xl border p-4 ${
+                  franquia.ativo ? "border-border-soft bg-surface-elevated" : "border-status-red/30 bg-surface-elevated/60"
+                }`}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    {editandoNomeId === franquia.id ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={nomeEditado}
+                          onChange={(e) => setNomeEditado(e.target.value)}
+                          disabled={salvandoNomeId === franquia.id}
+                          autoFocus
+                          className="min-w-0 flex-1 rounded-lg border border-border-soft bg-surface px-2.5 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => salvarNome(franquia.id)}
+                          disabled={salvandoNomeId === franquia.id}
+                          className="shrink-0 rounded-lg bg-primary px-2.5 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
+                        >
+                          {salvandoNomeId === franquia.id ? <Spinner className="h-3 w-3" /> : "Salvar"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditandoNomeId(null)}
+                          disabled={salvandoNomeId === franquia.id}
+                          className="shrink-0 text-xs font-medium text-muted-foreground hover:text-foreground"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-foreground">{franquia.nome}</span>
+                        {franquia.ativo ? (
+                          <span className="inline-flex items-center rounded-full bg-status-green/15 px-2 py-0.5 text-[11px] font-medium text-status-green">
+                            Ativa
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-full bg-status-red/15 px-2 py-0.5 text-[11px] font-medium text-status-red">
+                            Inativa
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => iniciarEdicaoNome(franquia)}
+                          className="text-[11px] font-medium text-primary hover:underline"
+                        >
+                          editar nome
+                        </button>
+                      </div>
+                    )}
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Criada em {formatDateTime(franquia.criado_em)}
+                    </p>
+                  </div>
+
+                  {confirmandoStatusFranquiaId === franquia.id ? (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setConfirmandoStatusFranquiaId(null)}
+                        disabled={alterandoStatusFranquiaId === franquia.id}
+                        className="text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => alternarStatusFranquia(franquia)}
+                        disabled={alterandoStatusFranquiaId === franquia.id}
+                        className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-50 ${
+                          franquia.ativo ? "bg-status-red" : "bg-status-green"
+                        }`}
+                      >
+                        {alterandoStatusFranquiaId === franquia.id && <Spinner className="h-3 w-3" />}
+                        Confirmar
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmandoStatusFranquiaId(franquia.id)}
+                      className={`shrink-0 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                        franquia.ativo
+                          ? "border-status-red/40 text-status-red hover:bg-status-red/10"
+                          : "border-status-green/40 text-status-green hover:bg-status-green/10"
+                      }`}
+                    >
+                      {franquia.ativo ? "Desativar franquia" : "Reativar franquia"}
+                    </button>
+                  )}
+                </div>
+
+                {erroLinha[franquia.id] && (
+                  <div className="mt-3">
+                    <ErrorBanner message={erroLinha[franquia.id]} />
+                  </div>
+                )}
+
+                {/* Usuário titular */}
+                <div className="mt-3 rounded-lg border border-border-soft/70 bg-surface p-3">
+                  {franquia.usuario ? (
+                    <>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 text-sm text-foreground">
+                          <IconUser className="h-4 w-4 text-muted-foreground" />
+                          <span className="font-medium">{franquia.usuario.nome}</span>
+                          <span className="text-xs text-muted-foreground">{franquia.usuario.email}</span>
+                          {franquia.usuario.ativo ? (
+                            <span className="inline-flex items-center rounded-full bg-status-green/15 px-2 py-0.5 text-[10px] font-medium text-status-green">
+                              Ativo
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-full bg-status-red/15 px-2 py-0.5 text-[10px] font-medium text-status-red">
+                              Bloqueado
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex shrink-0 items-center gap-2">
+                          {confirmandoStatusUsuarioId === franquia.usuario.id ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmandoStatusUsuarioId(null)}
+                                disabled={alterandoStatusUsuarioId === franquia.usuario.id}
+                                className="text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+                              >
+                                Cancelar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => alternarStatusUsuario(franquia.usuario)}
+                                disabled={alterandoStatusUsuarioId === franquia.usuario.id}
+                                className={`rounded-lg px-2.5 py-1 text-xs font-semibold text-background hover:opacity-90 disabled:opacity-50 ${
+                                  franquia.usuario.ativo ? "bg-status-red" : "bg-status-green"
+                                }`}
+                              >
+                                Confirmar
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmandoStatusUsuarioId(franquia.usuario.id)}
+                              className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
+                                franquia.usuario.ativo
+                                  ? "border-status-red/40 text-status-red hover:bg-status-red/10"
+                                  : "border-status-green/40 text-status-green hover:bg-status-green/10"
+                              }`}
+                            >
+                              {franquia.usuario.ativo ? "Bloquear" : "Desbloquear"}
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => iniciarReset(franquia.usuario.id)}
+                            className="flex items-center gap-1 rounded-lg border border-border-soft px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                          >
+                            <IconLock className="h-3 w-3" />
+                            Resetar senha
+                          </button>
+                        </div>
+                      </div>
+
+                      {erroLinha[franquia.usuario.id] && (
+                        <div className="mt-2">
+                          <ErrorBanner message={erroLinha[franquia.usuario.id]} />
+                        </div>
+                      )}
+
+                      {resetOkId === franquia.usuario.id && (
+                        <p className="mt-2 text-xs font-medium text-status-green">Senha atualizada com sucesso.</p>
+                      )}
+
+                      {resetandoSenhaId === franquia.usuario.id && (
+                        <div className="mt-3 flex flex-col gap-2 rounded-lg border border-border-soft bg-surface-elevated p-3 sm:flex-row sm:items-center">
+                          <input
+                            type="password"
+                            value={novaSenhaReset}
+                            onChange={(e) => setNovaSenhaReset(e.target.value)}
+                            placeholder="Nova senha (mín. 8 caracteres)"
+                            disabled={salvandoReset}
+                            autoFocus
+                            className="min-w-0 flex-1 rounded-lg border border-border-soft bg-surface px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
+                          />
+                          <div className="flex shrink-0 items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => confirmarReset(franquia.usuario.id)}
+                              disabled={salvandoReset}
+                              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
+                            >
+                              {salvandoReset && <Spinner className="h-3 w-3" />}
+                              Salvar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setResetandoSenhaId(null)}
+                              disabled={salvandoReset}
+                              className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                            >
+                              Cancelar
+                            </button>
+                          </div>
+                          {erroReset && <p className="text-xs text-status-red sm:ml-2">{erroReset}</p>}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Nenhum usuário vinculado a esta franquia.</p>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+
+      {/* Meu perfil */}
+      <section className="rounded-2xl border border-border-soft bg-surface p-5 shadow-lg shadow-black/20">
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+            <IconUser className="h-4.5 w-4.5" />
+          </span>
+          <h3 className="text-sm font-semibold text-foreground">Meu perfil (administrador geral)</h3>
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Troque seu próprio nome, e-mail ou senha. Qualquer alteração aqui exige a senha atual.
+        </p>
+
+        {carregandoPerfil ? (
+          <div className="flex justify-center py-6">
+            <Spinner className="h-5 w-5" />
+          </div>
+        ) : erroPerfil ? (
+          <div className="mt-3">
+            <ErrorBanner message={erroPerfil} onRetry={carregarPerfil} />
+          </div>
+        ) : (
+          <form onSubmit={handleSalvarPerfil} className="mt-4 space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Nome</label>
+                <input
+                  type="text"
+                  value={nomePerfil}
+                  onChange={(e) => setNomePerfil(e.target.value)}
+                  disabled={salvandoPerfil}
+                  className="w-full rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">E-mail</label>
+                <input
+                  type="email"
+                  value={emailPerfil}
+                  onChange={(e) => setEmailPerfil(e.target.value)}
+                  disabled={salvandoPerfil}
+                  className="w-full rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+                />
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Senha nova (opcional)</label>
+                <input
+                  type="password"
+                  value={senhaNovaPerfil}
+                  onChange={(e) => setSenhaNovaPerfil(e.target.value)}
+                  placeholder="Deixe em branco para não trocar"
+                  disabled={salvandoPerfil}
+                  className="w-full rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Senha atual (obrigatória)</label>
+                <input
+                  type="password"
+                  value={senhaAtualPerfil}
+                  onChange={(e) => setSenhaAtualPerfil(e.target.value)}
+                  disabled={salvandoPerfil}
+                  className="w-full rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+                />
+              </div>
+            </div>
+
+            {erroSalvarPerfil && <ErrorBanner message={erroSalvarPerfil} />}
+            {perfilSalvo && <p className="text-xs font-medium text-status-green">Perfil atualizado com sucesso.</p>}
+
+            <button
+              type="submit"
+              disabled={salvandoPerfil}
+              className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {salvandoPerfil && <Spinner className="h-3.5 w-3.5" />}
+              Salvar alterações
+            </button>
+          </form>
+        )}
+      </section>
+    </div>
+  );
+}

@@ -97,12 +97,102 @@ async function atualizarUltimoLogin(usuarioId) {
   await prisma.usuario.update({ where: { id: usuarioId }, data: { ultimoLoginEm: new Date() } });
 }
 
+// Tamanho mínimo aceito pra qualquer senha definida por aqui (criação de
+// usuário de franquia, reset de senha, troca de senha do próprio
+// SUPER_ADMIN) — mesmo valor nos 3 fluxos, um único lugar pra mudar.
+const SENHA_TAMANHO_MINIMO = 8;
+
+function senhaValida(senha) {
+  return typeof senha === 'string' && senha.length >= SENHA_TAMANHO_MINIMO;
+}
+
+/**
+ * Multi-franquia — Etapa 5 ("Controle Geral"). Cria o único usuário de uma
+ * franquia nova, sempre com papel "FRANQUIA" (ver docs/plano-multi-franquia.md,
+ * seção 1.2 — papel simplificado pra 2 valores) — chamado de dentro da
+ * mesma transação que cria a Franquia (ver franquias.controller.js:criar),
+ * nunca isoladamente, porque não existe franquia "vazia" sem usuário neste
+ * desenho. Lança um erro com "status: 409" se o email já estiver em uso —
+ * a trava real é o "@unique" do banco (franquia.franquiaId também é único,
+ * então tentar um segundo usuário pra mesma franquia dentro da transação
+ * também cairia aqui, mas esse caso nunca acontece porque a franquia acabou
+ * de ser criada, sem nenhum usuário ainda).
+ */
+async function criarUsuarioFranquia({ franquiaId, nome, email, senha }, tx = prisma) {
+  const senhaHash = await bcrypt.hash(senha, BCRYPT_CUSTO);
+  try {
+    return await tx.usuario.create({
+      data: { nome, email, senhaHash, papel: 'FRANQUIA', franquiaId, ativo: true },
+    });
+  } catch (err) {
+    if (err.code === 'P2002') {
+      throw Object.assign(new Error('Já existe um usuário com esse e-mail.'), { status: 409 });
+    }
+    throw err;
+  }
+}
+
+/**
+ * Multi-franquia — Etapa 5. O SUPER_ADMIN define uma senha nova pra
+ * qualquer usuário (POST /api/usuarios/:id/resetar-senha), sem precisar
+ * saber a antiga. Não é a mesma coisa que "trocar a própria senha" (ver
+ * `atualizarCredenciaisProprias` abaixo) — aqui não existe "senha atual"
+ * pra confirmar, porque quem está autorizando é o SUPER_ADMIN, não o dono
+ * da conta.
+ */
+async function resetarSenha(usuarioId, novaSenha) {
+  const senhaHash = await bcrypt.hash(novaSenha, BCRYPT_CUSTO);
+  return prisma.usuario.update({ where: { id: usuarioId }, data: { senhaHash } });
+}
+
+/**
+ * Multi-franquia — Etapa 5, item 5 do escopo ("SUPER_ADMIN edita as
+ * próprias credenciais"). Troca nome/email/senha do PRÓPRIO usuário
+ * autenticado — ao contrário de `resetarSenha` (ação do SUPER_ADMIN sobre
+ * OUTRO usuário), aqui sempre exige a senha atual antes de aplicar
+ * qualquer mudança (nome, email OU senha), mesmo trocando só o nome — é
+ * uma única rota de "confirme quem você é antes de mudar algo na sua
+ * conta", mais simples de raciocinar do que ter regras diferentes por
+ * campo. "email"/"senhaNova" são opcionais (só entra no update o que foi
+ * informado); "nome" idem.
+ */
+async function atualizarCredenciaisProprias(usuarioId, { nome, email, senhaAtual, senhaNova }) {
+  const usuario = await prisma.usuario.findUnique({ where: { id: usuarioId } });
+  if (!usuario) {
+    throw Object.assign(new Error('Usuário não encontrado.'), { status: 404 });
+  }
+
+  const senhaOk = await verificarSenha(usuario, senhaAtual);
+  if (!senhaOk) {
+    throw Object.assign(new Error('Senha atual incorreta.'), { status: 401 });
+  }
+
+  const data = {};
+  if (nome !== undefined) data.nome = nome;
+  if (email !== undefined) data.email = email;
+  if (senhaNova !== undefined) data.senhaHash = await bcrypt.hash(senhaNova, BCRYPT_CUSTO);
+
+  try {
+    return await prisma.usuario.update({ where: { id: usuarioId }, data });
+  } catch (err) {
+    if (err.code === 'P2002') {
+      throw Object.assign(new Error('Já existe um usuário com esse e-mail.'), { status: 409 });
+    }
+    throw err;
+  }
+}
+
 module.exports = {
   seedSuperAdminSeNecessario,
   buscarPorEmail,
   verificarSenha,
   atualizarUltimoLogin,
   emailAdminPadrao,
+  criarUsuarioFranquia,
+  resetarSenha,
+  atualizarCredenciaisProprias,
+  senhaValida,
+  SENHA_TAMANHO_MINIMO,
   // Exportados só pra uso em testes.
   pareceEmail,
   BCRYPT_CUSTO,

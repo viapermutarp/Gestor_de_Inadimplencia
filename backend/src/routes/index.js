@@ -6,6 +6,8 @@ const configRoutes = require('./config.routes');
 const cadastrosRoutes = require('./cadastros.routes');
 const inadimplenciaRoutes = require('./inadimplencia.routes');
 const contratosRoutes = require('./contratos.routes');
+const franquiasRoutes = require('./franquias.routes');
+const usuariosRoutes = require('./usuarios.routes');
 
 const router = Router();
 
@@ -16,5 +18,7 @@ router.use('/api', configRoutes);
 router.use('/api', cadastrosRoutes);
 router.use('/api', inadimplenciaRoutes);
 router.use('/api', contratosRoutes);
+router.use('/api', franquiasRoutes);
+router.use('/api', usuariosRoutes);
 
 module.exports = router;

@@ -1,4 +1,4 @@
-import { getToken, getRefreshToken, setSession, clearToken } from "./auth";
+import { getToken, getRefreshToken, setSession, clearToken, getFranquiaSelecionada } from "./auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -8,6 +8,29 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.status = status;
   }
+}
+
+/**
+ * Multi-franquia — Etapa 5 ("Controle Geral", item 4 do escopo). Quando o
+ * SUPER_ADMIN tem uma franquia "selecionada" (seletor no topo, ver
+ * components/FranquiaSelector.js), toda chamada autenticada passa a
+ * carregar "?franquia_id=..." — é o parâmetro que o backend já aceita
+ * desde a Fase 3 (ver prismaComEscopo.js:resolverFranquiaIdDaRequisicao)
+ * pra escopar o client Prisma da requisição por essa franquia, em vez do
+ * modo "irrestrito" (sem seleção = vê tudo, usado só nas próprias rotas de
+ * Controle Geral). Pra um usuário de franquia comum (não SUPER_ADMIN),
+ * nunca existe seleção (ver isSuperAdmin()/FranquiaSelector), então isso
+ * nunca entra em jogo — o backend também ignora esse parâmetro pra
+ * qualquer sessão que não seja SUPER_ADMIN.
+ */
+function comFranquiaSelecionada(path) {
+  const franquiaId = getFranquiaSelecionada();
+  if (!franquiaId) return path;
+
+  const [base, query] = path.split("?");
+  const params = new URLSearchParams(query || "");
+  params.set("franquia_id", franquiaId);
+  return `${base}?${params.toString()}`;
 }
 
 async function fetchJson(path, { method, headers, body, signal }) {
@@ -84,10 +107,12 @@ async function request(path, { method = "GET", body, auth = true, timeoutMs, per
   }
 
   const headers = { "Content-Type": "application/json" };
+  let caminhoFinal = path;
 
   if (auth) {
     const token = getToken();
     if (token) headers.Authorization = `Bearer ${token}`;
+    caminhoFinal = comFranquiaSelecionada(path);
   }
 
   // `timeoutMs` é opcional — usado por chamadas que sabidamente podem demorar
@@ -100,7 +125,7 @@ async function request(path, { method = "GET", body, auth = true, timeoutMs, per
   let res;
   let data;
   try {
-    ({ res, data } = await fetchJson(path, { method, headers, body, signal: controller?.signal }));
+    ({ res, data } = await fetchJson(caminhoFinal, { method, headers, body, signal: controller?.signal }));
   } catch (err) {
     if (err.name === "AbortError") {
       throw new ApiError("Tempo esgotado ao aguardar resposta da API.", 0);
@@ -484,5 +509,73 @@ export function atualizarGoogleServiceAccount(credencial) {
   return request("/api/config/google-service-account", {
     method: "PATCH",
     body: { credencial },
+  });
+}
+
+/**
+ * Multi-franquia — Etapa 5 ("Controle Geral"). Todas as funções abaixo só
+ * funcionam para uma sessão SUPER_ADMIN (403 do backend caso contrário —
+ * ver middleware/exigirSuperAdmin.js); o frontend só as chama a partir da
+ * tela /controle-geral, que por sua vez só é exibida/roteável pra
+ * SUPER_ADMIN (ver isSuperAdmin() em lib/auth.js).
+ */
+
+/**
+ * GET /api/franquias — todas as franquias, cada uma já com o próprio
+ * usuário embutido: [{ id, nome, ativo, criado_em, usuario: {...} | null }].
+ * "usuario: null" acontece só pra franquias que nunca passaram por
+ * `criarFranquia` (hoje, na prática, só a franquia semeada pela migração
+ * da Fase 1, sem usuário "FRANQUIA" vinculado).
+ */
+export function listarFranquias() {
+  return request("/api/franquias");
+}
+
+/**
+ * POST /api/franquias — body { nome, usuario: { nome, email, senha } }.
+ * Cria a franquia e o usuário titular dela juntos (não existe franquia
+ * "vazia" neste desenho).
+ */
+export function criarFranquia({ nome, usuario }) {
+  return request("/api/franquias", { method: "POST", body: { nome, usuario } });
+}
+
+/** PATCH /api/franquias/:id — body: qualquer subconjunto de { nome, ativo }. */
+export function atualizarFranquia(id, dados) {
+  return request(`/api/franquias/${encodeURIComponent(id)}`, { method: "PATCH", body: dados });
+}
+
+/** PATCH /api/usuarios/:id — body { ativo }. Bloqueia/desbloqueia o acesso de um usuário. */
+export function atualizarStatusUsuario(id, ativo) {
+  return request(`/api/usuarios/${encodeURIComponent(id)}`, { method: "PATCH", body: { ativo } });
+}
+
+/** POST /api/usuarios/:id/resetar-senha — body { senha }. O SUPER_ADMIN define uma senha nova para o usuário. */
+export function resetarSenhaUsuario(id, senha) {
+  return request(`/api/usuarios/${encodeURIComponent(id)}/resetar-senha`, {
+    method: "POST",
+    body: { senha },
+  });
+}
+
+/** GET /api/perfil — dados do próprio usuário autenticado (id, nome, email, papel). */
+export function getPerfil() {
+  return request("/api/perfil");
+}
+
+/**
+ * PATCH /api/perfil — body { nome?, email?, senha_atual, senha_nova? }.
+ * Troca as próprias credenciais — sempre exige "senha_atual" correta,
+ * mesmo pra trocar só o nome.
+ */
+export function atualizarPerfil({ nome, email, senhaAtual, senhaNova }) {
+  return request("/api/perfil", {
+    method: "PATCH",
+    body: {
+      nome,
+      email,
+      senha_atual: senhaAtual,
+      senha_nova: senhaNova || undefined,
+    },
   });
 }

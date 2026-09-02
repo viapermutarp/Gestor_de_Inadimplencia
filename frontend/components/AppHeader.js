@@ -1,10 +1,12 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { clearToken } from "@/lib/auth";
+import { clearToken, isSuperAdmin } from "@/lib/auth";
 import { logout } from "@/lib/api";
-import { IconLogout } from "@/components/icons";
+import { IconLogout, IconShield } from "@/components/icons";
+import FranquiaSelector from "@/components/FranquiaSelector";
 
 const NAV_LINKS = [
   { href: "/dashboard", label: "Dashboard" },
@@ -14,9 +16,24 @@ const NAV_LINKS = [
   { href: "/configuracoes", label: "Configurações" },
 ];
 
+// Multi-franquia — Etapa 5 ("Controle Geral"): visível só pro SUPER_ADMIN —
+// a proteção de verdade é no backend (middleware/exigirSuperAdmin.js); isso
+// aqui é só pra não oferecer um link que qualquer outro papel não pode usar.
+const LINK_CONTROLE_GERAL = { href: "/controle-geral", label: "Controle Geral" };
+
 export default function AppHeader() {
   const pathname = usePathname();
   const router = useRouter();
+  // Calculado só depois de montar (lê localStorage) — evita divergência
+  // entre a primeira renderização do servidor/cliente (ambas começam com
+  // `false`) e a real, que só existe no navegador.
+  const [souSuperAdmin, setSouSuperAdmin] = useState(false);
+
+  useEffect(() => {
+    setSouSuperAdmin(isSuperAdmin());
+  }, []);
+
+  const links = souSuperAdmin ? [...NAV_LINKS, LINK_CONTROLE_GERAL] : NAV_LINKS;
 
   function handleLogout() {
     // Revoga a sessão no servidor (o refresh token fica inválido, então
@@ -45,36 +62,43 @@ export default function AppHeader() {
         </div>
 
         <nav className="hidden items-center gap-1 rounded-xl border border-border-soft bg-surface p-1 text-sm sm:flex">
-          {NAV_LINKS.map((link) => {
+          {links.map((link) => {
             const active = pathname === link.href;
+            const ehControleGeral = link.href === LINK_CONTROLE_GERAL.href;
             return (
               <Link
                 key={link.href}
                 href={link.href}
-                className={`rounded-lg px-3.5 py-1.5 font-medium transition-colors ${
+                className={`flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 font-medium transition-colors ${
                   active
                     ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground"
+                    : ehControleGeral
+                      ? "text-accent hover:text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
                 }`}
               >
+                {ehControleGeral && <IconShield className="h-3.5 w-3.5" />}
                 {link.label}
               </Link>
             );
           })}
         </nav>
 
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="flex shrink-0 items-center gap-1.5 rounded-xl border border-border-soft px-3.5 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-status-red/40 hover:text-status-red"
-        >
-          <IconLogout className="h-4 w-4" />
-          <span className="hidden sm:inline">Sair</span>
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {souSuperAdmin && <FranquiaSelector />}
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="flex shrink-0 items-center gap-1.5 rounded-xl border border-border-soft px-3.5 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-status-red/40 hover:text-status-red"
+          >
+            <IconLogout className="h-4 w-4" />
+            <span className="hidden sm:inline">Sair</span>
+          </button>
+        </div>
       </div>
 
       <nav className="flex items-center gap-1 border-t border-border-soft px-4 py-2 text-sm sm:hidden">
-        {NAV_LINKS.map((link) => {
+        {links.map((link) => {
           const active = pathname === link.href;
           return (
             <Link
@@ -89,6 +113,12 @@ export default function AppHeader() {
           );
         })}
       </nav>
+
+      {souSuperAdmin && (
+        <div className="border-t border-border-soft px-4 py-2 sm:hidden">
+          <FranquiaSelector />
+        </div>
+      )}
     </header>
   );
 }
