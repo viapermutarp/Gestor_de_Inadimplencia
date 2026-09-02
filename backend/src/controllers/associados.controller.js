@@ -1,5 +1,4 @@
 const { Prisma } = require('@prisma/client');
-const prisma = require('../config/prisma');
 
 const COBRANCAS_ABERTAS = ['pending', 'overdue'];
 const LIMITE_PADRAO = 100;
@@ -76,8 +75,20 @@ function construirCondicoesFiltro({
   bloqueadoParam,
   termoBusca,
   exigirCobrancaAberta,
+  franquiaId,
 } = {}) {
   const condicoes = [];
+
+  // Multi-franquia — Fase 3: filtro de isolamento, sempre o primeiro a
+  // entrar (quando aplicável). "franquiaId" null = irrestrito (só
+  // acontece pro SUPER_ADMIN sem "?franquia_id=" explícito — ver
+  // escopoFranquia.js) — nesse caso, de propósito, NENHUMA condição de
+  // franquia é adicionada aqui, igual ao resto da extension. Esta função
+  // roda dentro de "$queryRaw", que a Prisma Client Extension de
+  // isolamento (prismaComEscopo.js) NÃO intercepta — por isso o filtro
+  // precisa ser adicionado manualmente aqui, e não fica "automático" como
+  // nas chamadas via ORM do resto do arquivo.
+  if (franquiaId) condicoes.push(Prisma.sql`a.franquia_id = ${franquiaId}`);
 
   if (emNegociacaoParam === 'true') condicoes.push(Prisma.sql`a.em_negociacao = true`);
   else if (emNegociacaoParam === 'false') condicoes.push(Prisma.sql`a.em_negociacao = false`);
@@ -199,10 +210,11 @@ exports.listar = async (req, res, next) => {
         bloqueadoParam,
         termoBusca: buscaValida ? termoBusca : '',
         exigirCobrancaAberta: nenhumFiltroDeStatusAtivo,
+        franquiaId: req.franquiaId,
       })
     );
 
-    const totalRows = await prisma.$queryRaw`
+    const totalRows = await req.prisma.$queryRaw`
       SELECT COUNT(*)::int AS total FROM associados a ${whereSql}
     `;
     const totalRegistros = totalRows[0]?.total ?? 0;
@@ -211,7 +223,7 @@ exports.listar = async (req, res, next) => {
     // 1ª etapa: calcula, no banco, o "pior" dias_diferenca em aberto de cada
     // associado e já aplica ORDER BY + LIMIT/OFFSET — só traz os IDs da
     // página pedida, na ordem certa.
-    const paginaOrdenada = await prisma.$queryRaw`
+    const paginaOrdenada = await req.prisma.$queryRaw`
       SELECT
         a.id,
         (
@@ -230,10 +242,13 @@ exports.listar = async (req, res, next) => {
     // 2ª etapa: busca os registros completos (com cobranças/relacionamentos)
     // só para os IDs da página — depois reordena em memória de acordo com
     // `idsOrdenados`, já que "WHERE id IN (...)" não garante preservar essa
-    // ordem no retorno do banco.
+    // ordem no retorno do banco. Já filtrado por franquia acima (na consulta
+    // que gerou "idsOrdenados"); "req.prisma.associado.findMany" aqui
+    // reforça o isolamento de novo automaticamente (via ORM, a extension já
+    // cobre), redundante de propósito — defesa em profundidade.
     let associadosOrdenados = [];
     if (idsOrdenados.length > 0) {
-      const registros = await prisma.associado.findMany({
+      const registros = await req.prisma.associado.findMany({
         where: { id: { in: idsOrdenados } },
         include: {
           cobrancas: {
@@ -286,10 +301,10 @@ exports.resumo = async (req, res, next) => {
     const buscaValida = termoBusca !== '';
 
     const whereSql = montarWhereSql(
-      construirCondicoesFiltro({ termoBusca: buscaValida ? termoBusca : '' })
+      construirCondicoesFiltro({ termoBusca: buscaValida ? termoBusca : '', franquiaId: req.franquiaId })
     );
 
-    const [linhas] = await prisma.$queryRaw`
+    const [linhas] = await req.prisma.$queryRaw`
       SELECT
         COUNT(DISTINCT a.id) FILTER (WHERE c.status IN ('pending', 'overdue')) AS com_cobranca_aberto,
         COALESCE(SUM(c.valor) FILTER (WHERE c.status IN ('pending', 'overdue')), 0) AS valor_total_aberto,
@@ -323,7 +338,7 @@ exports.detalhar = async (req, res, next) => {
   try {
     const { cpfCnpj } = req.params;
 
-    const associado = await prisma.associado.findUnique({
+    const associado = await req.prisma.associado.findUnique({
       where: { cpfCnpj },
       include: {
         cobrancas: { orderBy: { vencimento: 'asc' } },
@@ -361,7 +376,7 @@ exports.atualizarNegociacao = async (req, res, next) => {
       return res.status(400).json({ error: '"em_negociacao" deve ser true ou false.' });
     }
 
-    const associado = await prisma.associado.findUnique({ where: { cpfCnpj } });
+    const associado = await req.prisma.associado.findUnique({ where: { cpfCnpj } });
 
     if (!associado) {
       return res.status(404).json({ error: 'Associado não encontrado.' });
@@ -370,24 +385,33 @@ exports.atualizarNegociacao = async (req, res, next) => {
     const novaObservacao = observacao !== undefined ? observacao : associado.observacao;
     const observacaoMudou = novaObservacao !== associado.observacao;
 
-    const [atualizado] = await prisma.$transaction([
-      prisma.associado.update({
+    // Multi-franquia — Fase 3: transação em callback ("$transaction(async
+    // (tx) => ...)"), não mais array ("$transaction([...])") — a Prisma
+    // Client Extension de isolamento (prismaComEscopo.js) faz checagens
+    // assíncronas extras antes de cada operação (ex.: confirmar franquia
+    // via findFirst), o que quebra o contrato de "PrismaPromise
+    // batchável" exigido pela forma array. A forma callback é o padrão
+    // documentado como compatível com extensions — "tx" já carrega a
+    // mesma extension de "req.prisma".
+    const atualizado = await req.prisma.$transaction(async (tx) => {
+      const registro = await tx.associado.update({
         where: { cpfCnpj },
         data: {
           emNegociacao,
           observacao: novaObservacao,
           ...(observacaoMudou ? { observacaoAtualizadaEm: new Date() } : {}),
         },
-      }),
-      prisma.historicoStatusAssociado.create({
+      });
+      await tx.historicoStatusAssociado.create({
         data: {
           associadoId: associado.id,
           campo: 'em_negociacao',
           statusAnterior: associado.emNegociacao,
           statusNovo: emNegociacao,
         },
-      }),
-    ]);
+      });
+      return registro;
+    });
 
     res.json(serializeAssociado(atualizado));
   } catch (err) {
@@ -410,26 +434,27 @@ exports.atualizarBloqueio = async (req, res, next) => {
       return res.status(400).json({ error: '"bloqueado" deve ser true ou false.' });
     }
 
-    const associado = await prisma.associado.findUnique({ where: { cpfCnpj } });
+    const associado = await req.prisma.associado.findUnique({ where: { cpfCnpj } });
 
     if (!associado) {
       return res.status(404).json({ error: 'Associado não encontrado.' });
     }
 
-    const [atualizado] = await prisma.$transaction([
-      prisma.associado.update({
+    const atualizado = await req.prisma.$transaction(async (tx) => {
+      const registro = await tx.associado.update({
         where: { cpfCnpj },
         data: { bloqueado },
-      }),
-      prisma.historicoStatusAssociado.create({
+      });
+      await tx.historicoStatusAssociado.create({
         data: {
           associadoId: associado.id,
           campo: 'bloqueado',
           statusAnterior: associado.bloqueado,
           statusNovo: bloqueado,
         },
-      }),
-    ]);
+      });
+      return registro;
+    });
 
     res.json(serializeAssociado(atualizado));
   } catch (err) {
@@ -453,26 +478,27 @@ exports.atualizarJuridico = async (req, res, next) => {
       return res.status(400).json({ error: '"em_juridico" deve ser true ou false.' });
     }
 
-    const associado = await prisma.associado.findUnique({ where: { cpfCnpj } });
+    const associado = await req.prisma.associado.findUnique({ where: { cpfCnpj } });
 
     if (!associado) {
       return res.status(404).json({ error: 'Associado não encontrado.' });
     }
 
-    const [atualizado] = await prisma.$transaction([
-      prisma.associado.update({
+    const atualizado = await req.prisma.$transaction(async (tx) => {
+      const registro = await tx.associado.update({
         where: { cpfCnpj },
         data: { emJuridico },
-      }),
-      prisma.historicoStatusAssociado.create({
+      });
+      await tx.historicoStatusAssociado.create({
         data: {
           associadoId: associado.id,
           campo: 'em_juridico',
           statusAnterior: associado.emJuridico,
           statusNovo: emJuridico,
         },
-      }),
-    ]);
+      });
+      return registro;
+    });
 
     res.json(serializeAssociado(atualizado));
   } catch (err) {
@@ -491,13 +517,13 @@ exports.contadorBloqueios = async (req, res, next) => {
   try {
     const { cpfCnpj } = req.params;
 
-    const associado = await prisma.associado.findUnique({ where: { cpfCnpj } });
+    const associado = await req.prisma.associado.findUnique({ where: { cpfCnpj } });
 
     if (!associado) {
       return res.status(404).json({ error: 'Associado não encontrado.' });
     }
 
-    const contador = await prisma.historicoStatusAssociado.count({
+    const contador = await req.prisma.historicoStatusAssociado.count({
       where: {
         associadoId: associado.id,
         campo: 'bloqueado',
@@ -525,13 +551,13 @@ exports.resetarBloqueios = async (req, res, next) => {
   try {
     const { cpfCnpj } = req.params;
 
-    const associado = await prisma.associado.findUnique({ where: { cpfCnpj } });
+    const associado = await req.prisma.associado.findUnique({ where: { cpfCnpj } });
 
     if (!associado) {
       return res.status(404).json({ error: 'Associado não encontrado.' });
     }
 
-    const atualizado = await prisma.associado.update({
+    const atualizado = await req.prisma.associado.update({
       where: { cpfCnpj },
       data: { cicloResetadoEm: new Date() },
     });

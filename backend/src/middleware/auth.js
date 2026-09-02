@@ -21,8 +21,15 @@ module.exports = async function auth(req, res, next) {
   }
 
   try {
-    if (await validarChave(token)) {
-      req.auth = { type: 'api_key' };
+    const chaveValida = await validarChave(token);
+    if (chaveValida) {
+      // Multi-franquia — Fase 3: "franquiaId" vem da própria ApiKey usada
+      // (ver apiKeys.service.js:validarChave) — é o que permite ao
+      // middleware escopoFranquia (ver routes/*.js, sempre logo depois
+      // deste) montar "req.prisma" já isolado pra franquia certa, sem
+      // precisar de sessão de usuário nenhuma (sync/cadastros são
+      // autenticados por API key, não por JWT).
+      req.auth = { type: 'api_key', franquiaId: chaveValida.franquiaId };
       return next();
     }
   } catch (err) {

@@ -1,7 +1,5 @@
-const prisma = require('../config/prisma');
 const { getWebhookCadastroUrl } = require('../services/config.service');
 const { gerarContratosParaCadastro } = require('../services/contratosGeracao.service');
-const { obterFranquiaIdPadrao } = require('../services/franquiaPadrao.service');
 
 const LIMITE_PADRAO = 100;
 const LIMITE_MAXIMO = 100;
@@ -208,10 +206,11 @@ exports.criar = async (req, res, next) => {
       ? modelosContratoIds.filter((id) => typeof id === 'string' && id.trim() !== '')
       : [];
 
-    const franquiaId = await obterFranquiaIdPadrao();
-    let cadastro = await prisma.cadastroEnviado.create({
+    // Multi-franquia — Fase 3: "franquiaId" injetado automaticamente pela
+    // extension (ver prismaComEscopo.js) — não precisa mais resolver via
+    // franquiaPadrao.service.js aqui.
+    let cadastro = await req.prisma.cadastroEnviado.create({
       data: {
-        franquiaId,
         payload,
         status: 'enviado',
         nomePasta: typeof nomePasta === 'string' && nomePasta.trim() !== '' ? nomePasta.trim() : null,
@@ -222,12 +221,12 @@ exports.criar = async (req, res, next) => {
     const resultadoN8n = await enviarParaN8n(payload);
 
     if (!resultadoN8n.ok) {
-      cadastro = await prisma.cadastroEnviado.update({
+      cadastro = await req.prisma.cadastroEnviado.update({
         where: { id: cadastro.id },
         data: { status: 'erro', respostaN8n: resultadoN8n.erro },
       });
     } else {
-      cadastro = await prisma.cadastroEnviado.update({
+      cadastro = await req.prisma.cadastroEnviado.update({
         where: { id: cadastro.id },
         data: {
           linkPagamento: resultadoN8n.linkPagamento,
@@ -275,10 +274,10 @@ exports.listar = async (req, res, next) => {
     if (!Number.isInteger(limit) || limit < 1) limit = LIMITE_PADRAO;
     if (limit > LIMITE_MAXIMO) limit = LIMITE_MAXIMO;
 
-    const totalRegistros = await prisma.cadastroEnviado.count();
+    const totalRegistros = await req.prisma.cadastroEnviado.count();
     const totalPaginas = Math.max(Math.ceil(totalRegistros / limit), 1);
 
-    const cadastros = await prisma.cadastroEnviado.findMany({
+    const cadastros = await req.prisma.cadastroEnviado.findMany({
       orderBy: { criadoEm: 'desc' },
       skip: (page - 1) * limit,
       take: limit,

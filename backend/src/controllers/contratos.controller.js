@@ -1,6 +1,3 @@
-const prisma = require('../config/prisma');
-const { obterFranquiaIdPadrao } = require('../services/franquiaPadrao.service');
-
 const TIPOS_VALIDOS = ['TERMO', 'ADITIVO'];
 
 function campoPreenchido(valor) {
@@ -33,7 +30,7 @@ exports.listar = async (req, res, next) => {
     if (ativo === 'true') where.ativo = true;
     if (ativo === 'false') where.ativo = false;
 
-    const modelos = await prisma.modeloContrato.findMany({
+    const modelos = await req.prisma.modeloContrato.findMany({
       where,
       orderBy: { criadoEm: 'desc' },
     });
@@ -49,7 +46,7 @@ exports.listar = async (req, res, next) => {
  */
 exports.obter = async (req, res, next) => {
   try {
-    const modelo = await prisma.modeloContrato.findUnique({ where: { id: req.params.id } });
+    const modelo = await req.prisma.modeloContrato.findUnique({ where: { id: req.params.id } });
     if (!modelo) {
       return res.status(404).json({ error: 'Modelo de contrato não encontrado.' });
     }
@@ -78,9 +75,10 @@ exports.criar = async (req, res, next) => {
       return res.status(400).json({ error: erros.join(' ') });
     }
 
-    const franquiaId = await obterFranquiaIdPadrao();
-    const modelo = await prisma.modeloContrato.create({
-      data: { franquiaId, nome: nome.trim(), tipo, conteudo },
+    // Multi-franquia — Fase 3: "franquiaId" injetado automaticamente pela
+    // extension (ver prismaComEscopo.js).
+    const modelo = await req.prisma.modeloContrato.create({
+      data: { nome: nome.trim(), tipo, conteudo },
     });
 
     res.status(201).json(serialize(modelo));
@@ -97,7 +95,7 @@ exports.criar = async (req, res, next) => {
  */
 exports.atualizar = async (req, res, next) => {
   try {
-    const existente = await prisma.modeloContrato.findUnique({ where: { id: req.params.id } });
+    const existente = await req.prisma.modeloContrato.findUnique({ where: { id: req.params.id } });
     if (!existente) {
       return res.status(404).json({ error: 'Modelo de contrato não encontrado.' });
     }
@@ -127,7 +125,7 @@ exports.atualizar = async (req, res, next) => {
       return res.status(400).json({ error: erros.join(' ') });
     }
 
-    const modelo = await prisma.modeloContrato.update({ where: { id: req.params.id }, data });
+    const modelo = await req.prisma.modeloContrato.update({ where: { id: req.params.id }, data });
     res.json(serialize(modelo));
   } catch (err) {
     next(err);
@@ -143,12 +141,12 @@ exports.atualizar = async (req, res, next) => {
  */
 exports.remover = async (req, res, next) => {
   try {
-    const existente = await prisma.modeloContrato.findUnique({ where: { id: req.params.id } });
+    const existente = await req.prisma.modeloContrato.findUnique({ where: { id: req.params.id } });
     if (!existente) {
       return res.status(404).json({ error: 'Modelo de contrato não encontrado.' });
     }
 
-    const modelo = await prisma.modeloContrato.update({
+    const modelo = await req.prisma.modeloContrato.update({
       where: { id: req.params.id },
       data: { ativo: false },
     });

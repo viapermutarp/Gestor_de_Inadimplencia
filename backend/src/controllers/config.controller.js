@@ -1,4 +1,3 @@
-const prisma = require('../config/prisma');
 const cache = require('../services/cache.service');
 const {
   getWebhookCadastroUrl,
@@ -13,8 +12,25 @@ const {
   setDrivePastaRaizId,
 } = require('../services/config.service');
 const { listarChaves, criarChave, revogarChave } = require('../services/apiKeys.service');
+const { obterFranquiaIdPadrao } = require('../services/franquiaPadrao.service');
 
 const CARACTERES_VISIVEIS = 6;
+
+/**
+ * Multi-franquia — Fase 3: resolve a franquia pra ESCRITA de ApiKey
+ * (POST /api/config/api-keys). "req.franquiaId" já vem certo pra qualquer
+ * usuário normal (a própria franquia da sessão); só fica `null` no caso
+ * irrestrito do SUPER_ADMIN sem "?franquia_id=" explícito (ver
+ * escopoFranquia.js) — nesse cenário (hoje: único usuário, única franquia,
+ * sem seletor de franquia na tela ainda — ver seção 6 do plano, "Controle
+ * Geral", ainda não implementada), cai no mesmo fallback que
+ * franquiaPadrao.service.js já usava antes da Fase 3: a única franquia
+ * existente. Evita quebrar a tela de Configurações pro SUPER_ADMIN de hoje
+ * enquanto o seletor de franquia não existe.
+ */
+async function resolverFranquiaParaEscrita(req) {
+  return req.franquiaId ?? (await obterFranquiaIdPadrao());
+}
 
 /** Mascara a chave, mostrando só os últimos CARACTERES_VISIVEIS caracteres. */
 function mascararChave(chave) {
@@ -32,7 +48,7 @@ function mascararChave(chave) {
  */
 exports.listarApiKeys = async (req, res, next) => {
   try {
-    const chaves = await listarChaves();
+    const chaves = await listarChaves(req.prisma);
     res.json(chaves);
   } catch (err) {
     next(err);
@@ -54,7 +70,8 @@ exports.criarApiKey = async (req, res, next) => {
       return res.status(400).json({ error: '"nome" é obrigatório.' });
     }
 
-    const nova = await criarChave(nome.trim());
+    const franquiaId = await resolverFranquiaParaEscrita(req);
+    const nova = await criarChave(req.prisma, franquiaId, nome.trim());
     res.status(201).json({
       ...nova,
       aviso: 'Guarde esta chave agora — ela não será exibida completa novamente.',
@@ -74,7 +91,7 @@ exports.criarApiKey = async (req, res, next) => {
 exports.revogarApiKey = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const revogada = await revogarChave(id);
+    const revogada = await revogarChave(req.prisma, id);
 
     if (!revogada) {
       return res.status(404).json({ error: 'Chave não encontrada.' });
@@ -284,7 +301,7 @@ exports.atualizarDrivePastaRaiz = async (req, res, next) => {
  */
 exports.syncLog = async (req, res, next) => {
   try {
-    const logs = await prisma.syncLog.findMany({
+    const logs = await req.prisma.syncLog.findMany({
       orderBy: { executadoEm: 'desc' },
       take: 20,
     });

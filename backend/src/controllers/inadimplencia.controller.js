@@ -1,8 +1,6 @@
-const prisma = require('../config/prisma');
 const cache = require('../services/cache.service');
 const { getPalavrasExcluidas, getDiasTolerancia } = require('../services/config.service');
 const { listarPagamentos, obterClientesPorId, AsaasApiError } = require('../services/asaas.service');
-const { obterFranquiaIdPadrao } = require('../services/franquiaPadrao.service');
 
 const FILTRO_TRI_ESTADO_VALIDAS = ['todos', 'sim', 'nao'];
 const VISAO_FAIXAS_VALIDAS = ['aberto', 'historico'];
@@ -181,9 +179,9 @@ function resolverPagamento(pagamento, mapaClientes, associadoPorCpfCnpj) {
  * (tabela "configuracoes" -> "inadimplencia_palavras_excluidas", gerenciada
  * via GET/PATCH /api/config/palavras-excluidas).
  */
-async function buscarExclusoesConfiguradas() {
+async function buscarExclusoesConfiguradas(reqPrisma) {
   const [registrosIgnorados, palavras] = await Promise.all([
-    prisma.cobrancaIgnorada.findMany({ select: { asaasPaymentId: true } }),
+    reqPrisma.cobrancaIgnorada.findMany({ select: { asaasPaymentId: true } }),
     getPalavrasExcluidas(),
   ]);
   const idsExcluidos = new Set(registrosIgnorados.map((r) => r.asaasPaymentId));
@@ -230,10 +228,10 @@ function separarExcluidos(pagamentos, idsExcluidos, palavras) {
  * excluídos pelos dois mecanismos (AJUSTE 1) — usado tanto por `resumo`
  * quanto por `evolucaoMensal`.
  */
-async function buscarPagamentosValidos({ vencDe, vencAte }) {
+async function buscarPagamentosValidos(reqPrisma, { vencDe, vencAte }) {
   const [pagamentos, { idsExcluidos, palavras }] = await Promise.all([
     listarPagamentos({ dueDateGe: vencDe, dueDateLe: vencAte }),
-    buscarExclusoesConfiguradas(),
+    buscarExclusoesConfiguradas(reqPrisma),
   ]);
   return separarExcluidos(pagamentos, idsExcluidos, palavras);
 }
@@ -244,11 +242,11 @@ async function buscarPagamentosValidos({ vencDe, vencAte }) {
  * (cpfCnpj -> associado local) via nossa tabela "associados" — reaproveitado
  * por `resumo` e `evolucaoMensal`.
  */
-async function resolverClientesEAssociados(idsClientes) {
+async function resolverClientesEAssociados(reqPrisma, idsClientes) {
   const mapaClientes = await obterClientesPorId(idsClientes);
   const cpfCnpjsResolvidos = [...new Set([...mapaClientes.values()].map((c) => c.cpfCnpj).filter(Boolean))];
   const associadosLocais = cpfCnpjsResolvidos.length
-    ? await prisma.associado.findMany({
+    ? await reqPrisma.associado.findMany({
         where: { cpfCnpj: { in: cpfCnpjsResolvidos } },
         select: { cpfCnpj: true, nome: true, emNegociacao: true, emJuridico: true, bloqueado: true },
       })
@@ -503,7 +501,7 @@ exports.resumo = async (req, res, next) => {
     }
 
     const [{ validos: pagamentosValidos, excluidos }, diasTolerancia] = await Promise.all([
-      buscarPagamentosValidos({ vencDe, vencAte }),
+      buscarPagamentosValidos(req.prisma, { vencDe, vencAte }),
       getDiasTolerancia(),
     ]);
 
@@ -516,7 +514,7 @@ exports.resumo = async (req, res, next) => {
     const idsOverdue = pagamentosValidos.filter((p) => p.status === 'OVERDUE').map((p) => p.customer);
     const idsParaResolver = precisaResolverTodos ? pagamentosValidos.map((p) => p.customer) : idsOverdue;
 
-    const { mapaClientes, associadoPorCpfCnpj } = await resolverClientesEAssociados(idsParaResolver);
+    const { mapaClientes, associadoPorCpfCnpj } = await resolverClientesEAssociados(req.prisma, idsParaResolver);
 
     const conjuntoTrabalho = aplicarFiltrosCrossReference(
       pagamentosValidos,
@@ -690,14 +688,14 @@ exports.evolucaoMensal = async (req, res, next) => {
     }
 
     const [{ validos: pagamentosValidos }, diasTolerancia] = await Promise.all([
-      buscarPagamentosValidos({ vencDe, vencAte }),
+      buscarPagamentosValidos(req.prisma, { vencDe, vencAte }),
       getDiasTolerancia(),
     ]);
 
     let conjuntoTrabalho = pagamentosValidos;
     if (renegociacao !== 'todos' || emJuridico !== 'todos' || bloqueado !== 'todos') {
       const idsParaResolver = pagamentosValidos.map((p) => p.customer);
-      const { mapaClientes, associadoPorCpfCnpj } = await resolverClientesEAssociados(idsParaResolver);
+      const { mapaClientes, associadoPorCpfCnpj } = await resolverClientesEAssociados(req.prisma, idsParaResolver);
       conjuntoTrabalho = aplicarFiltrosCrossReference(
         pagamentosValidos,
         { renegociacao, emJuridico, bloqueado },
@@ -751,7 +749,7 @@ exports.evolucaoMensal = async (req, res, next) => {
  */
 exports.listarExclusoes = async (req, res, next) => {
   try {
-    const registros = await prisma.cobrancaIgnorada.findMany({ orderBy: { criadoEm: 'desc' } });
+    const registros = await req.prisma.cobrancaIgnorada.findMany({ orderBy: { criadoEm: 'desc' } });
     res.json(
       registros.map((r) => ({
         id: r.id,
@@ -782,9 +780,10 @@ exports.criarExclusao = async (req, res, next) => {
       return res.status(400).json({ error: '"motivo" deve ser uma string.' });
     }
 
-    const franquiaId = await obterFranquiaIdPadrao();
-    const registro = await prisma.cobrancaIgnorada.create({
-      data: { franquiaId, asaasPaymentId: asaasPaymentId.trim(), motivo: motivo?.trim() || null },
+    // Multi-franquia — Fase 3: "franquiaId" injetado automaticamente pela
+    // extension (ver prismaComEscopo.js).
+    const registro = await req.prisma.cobrancaIgnorada.create({
+      data: { asaasPaymentId: asaasPaymentId.trim(), motivo: motivo?.trim() || null },
     });
 
     cache.clear();
@@ -810,7 +809,7 @@ exports.criarExclusao = async (req, res, next) => {
 exports.removerExclusao = async (req, res, next) => {
   try {
     const { id } = req.params;
-    await prisma.cobrancaIgnorada.delete({ where: { id } });
+    await req.prisma.cobrancaIgnorada.delete({ where: { id } });
     cache.clear();
     res.status(204).end();
   } catch (err) {

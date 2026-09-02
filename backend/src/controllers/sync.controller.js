@@ -1,6 +1,3 @@
-const prisma = require('../config/prisma');
-const { obterFranquiaIdPadrao } = require('../services/franquiaPadrao.service');
-
 const STATUS_VALIDOS = ['pending', 'overdue', 'paid'];
 
 // Status considerados "em aberto" no banco — mesmo conjunto usado por
@@ -22,12 +19,16 @@ const TIMEOUT_WEBHOOK_ATUALIZAR_MS = Number(process.env.SYNC_WEBHOOK_TIMEOUT_MS)
  * Registra uma linha em sync_log para cada chamada a POST /api/sync
  * (sucesso ou falha). Nunca lança erro — uma falha ao gravar o log não
  * pode derrubar a resposta do /sync em si.
+ *
+ * Multi-franquia — Fase 3: recebe "reqPrisma" (o "req.prisma" já escopado
+ * pela franquia da API key usada — ver escopoFranquia.js) em vez de
+ * resolver a franquia via a ponte temporária franquiaPadrao.service.js —
+ * o "create" da extension injeta "franquiaId" automaticamente.
  */
-async function registrarSyncLog({ total, sucesso }) {
+async function registrarSyncLog(reqPrisma, { total, sucesso }) {
   try {
-    const franquiaId = await obterFranquiaIdPadrao();
-    await prisma.syncLog.create({
-      data: { franquiaId, totalAssociadosProcessados: total, sucesso },
+    await reqPrisma.syncLog.create({
+      data: { totalAssociadosProcessados: total, sucesso },
     });
   } catch (err) {
     console.error('[sync] Falha ao registrar sync_log:', err.message);
@@ -130,7 +131,7 @@ exports.sync = async (req, res, next) => {
     const registros = corpoEhArray ? req.body : req.body?.associados;
 
     if (!Array.isArray(registros) || registros.length === 0) {
-      await registrarSyncLog({ total: 0, sucesso: false });
+      await registrarSyncLog(req.prisma, { total: 0, sucesso: false });
       return res.status(400).json({ error: 'Envie um array de associados no corpo da requisição.' });
     }
 
@@ -148,8 +149,6 @@ exports.sync = async (req, res, next) => {
     }
 
     totalAssociadosProcessados = registros.length;
-
-    const franquiaId = await obterFranquiaIdPadrao();
 
     let associadosCriados = 0;
     let associadosAtualizados = 0;
@@ -170,12 +169,19 @@ exports.sync = async (req, res, next) => {
         continue;
       }
 
-      const existente = await prisma.associado.findUnique({ where: { cpfCnpj } });
+      const existente = await req.prisma.associado.findUnique({ where: { cpfCnpj } });
 
-      const associado = await prisma.associado.upsert({
+      // Multi-franquia — Fase 3: "franquiaId" não é mais resolvido aqui —
+      // o "create" da extension injeta automaticamente a franquia da
+      // própria API key usada (ver prismaComEscopo.js). Se "cpfCnpj" já
+      // existir em OUTRA franquia (cpf_cnpj é único globalmente, não por
+      // franquia — ver schema.prisma), a extension rejeita com um erro
+      // claro de conflito em vez de sobrescrever o registro de outra
+      // franquia ou criar duplicata.
+      const associado = await req.prisma.associado.upsert({
         where: { cpfCnpj },
         update: { nome, telefone, email: email ?? null },
-        create: { franquiaId, cpfCnpj, nome, telefone, email: email ?? null },
+        create: { cpfCnpj, nome, telefone, email: email ?? null },
       });
 
       if (existente) {
@@ -241,12 +247,12 @@ exports.sync = async (req, res, next) => {
 
           if (idExterno) {
             // Prioridade máxima: casa pelo identificador externo (ex.: ID do Asaas).
-            cobrancaExistente = await prisma.cobranca.findUnique({ where: { idExterno } });
+            cobrancaExistente = await req.prisma.cobranca.findUnique({ where: { idExterno } });
           } else {
             // Fallback (compatibilidade retroativa): casa por associado + vencimento + descrição.
             // Só considera cobranças que também não têm id_externo, para não "roubar" e
             // sobrescrever por engano um registro que já está vinculado a um ID do Asaas.
-            cobrancaExistente = await prisma.cobranca.findFirst({
+            cobrancaExistente = await req.prisma.cobranca.findFirst({
               where: {
                 associadoId: associado.id,
                 vencimento: vencimentoDate,
@@ -257,7 +263,7 @@ exports.sync = async (req, res, next) => {
           }
 
           if (cobrancaExistente) {
-            await prisma.cobranca.update({
+            await req.prisma.cobranca.update({
               where: { id: cobrancaExistente.id },
               data: {
                 ...dadosComuns,
@@ -274,7 +280,7 @@ exports.sync = async (req, res, next) => {
             idsTratadosGlobal.add(cobrancaExistente.id);
             cobrancasAtualizadas += 1;
           } else {
-            const criada = await prisma.cobranca.create({
+            const criada = await req.prisma.cobranca.create({
               data: {
                 ...dadosComuns,
                 idExterno,
@@ -293,7 +299,17 @@ exports.sync = async (req, res, next) => {
         // por-associado tem a limitação que o modo global resolve (não
         // reconcilia associados que sumiram inteiros do payload).
         if (!janela) {
-          const resultadoQuitacao = await prisma.cobranca.updateMany({
+          // Multi-franquia — Fase 3: este "updateMany" era o caso concreto
+          // que embasou todo o desenho da extension de isolamento (ver
+          // seção 4 do plano) — SEM filtro de franquia explícito aqui, um
+          // sync de uma franquia podia marcar como "quitada" cobranças de
+          // OUTRA franquia por engano. Agora "req.prisma" (escopado pela
+          // franquia da API key usada) injeta "associado: { franquiaId }"
+          // automaticamente nesse "where" (Cobranca é escopo por relação —
+          // ver prismaComEscopo.js), mesmo esse "where" já filtrando por
+          // "associadoId" específico (que já é da franquia certa, mas a
+          // dupla checagem é a defesa em profundidade documentada).
+          const resultadoQuitacao = await req.prisma.cobranca.updateMany({
             where: {
               associadoId: associado.id,
               status: { in: STATUS_CONSIDERADOS_ABERTOS },
@@ -313,8 +329,16 @@ exports.sync = async (req, res, next) => {
     // associado sumir inteiro do payload porque todas as cobranças dele
     // foram pagas (o modo por-associado nunca examinava esse associado).
     if (janela) {
+      // Multi-franquia — Fase 3: ESTE é o "updateMany" citado na seção 4 do
+      // plano como justificativa central da extension — roda sobre a base
+      // INTEIRA (nenhum filtro de associado aqui, de propósito, é o modo
+      // "global"), então sem isolamento automático um sync de uma franquia
+      // marcaria cobranças de OUTRA franquia como quitadas. "req.prisma"
+      // (Cobranca é escopo por relação) injeta "associado: { franquiaId }"
+      // nesse "where" automaticamente — ver prismaComEscopo.js e o teste
+      // dedicado a este cenário específico.
       const idsGlobal = Array.from(idsTratadosGlobal);
-      const resultadoQuitacaoGlobal = await prisma.cobranca.updateMany({
+      const resultadoQuitacaoGlobal = await req.prisma.cobranca.updateMany({
         where: {
           status: { in: STATUS_CONSIDERADOS_ABERTOS },
           vencimento: { gte: janela.inicio, lte: janela.fim },
@@ -325,7 +349,7 @@ exports.sync = async (req, res, next) => {
       cobrancasQuitadas += resultadoQuitacaoGlobal.count;
     }
 
-    await registrarSyncLog({ total: totalAssociadosProcessados, sucesso: true });
+    await registrarSyncLog(req.prisma, { total: totalAssociadosProcessados, sucesso: true });
 
     res.json({
       associados_criados: associadosCriados,
@@ -337,7 +361,7 @@ exports.sync = async (req, res, next) => {
       erros,
     });
   } catch (err) {
-    await registrarSyncLog({ total: totalAssociadosProcessados, sucesso: false });
+    await registrarSyncLog(req.prisma, { total: totalAssociadosProcessados, sucesso: false });
     next(err);
   }
 };
