@@ -30,16 +30,22 @@ async function migrarChaveLegadaSeNecessario() {
   const total = await prisma.apiKey.count();
   if (total > 0) return;
 
+  let franquiaId;
+  try {
+    franquiaId = await obterFranquiaIdPadrao();
+  } catch {
+    return;
+  }
+
   let chaveLegada;
   try {
-    chaveLegada = await getApiKey();
+    chaveLegada = await getApiKey(franquiaId);
   } catch {
     return;
   }
   if (!chaveLegada) return;
 
   try {
-    const franquiaId = await obterFranquiaIdPadrao();
     await prisma.apiKey.create({
       data: {
         franquiaId,

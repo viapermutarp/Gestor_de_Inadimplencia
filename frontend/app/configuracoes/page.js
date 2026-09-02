@@ -15,6 +15,8 @@ import {
   atualizarToleranciaDias,
   getDrivePastaRaiz,
   atualizarDrivePastaRaiz,
+  getGoogleServiceAccount,
+  atualizarGoogleServiceAccount,
   ApiError,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
@@ -66,6 +68,13 @@ export default function ConfiguracoesPage() {
   const [novoDrivePastaRaiz, setNovoDrivePastaRaiz] = useState("");
   const [salvandoDrivePastaRaiz, setSalvandoDrivePastaRaiz] = useState(false);
   const [drivePastaRaizSalva, setDrivePastaRaizSalva] = useState(false);
+
+  const [googleServiceAccount, setGoogleServiceAccount] = useState(null);
+  const [carregandoGoogleServiceAccount, setCarregandoGoogleServiceAccount] = useState(true);
+  const [erroGoogleServiceAccount, setErroGoogleServiceAccount] = useState("");
+  const [novaCredencialGoogle, setNovaCredencialGoogle] = useState("");
+  const [salvandoGoogleServiceAccount, setSalvandoGoogleServiceAccount] = useState(false);
+  const [googleServiceAccountSalva, setGoogleServiceAccountSalva] = useState(false);
 
   const carregarApiKeys = useCallback(async () => {
     setCarregandoChaves(true);
@@ -152,6 +161,21 @@ export default function ConfiguracoesPage() {
     }
   }, []);
 
+  const carregarGoogleServiceAccount = useCallback(async () => {
+    setCarregandoGoogleServiceAccount(true);
+    setErroGoogleServiceAccount("");
+    try {
+      const data = await getGoogleServiceAccount();
+      setGoogleServiceAccount(data);
+    } catch (err) {
+      setErroGoogleServiceAccount(
+        err instanceof ApiError ? err.message : "Erro ao carregar a credencial da conta de serviço do Google."
+      );
+    } finally {
+      setCarregandoGoogleServiceAccount(false);
+    }
+  }, []);
+
   useEffect(() => {
     carregarApiKeys();
     carregarWebhookCadastro();
@@ -159,6 +183,7 @@ export default function ConfiguracoesPage() {
     carregarAsaasKey();
     carregarTolerancia();
     carregarDrivePastaRaiz();
+    carregarGoogleServiceAccount();
   }, [
     carregarApiKeys,
     carregarWebhookCadastro,
@@ -166,6 +191,7 @@ export default function ConfiguracoesPage() {
     carregarAsaasKey,
     carregarTolerancia,
     carregarDrivePastaRaiz,
+    carregarGoogleServiceAccount,
   ]);
 
   async function handleCriarChave() {
@@ -250,6 +276,26 @@ export default function ConfiguracoesPage() {
       );
     } finally {
       setSalvandoDrivePastaRaiz(false);
+    }
+  }
+
+  async function handleSalvarGoogleServiceAccount() {
+    if (!novaCredencialGoogle.trim()) return;
+    setSalvandoGoogleServiceAccount(true);
+    setErroGoogleServiceAccount("");
+    setGoogleServiceAccountSalva(false);
+    try {
+      const data = await atualizarGoogleServiceAccount(novaCredencialGoogle.trim());
+      setGoogleServiceAccount(data);
+      setNovaCredencialGoogle("");
+      setGoogleServiceAccountSalva(true);
+      setTimeout(() => setGoogleServiceAccountSalva(false), 2500);
+    } catch (err) {
+      setErroGoogleServiceAccount(
+        err instanceof ApiError ? err.message : "Não foi possível salvar a credencial do Google."
+      );
+    } finally {
+      setSalvandoGoogleServiceAccount(false);
     }
   }
 
@@ -533,6 +579,78 @@ export default function ConfiguracoesPage() {
           </p>
         )}
         {drivePastaRaizSalva && (
+          <span className="mt-2 block text-xs font-medium text-status-green">Salvo com sucesso.</span>
+        )}
+      </section>
+
+      {/* Credencial do Google (conta de serviço) */}
+      <section className="rounded-2xl border border-border-soft bg-surface p-5 shadow-lg shadow-black/20">
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+            <IconFileText className="h-4.5 w-4.5" />
+          </span>
+          <h3 className="text-sm font-semibold text-foreground">Credencial do Google (conta de serviço)</h3>
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Autentica o acesso ao Google Drive usado na geração automática de contratos. Cole o JSON da
+          conta de serviço (baixado do Google Cloud Console) cru ou em base64 — a chave privada nunca é
+          exibida de volta depois de salva, só o e-mail e o projeto da conta configurada.
+        </p>
+
+        {erroGoogleServiceAccount && (
+          <div className="mt-3">
+            <ErrorBanner message={erroGoogleServiceAccount} onRetry={carregarGoogleServiceAccount} />
+          </div>
+        )}
+
+        <div className="mt-4 flex w-full min-w-0 items-center gap-3">
+          <div className="min-w-0 flex-1 rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5">
+            {carregandoGoogleServiceAccount ? (
+              <Spinner className="h-4 w-4" />
+            ) : googleServiceAccount?.configurado ? (
+              <div className="min-w-0">
+                <p className="truncate font-mono text-sm text-foreground" title={googleServiceAccount.client_email}>
+                  {googleServiceAccount.client_email}
+                </p>
+                {googleServiceAccount.project_id && (
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    Projeto: {googleServiceAccount.project_id}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <span className="text-sm text-muted-foreground">Não configurada</span>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-2">
+          <textarea
+            value={novaCredencialGoogle}
+            onChange={(e) => setNovaCredencialGoogle(e.target.value)}
+            placeholder='{"type": "service_account", "client_email": "...", ...} (ou base64)'
+            disabled={salvandoGoogleServiceAccount}
+            rows={4}
+            className="w-full min-w-0 resize-y rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 font-mono text-xs text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          <button
+            type="button"
+            onClick={handleSalvarGoogleServiceAccount}
+            disabled={!novaCredencialGoogle.trim() || salvandoGoogleServiceAccount}
+            className="flex shrink-0 items-center justify-center gap-2 self-start rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {salvandoGoogleServiceAccount && <Spinner className="h-3.5 w-3.5" />}
+            Salvar
+          </button>
+        </div>
+
+        {!carregandoGoogleServiceAccount && !googleServiceAccount?.configurado && (
+          <p className="mt-2 text-xs text-status-yellow">
+            Ainda não configurada — a geração automática de contratos vai ficar pulando (sem subir pro
+            Drive) até uma credencial ser salva.
+          </p>
+        )}
+        {googleServiceAccountSalva && (
           <span className="mt-2 block text-xs font-medium text-status-green">Salvo com sucesso.</span>
         )}
       </section>

@@ -465,3 +465,24 @@ export function atualizarDrivePastaRaiz(valor) {
     body: { drive_pasta_raiz_id: valor },
   });
 }
+
+/**
+ * GET /api/config/google-service-account — Multi-franquia, Passo 4.
+ * Retorna { configurado, client_email, project_id } — nunca a credencial
+ * completa (é um segredo, mesmo tratamento da chave do Asaas).
+ */
+export function getGoogleServiceAccount() {
+  return request("/api/config/google-service-account");
+}
+
+/**
+ * PATCH /api/config/google-service-account — body { credencial }. Aceita o
+ * JSON cru (colado direto) ou em base64, mesmo formato aceito antes pela
+ * variável de ambiente GOOGLE_SERVICE_ACCOUNT_JSON.
+ */
+export function atualizarGoogleServiceAccount(credencial) {
+  return request("/api/config/google-service-account", {
+    method: "PATCH",
+    body: { credencial },
+  });
+}

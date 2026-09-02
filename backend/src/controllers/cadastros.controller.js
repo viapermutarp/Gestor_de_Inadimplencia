@@ -1,5 +1,6 @@
 const { getWebhookCadastroUrl } = require('../services/config.service');
 const { gerarContratosParaCadastro } = require('../services/contratosGeracao.service');
+const { resolverFranquiaIdOuPadrao } = require('../services/franquiaPadrao.service');
 
 const LIMITE_PADRAO = 100;
 const LIMITE_MAXIMO = 100;
@@ -77,8 +78,8 @@ function validarPayload(payload) {
  * sucesso. Falha de rede/timeout/HTTP/negócio nunca deve travar a resposta
  * de POST /api/cadastros — só é registrada no banco e repassada como erro.
  */
-async function enviarParaN8n(payload) {
-  const url = await getWebhookCadastroUrl();
+async function enviarParaN8n(payload, franquiaId) {
+  const url = await getWebhookCadastroUrl(franquiaId);
 
   if (!url) {
     return { ok: false, erro: 'URL do webhook do n8n (n8n_webhook_cadastro_url) não está configurada.' };
@@ -206,6 +207,28 @@ exports.criar = async (req, res, next) => {
       ? modelosContratoIds.filter((id) => typeof id === 'string' && id.trim() !== '')
       : [];
 
+    // Multi-franquia — Passo 4, Item 2: valida que cada "modeloContratoId"
+    // pertence à franquia de quem está enviando ANTES de salvar o cadastro
+    // — sem isso, alguém poderia (por bug do frontend ou de propósito)
+    // apontar pro id de um modelo de OUTRA franquia, e
+    // contratosGeracao.service.js (job assíncrono, fora do req.prisma)
+    // acabaria gerando o contrato com o modelo errado (ver Item 3, defesa em
+    // profundidade complementar dentro do próprio job). "req.prisma" já
+    // filtra por franquia automaticamente (ver prismaComEscopo.js) — um id
+    // de outra franquia simplesmente não aparece no resultado.
+    const idsUnicos = [...new Set(modelosIds)];
+    if (idsUnicos.length > 0) {
+      const modelosEncontrados = await req.prisma.modeloContrato.findMany({
+        where: { id: { in: idsUnicos } },
+        select: { id: true },
+      });
+      if (modelosEncontrados.length !== idsUnicos.length) {
+        return res.status(400).json({
+          error: 'Um ou mais "modelosContratoIds" não existem ou não pertencem à sua franquia.',
+        });
+      }
+    }
+
     // Multi-franquia — Fase 3: "franquiaId" injetado automaticamente pela
     // extension (ver prismaComEscopo.js) — não precisa mais resolver via
     // franquiaPadrao.service.js aqui.
@@ -218,7 +241,8 @@ exports.criar = async (req, res, next) => {
       },
     });
 
-    const resultadoN8n = await enviarParaN8n(payload);
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const resultadoN8n = await enviarParaN8n(payload, franquiaId);
 
     if (!resultadoN8n.ok) {
       cadastro = await req.prisma.cadastroEnviado.update({

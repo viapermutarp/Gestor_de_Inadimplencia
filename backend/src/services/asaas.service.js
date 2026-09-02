@@ -17,8 +17,8 @@ class AsaasApiError extends Error {
   }
 }
 
-async function requisitar(caminho, params = {}) {
-  const chave = await getAsaasApiKey();
+async function requisitar(caminho, params = {}, franquiaId) {
+  const chave = await getAsaasApiKey(franquiaId);
 
   if (!chave) {
     throw new AsaasApiError(
@@ -76,17 +76,21 @@ async function requisitar(caminho, params = {}) {
  * mesmo esquema offset/limit da API do Asaas (limit máximo 100 por página;
  * `hasMore` indica se há mais uma página) até esgotar os resultados.
  */
-async function listarPagamentos({ dueDateGe, dueDateLe }) {
+async function listarPagamentos({ dueDateGe, dueDateLe }, franquiaId) {
   const pagamentos = [];
   let offset = 0;
 
   for (;;) {
-    const pagina = await requisitar('/payments', {
-      'dueDate[ge]': dueDateGe,
-      'dueDate[le]': dueDateLe,
-      limit: LIMITE_PAGINACAO,
-      offset,
-    });
+    const pagina = await requisitar(
+      '/payments',
+      {
+        'dueDate[ge]': dueDateGe,
+        'dueDate[le]': dueDateLe,
+        limit: LIMITE_PAGINACAO,
+        offset,
+      },
+      franquiaId
+    );
 
     const dados = Array.isArray(pagina.data) ? pagina.data : [];
     pagamentos.push(...dados);
@@ -107,7 +111,7 @@ async function listarPagamentos({ dueDateGe, dueDateLe }) {
  * "sem associado correspondente" por quem chama) — uma falha isolada não
  * derruba o cálculo do resumo inteiro.
  */
-async function obterClientesPorId(idsClientes) {
+async function obterClientesPorId(idsClientes, franquiaId) {
   const idsUnicos = [...new Set(idsClientes.filter(Boolean))];
   const porId = new Map();
 
@@ -118,7 +122,7 @@ async function obterClientesPorId(idsClientes) {
       if (indice >= idsUnicos.length) return;
       const id = idsUnicos[indice];
       try {
-        const cliente = await requisitar(`/customers/${id}`);
+        const cliente = await requisitar(`/customers/${id}`, {}, franquiaId);
         porId.set(id, { cpfCnpj: cliente.cpfCnpj || null, nome: cliente.name || null });
       } catch (err) {
         console.error(`[asaas] Falha ao resolver cliente ${id}:`, err.message);

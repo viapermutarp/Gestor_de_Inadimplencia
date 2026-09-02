@@ -10,27 +10,14 @@ const {
   setDiasTolerancia,
   getDrivePastaRaizId,
   setDrivePastaRaizId,
+  getGoogleServiceAccountJson,
+  setGoogleServiceAccountJson,
 } = require('../services/config.service');
 const { listarChaves, criarChave, revogarChave } = require('../services/apiKeys.service');
-const { obterFranquiaIdPadrao } = require('../services/franquiaPadrao.service');
+const { resolverFranquiaIdOuPadrao } = require('../services/franquiaPadrao.service');
+const { invalidarClienteCache: invalidarClienteDriveCache } = require('../services/drive.service');
 
 const CARACTERES_VISIVEIS = 6;
-
-/**
- * Multi-franquia — Fase 3: resolve a franquia pra ESCRITA de ApiKey
- * (POST /api/config/api-keys). "req.franquiaId" já vem certo pra qualquer
- * usuário normal (a própria franquia da sessão); só fica `null` no caso
- * irrestrito do SUPER_ADMIN sem "?franquia_id=" explícito (ver
- * escopoFranquia.js) — nesse cenário (hoje: único usuário, única franquia,
- * sem seletor de franquia na tela ainda — ver seção 6 do plano, "Controle
- * Geral", ainda não implementada), cai no mesmo fallback que
- * franquiaPadrao.service.js já usava antes da Fase 3: a única franquia
- * existente. Evita quebrar a tela de Configurações pro SUPER_ADMIN de hoje
- * enquanto o seletor de franquia não existe.
- */
-async function resolverFranquiaParaEscrita(req) {
-  return req.franquiaId ?? (await obterFranquiaIdPadrao());
-}
 
 /** Mascara a chave, mostrando só os últimos CARACTERES_VISIVEIS caracteres. */
 function mascararChave(chave) {
@@ -70,7 +57,7 @@ exports.criarApiKey = async (req, res, next) => {
       return res.status(400).json({ error: '"nome" é obrigatório.' });
     }
 
-    const franquiaId = await resolverFranquiaParaEscrita(req);
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
     const nova = await criarChave(req.prisma, franquiaId, nome.trim());
     res.status(201).json({
       ...nova,
@@ -111,7 +98,8 @@ exports.revogarApiKey = async (req, res, next) => {
  */
 exports.obterWebhookCadastro = async (req, res, next) => {
   try {
-    const url = await getWebhookCadastroUrl();
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const url = await getWebhookCadastroUrl(franquiaId);
     res.json({ n8n_webhook_cadastro_url: url });
   } catch (err) {
     next(err);
@@ -131,7 +119,8 @@ exports.atualizarWebhookCadastro = async (req, res, next) => {
       return res.status(400).json({ error: '"n8n_webhook_cadastro_url" é obrigatório.' });
     }
 
-    const urlSalva = await setWebhookCadastroUrl(url.trim());
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const urlSalva = await setWebhookCadastroUrl(url.trim(), franquiaId);
     res.json({ n8n_webhook_cadastro_url: urlSalva });
   } catch (err) {
     next(err);
@@ -147,7 +136,8 @@ exports.atualizarWebhookCadastro = async (req, res, next) => {
  */
 exports.obterAsaasKey = async (req, res, next) => {
   try {
-    const chaveAtual = await getAsaasApiKey();
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const chaveAtual = await getAsaasApiKey(franquiaId);
     res.json({ asaas_api_key: mascararChave(chaveAtual) });
   } catch (err) {
     next(err);
@@ -169,7 +159,8 @@ exports.atualizarAsaasKey = async (req, res, next) => {
       return res.status(400).json({ error: '"chave" é obrigatório.' });
     }
 
-    await setAsaasApiKey(chave.trim());
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    await setAsaasApiKey(chave.trim(), franquiaId);
     res.json({ asaas_api_key: mascararChave(chave.trim()) });
   } catch (err) {
     next(err);
@@ -184,7 +175,8 @@ exports.atualizarAsaasKey = async (req, res, next) => {
  */
 exports.obterPalavrasExcluidas = async (req, res, next) => {
   try {
-    const palavras = await getPalavrasExcluidas();
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const palavras = await getPalavrasExcluidas(franquiaId);
     res.json({ palavras });
   } catch (err) {
     next(err);
@@ -206,7 +198,8 @@ exports.atualizarPalavrasExcluidas = async (req, res, next) => {
       return res.status(400).json({ error: '"palavras" deve ser um array de strings.' });
     }
 
-    const salvas = await setPalavrasExcluidas(palavras);
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const salvas = await setPalavrasExcluidas(palavras, franquiaId);
     cache.clear();
     res.json({ palavras: salvas });
   } catch (err) {
@@ -223,7 +216,8 @@ exports.atualizarPalavrasExcluidas = async (req, res, next) => {
  */
 exports.obterToleranciaDias = async (req, res, next) => {
   try {
-    const dias = await getDiasTolerancia();
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const dias = await getDiasTolerancia(franquiaId);
     res.json({ dias });
   } catch (err) {
     next(err);
@@ -247,7 +241,8 @@ exports.atualizarToleranciaDias = async (req, res, next) => {
       return res.status(400).json({ error: '"dias" deve ser um número inteiro entre 0 e 30.' });
     }
 
-    const salvo = await setDiasTolerancia(dias);
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const salvo = await setDiasTolerancia(dias, franquiaId);
     cache.clear();
     res.json({ dias: salvo });
   } catch (err) {
@@ -263,7 +258,8 @@ exports.atualizarToleranciaDias = async (req, res, next) => {
  */
 exports.obterDrivePastaRaiz = async (req, res, next) => {
   try {
-    const id = await getDrivePastaRaizId();
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const id = await getDrivePastaRaizId(franquiaId);
     res.json({ drive_pasta_raiz_id: id });
   } catch (err) {
     next(err);
@@ -288,8 +284,91 @@ exports.atualizarDrivePastaRaiz = async (req, res, next) => {
     const match = valor.trim().match(/\/folders\/([a-zA-Z0-9_-]+)/);
     const id = match ? match[1] : valor.trim();
 
-    const salvo = await setDrivePastaRaizId(id);
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const salvo = await setDrivePastaRaizId(id, franquiaId);
     res.json({ drive_pasta_raiz_id: salvo });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Lê os metadados públicos (nunca a chave privada) de um JSON de conta de
+ * serviço do Google — usado só pra exibir "qual credencial está
+ * configurada" sem nunca ecoar o segredo de volta. Aceita tanto o JSON cru
+ * quanto base64 (mesmo formato aceito por drive.service.js). Retorna null
+ * se o valor não for um JSON de conta de serviço válido.
+ */
+function metadadosCredencialGoogle(valorBruto) {
+  if (!valorBruto) return null;
+  let credenciais;
+  try {
+    credenciais = JSON.parse(valorBruto);
+  } catch {
+    try {
+      credenciais = JSON.parse(Buffer.from(valorBruto, 'base64').toString('utf-8'));
+    } catch {
+      return null;
+    }
+  }
+  if (!credenciais || typeof credenciais !== 'object' || !credenciais.client_email) return null;
+  return { client_email: credenciais.client_email, project_id: credenciais.project_id || null };
+}
+
+/**
+ * GET /api/config/google-service-account
+ * Multi-franquia — Passo 4, Item 1: nunca retorna a credencial completa
+ * (é um segredo — mesmo tratamento dado à chave do Asaas). Retorna só se
+ * está configurada e, quando está, o "client_email"/"project_id" (públicos,
+ * úteis pra conferir que é a conta certa) — nunca a "private_key".
+ */
+exports.obterGoogleServiceAccount = async (req, res, next) => {
+  try {
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const valor = await getGoogleServiceAccountJson(franquiaId);
+    const metadados = metadadosCredencialGoogle(valor);
+    res.json({
+      configurado: metadados !== null,
+      client_email: metadados?.client_email ?? null,
+      project_id: metadados?.project_id ?? null,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PATCH /api/config/google-service-account
+ * Body: { "credencial": "{...json...}" } — aceita o JSON cru (colado
+ * direto) ou o JSON inteiro em base64, mesmo formato hoje aceito pela
+ * variável de ambiente GOOGLE_SERVICE_ACCOUNT_JSON (ver
+ * drive.service.js:carregarCredenciais). Valida que decodifica pra um JSON
+ * de conta de serviço com "client_email" antes de salvar — nunca grava lixo
+ * que só ia falhar silenciosamente na próxima geração de contrato.
+ */
+exports.atualizarGoogleServiceAccount = async (req, res, next) => {
+  try {
+    const { credencial } = req.body || {};
+
+    if (typeof credencial !== 'string' || credencial.trim() === '') {
+      return res.status(400).json({ error: '"credencial" é obrigatório.' });
+    }
+
+    const metadados = metadadosCredencialGoogle(credencial.trim());
+    if (!metadados) {
+      return res.status(400).json({
+        error:
+          '"credencial" precisa ser um JSON de conta de serviço do Google válido (cru ou em base64), com "client_email".',
+      });
+    }
+
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    await setGoogleServiceAccountJson(credencial.trim(), franquiaId);
+    // Passo 4, Item 4: sem isso, a troca de credencial só valeria depois de
+    // reiniciar o processo (drive.service.js cacheia o client por franquia).
+    invalidarClienteDriveCache(franquiaId);
+
+    res.json({ configurado: true, client_email: metadados.client_email, project_id: metadados.project_id });
   } catch (err) {
     next(err);
   }

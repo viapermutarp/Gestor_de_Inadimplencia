@@ -201,3 +201,13 @@ Cada etapa é testável e "shippable" isoladamente (não precisa esperar tudo pr
 5. **Tela Controle Geral** (seção 6) — só agora dá pra criar a 2ª franquia de verdade e ver o isolamento valendo em produção. `SUPER_ADMIN` obrigatoriamente escolhe uma franquia antes de ver Dashboard/Cadastro/Contratos/Inadimplência/Jurídico (confirmado — nenhuma tela mistura dados de mais de uma franquia ao mesmo tempo, nem pra ele).
 
 Todas as perguntas em aberto da versão anterior deste plano já foram respondidas (nome da franquia, comportamento de desativação, obrigatoriedade de seleção de franquia pro `SUPER_ADMIN`) e estão incorporadas nas seções acima.
+
+---
+
+## 8. Status da implementação
+
+1. **Schema + migração de dados** (seções 1, 5) — **implementado e testado** (`20260901130000_add_multi_franquia`).
+2. **Autenticação** (seção 2) — **implementado e testado** (Fase 2, Passos 1 e 2).
+3. **Isolamento** (seção 4) — **implementado e testado** (Fase 3 — extension + wiring dos 6 controllers).
+4. **Configurações por franquia** (seção 3) — **implementado e testado (Passo 4)**: os 4 itens descritos na seção 3 (`configuracoes`/credencial do Google por franquia; validação de `modelosContratoIds` na entrada de `POST /api/cadastros`; filtro de defesa em profundidade em `contratosGeracao.service.js`; e resolução de credencial/pasta do Drive por franquia em `drive.service.js`, incluindo cache por franquia com invalidação no `PATCH`) — todos com resultado de teste detalhado em `backend/README.md`, seção "Testes realizados" → "Multi-franquia — Passo 4: configurações por franquia". A ponte temporária `franquiaPadrao.service.js` deixa de ser usada por `config.service.js`/`drive.service.js` a partir daqui — continua existindo só como fallback explícito pro `SUPER_ADMIN` irrestrito (via `resolverFranquiaIdOuPadrao`) e pra criação de API key.
+5. **Tela Controle Geral** (seção 6) — **não implementado ainda**. Enquanto essa etapa não existir, só a franquia padrão (semeada pela migração da Fase 1) está em uso em produção — criar uma 2ª franquia de verdade depende dessa tela (não há endpoint `POST /api/franquias` hoje).

@@ -48,4 +48,23 @@ function _resetCacheParaTeste() {
   franquiaIdCache = null;
 }
 
-module.exports = { obterFranquiaIdPadrao, _resetCacheParaTeste };
+/**
+ * Multi-franquia — Passo 4: resolve a franquia a usar numa leitura/escrita
+ * de configuração (config.service.js) a partir da requisição. Pra qualquer
+ * usuário normal, "req.franquiaId" já vem certo (a própria franquia da
+ * sessão). Só fica `null` no caso irrestrito do SUPER_ADMIN sem
+ * "?franquia_id=" explícito (ver escopoFranquia.js) — cenário de hoje
+ * (único usuário, única franquia, sem seletor de franquia na tela ainda —
+ * ver seção 6 do plano, "Controle Geral", ainda não implementada) — cai
+ * neste mesmo fallback pragmático que já existia antes da Fase 3
+ * (`obterFranquiaIdPadrao`, acima): a única franquia existente. Evita
+ * quebrar a tela de Configurações pro SUPER_ADMIN de hoje enquanto o
+ * seletor de franquia não existe. Usado por config.controller.js,
+ * inadimplencia.controller.js e cadastros.controller.js — um único lugar
+ * pra essa exceção documentada, em vez de duplicá-la em cada controller.
+ */
+async function resolverFranquiaIdOuPadrao(req) {
+  return req.franquiaId ?? (await obterFranquiaIdPadrao());
+}
+
+module.exports = { obterFranquiaIdPadrao, resolverFranquiaIdOuPadrao, _resetCacheParaTeste };

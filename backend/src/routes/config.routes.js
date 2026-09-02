@@ -18,6 +18,8 @@ router.get('/config/tolerancia-dias', auth, escopoFranquia, ctrl.obterTolerancia
 router.patch('/config/tolerancia-dias', auth, escopoFranquia, ctrl.atualizarToleranciaDias);
 router.get('/config/drive-pasta-raiz', auth, escopoFranquia, ctrl.obterDrivePastaRaiz);
 router.patch('/config/drive-pasta-raiz', auth, escopoFranquia, ctrl.atualizarDrivePastaRaiz);
+router.get('/config/google-service-account', auth, escopoFranquia, ctrl.obterGoogleServiceAccount);
+router.patch('/config/google-service-account', auth, escopoFranquia, ctrl.atualizarGoogleServiceAccount);
 router.get('/config/sync-log', auth, escopoFranquia, ctrl.syncLog);
 
 module.exports = router;

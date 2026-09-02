@@ -294,16 +294,31 @@ async function gerarContratosParaCadastro(cadastroId) {
   if (!cadastro) return;
   if (!Array.isArray(cadastro.modelosContratoIds) || cadastro.modelosContratoIds.length === 0) return;
 
-  const drive = obterClienteDrive();
+  // Multi-franquia — Passo 4, Item 4: credencial resolvida pela franquia do
+  // PRÓPRIO cadastro (não mais global/única do processo) — ver
+  // drive.service.js:obterClienteDrive.
+  const drive = await obterClienteDrive(cadastro.franquiaId);
   if (!drive) {
     console.error(
-      `[contratos] GOOGLE_SERVICE_ACCOUNT_JSON não configurada — geração de contratos pulada (cadastro ${cadastroId}).`
+      `[contratos] Credencial do Google (conta de serviço) não configurada pra esta franquia — geração de contratos pulada (cadastro ${cadastroId}).`
     );
     return;
   }
 
+  // Multi-franquia — Passo 4, Item 3: filtro explícito por "franquiaId"
+  // (defesa em profundidade). Este job roda fora do req.prisma (é
+  // assíncrono, disparado via setImmediate depois que POST /api/cadastros
+  // já respondeu — ver docblock acima), então nada aqui passa pela
+  // extension de isolamento (prismaComEscopo.js). A validação de entrada em
+  // cadastros.controller.js (Item 2) já deveria ter bloqueado qualquer id de
+  // outra franquia antes de chegar a este ponto — mas nunca confiar só numa
+  // camada: mesmo que aquela validação falhe/seja contornada, esta query
+  // nunca retorna um ModeloContrato de franquia diferente da do próprio
+  // cadastro. "cadastro.franquiaId" já está disponível aqui (CadastroEnviado
+  // é modelo de escopo direto — findUnique acima não filtra, mas o registro
+  // já carrega sua própria franquia).
   const modelos = await prisma.modeloContrato.findMany({
-    where: { id: { in: cadastro.modelosContratoIds } },
+    where: { id: { in: cadastro.modelosContratoIds }, franquiaId: cadastro.franquiaId },
   });
 
   if (modelos.length === 0) {
@@ -311,12 +326,21 @@ async function gerarContratosParaCadastro(cadastroId) {
     return;
   }
 
+  if (modelos.length !== cadastro.modelosContratoIds.length) {
+    console.error(
+      `[contratos] ${cadastro.modelosContratoIds.length - modelos.length} modelo(s) selecionado(s) não pertencem à franquia do cadastro ${cadastroId} (ou não existem mais) — gerando só os válidos.`
+    );
+  }
+
   const dicionario = resolverDicionario(cadastro.payload, cadastro.criadoEm);
   const nomePasta = cadastro.nomePasta?.trim() || dicionario['Nome do Associado'] || `Cadastro ${cadastro.id}`;
 
   let pasta;
   try {
-    pasta = await criarPasta(nomePasta, drive);
+    // "cadastro.franquiaId" precisa ser passado explicitamente desde o
+    // Passo 4, Item 1 (config.service.js parou de ter fallback interno de
+    // franquia) — ver comentário em drive.service.js:criarPasta.
+    pasta = await criarPasta(nomePasta, drive, cadastro.franquiaId);
   } catch (err) {
     console.error(`[contratos] Falha ao criar a pasta "${nomePasta}" no Drive (cadastro ${cadastroId}):`, err.message);
     return;

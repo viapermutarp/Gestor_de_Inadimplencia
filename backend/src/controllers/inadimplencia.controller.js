@@ -1,6 +1,7 @@
 const cache = require('../services/cache.service');
 const { getPalavrasExcluidas, getDiasTolerancia } = require('../services/config.service');
 const { listarPagamentos, obterClientesPorId, AsaasApiError } = require('../services/asaas.service');
+const { resolverFranquiaIdOuPadrao } = require('../services/franquiaPadrao.service');
 
 const FILTRO_TRI_ESTADO_VALIDAS = ['todos', 'sim', 'nao'];
 const VISAO_FAIXAS_VALIDAS = ['aberto', 'historico'];
@@ -179,10 +180,10 @@ function resolverPagamento(pagamento, mapaClientes, associadoPorCpfCnpj) {
  * (tabela "configuracoes" -> "inadimplencia_palavras_excluidas", gerenciada
  * via GET/PATCH /api/config/palavras-excluidas).
  */
-async function buscarExclusoesConfiguradas(reqPrisma) {
+async function buscarExclusoesConfiguradas(reqPrisma, franquiaId) {
   const [registrosIgnorados, palavras] = await Promise.all([
     reqPrisma.cobrancaIgnorada.findMany({ select: { asaasPaymentId: true } }),
-    getPalavrasExcluidas(),
+    getPalavrasExcluidas(franquiaId),
   ]);
   const idsExcluidos = new Set(registrosIgnorados.map((r) => r.asaasPaymentId));
   return { idsExcluidos, palavras };
@@ -228,10 +229,10 @@ function separarExcluidos(pagamentos, idsExcluidos, palavras) {
  * excluídos pelos dois mecanismos (AJUSTE 1) — usado tanto por `resumo`
  * quanto por `evolucaoMensal`.
  */
-async function buscarPagamentosValidos(reqPrisma, { vencDe, vencAte }) {
+async function buscarPagamentosValidos(reqPrisma, franquiaId, { vencDe, vencAte }) {
   const [pagamentos, { idsExcluidos, palavras }] = await Promise.all([
-    listarPagamentos({ dueDateGe: vencDe, dueDateLe: vencAte }),
-    buscarExclusoesConfiguradas(reqPrisma),
+    listarPagamentos({ dueDateGe: vencDe, dueDateLe: vencAte }, franquiaId),
+    buscarExclusoesConfiguradas(reqPrisma, franquiaId),
   ]);
   return separarExcluidos(pagamentos, idsExcluidos, palavras);
 }
@@ -242,8 +243,8 @@ async function buscarPagamentosValidos(reqPrisma, { vencDe, vencAte }) {
  * (cpfCnpj -> associado local) via nossa tabela "associados" — reaproveitado
  * por `resumo` e `evolucaoMensal`.
  */
-async function resolverClientesEAssociados(reqPrisma, idsClientes) {
-  const mapaClientes = await obterClientesPorId(idsClientes);
+async function resolverClientesEAssociados(reqPrisma, franquiaId, idsClientes) {
+  const mapaClientes = await obterClientesPorId(idsClientes, franquiaId);
   const cpfCnpjsResolvidos = [...new Set([...mapaClientes.values()].map((c) => c.cpfCnpj).filter(Boolean))];
   const associadosLocais = cpfCnpjsResolvidos.length
     ? await reqPrisma.associado.findMany({
@@ -500,9 +501,11 @@ exports.resumo = async (req, res, next) => {
       return res.json(cacheado);
     }
 
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+
     const [{ validos: pagamentosValidos, excluidos }, diasTolerancia] = await Promise.all([
-      buscarPagamentosValidos(req.prisma, { vencDe, vencAte }),
-      getDiasTolerancia(),
+      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
+      getDiasTolerancia(franquiaId),
     ]);
 
     // Só precisamos resolver cpfCnpj de TODOS os pagamentos válidos quando
@@ -514,7 +517,11 @@ exports.resumo = async (req, res, next) => {
     const idsOverdue = pagamentosValidos.filter((p) => p.status === 'OVERDUE').map((p) => p.customer);
     const idsParaResolver = precisaResolverTodos ? pagamentosValidos.map((p) => p.customer) : idsOverdue;
 
-    const { mapaClientes, associadoPorCpfCnpj } = await resolverClientesEAssociados(req.prisma, idsParaResolver);
+    const { mapaClientes, associadoPorCpfCnpj } = await resolverClientesEAssociados(
+      req.prisma,
+      franquiaId,
+      idsParaResolver
+    );
 
     const conjuntoTrabalho = aplicarFiltrosCrossReference(
       pagamentosValidos,
@@ -687,15 +694,21 @@ exports.evolucaoMensal = async (req, res, next) => {
       return res.json(cacheado);
     }
 
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+
     const [{ validos: pagamentosValidos }, diasTolerancia] = await Promise.all([
-      buscarPagamentosValidos(req.prisma, { vencDe, vencAte }),
-      getDiasTolerancia(),
+      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
+      getDiasTolerancia(franquiaId),
     ]);
 
     let conjuntoTrabalho = pagamentosValidos;
     if (renegociacao !== 'todos' || emJuridico !== 'todos' || bloqueado !== 'todos') {
       const idsParaResolver = pagamentosValidos.map((p) => p.customer);
-      const { mapaClientes, associadoPorCpfCnpj } = await resolverClientesEAssociados(req.prisma, idsParaResolver);
+      const { mapaClientes, associadoPorCpfCnpj } = await resolverClientesEAssociados(
+        req.prisma,
+        franquiaId,
+        idsParaResolver
+      );
       conjuntoTrabalho = aplicarFiltrosCrossReference(
         pagamentosValidos,
         { renegociacao, emJuridico, bloqueado },
