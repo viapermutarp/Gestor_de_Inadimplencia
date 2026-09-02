@@ -18,6 +18,16 @@ model Franquia {
   nome     String
   ativo    Boolean  @default(true)
   criadoEm DateTime @default(now()) @map("criado_em")
+  /// Restrição de telas por franquia (ver docs/plano-multi-franquia.md e
+  /// src/config/recursos.js — chaves válidas: RECURSOS). Controlado pelo
+  /// SUPER_ADMIN em Controle Geral, nunca pela própria franquia. Vazio por
+  /// padrão no schema, mas a migração que introduziu este campo já
+  /// preencheu todas as franquias EXISTENTES até então com a lista
+  /// completa (ninguém perdeu acesso ao que já tinha); toda franquia criada
+  /// depois disso recebe uma lista explícita vinda do controller (ver
+  /// franquias.controller.js:criar), nunca fica vazia na prática. Nunca
+  /// afeta SUPER_ADMIN (sempre irrestrito, ver middleware/exigirRecurso.js).
+  recursosPermitidos String[] @default([]) @map("recursos_permitidos")
 
   usuarios           Usuario[]
   associados         Associado[]
@@ -27,6 +37,8 @@ model Franquia {
   syncLogs           SyncLog[]
   apiKeys            ApiKey[]
   configuracoes      Configuracao[]
+  etapasJuridico     EtapaJuridico[]
+  cardsJuridico      CardJuridico[]
 
   @@map("franquias")
 }
@@ -78,6 +90,7 @@ model Associado {
 
   cobrancas       Cobranca[]
   historicoStatus HistoricoStatusAssociado[]
+  cardsJuridico   CardJuridico[]
 
   @@index([cpfCnpj])
   @@index([franquiaId])
@@ -302,4 +315,73 @@ model CobrancaIgnorada {
 
   @@index([franquiaId])
   @@map("cobrancas_ignoradas")
+}
+
+/// Kanban "Jurídico" — aba nova (ver docs/plano-multi-franquia.md e escopo
+/// pedido pelo usuário). Etapas (colunas) configuráveis por franquia:
+/// criar, renomear, reordenar (drag and drop, "ordem" reindexado no
+/// controller a cada reordenação — ver juridico.controller.js), excluir
+/// (com confirmação se tiver card dentro). ESCOPO_DIRETO na Prisma Client
+/// Extension de isolamento (ver prismaComEscopo.js) — franquiaId direto na
+/// própria tabela, mais simples que o desenho por relação usado em
+/// Cobranca/HistoricoStatusAssociado (não fazia sentido aqui: etapa não
+/// "pertence" a nenhum outro tenant-model, é ela mesma o tenant-model).
+model EtapaJuridico {
+  id         String   @id @default(uuid())
+  franquiaId String   @map("franquia_id")
+  franquia   Franquia @relation(fields: [franquiaId], references: [id])
+  nome       String
+  /// Posição na ordem das colunas (0-based) — reindexado por inteiro a cada
+  /// criação/exclusão/reordenação, nunca deixado esparso.
+  ordem      Int
+  criadoEm   DateTime @default(now()) @map("criado_em")
+
+  cards CardJuridico[]
+
+  @@index([franquiaId])
+  @@map("etapas_juridico")
+}
+
+/// Card do Kanban Jurídico — duas origens possíveis (ver escopo do
+/// pedido), mutuamente exclusivas (validado no controller, não no schema):
+///   - Vinculado a um Associado já cadastrado ("associadoId" preenchido,
+///     "titulo"/"descricao" ficam null): nome/cpf_cnpj/telefone/valor em
+///     aberto são exibidos SEMPRE ao vivo a partir da relação — nunca
+///     copiados estaticamente pro card (ver serializeCard em
+///     juridico.controller.js, que busca a relação a cada listagem).
+///   - Livre ("titulo" preenchido, "associadoId" null): título + descrição
+///     próprios do card.
+/// "responsavel"/"prazo" são opcionais e válidos pros dois casos. Também
+/// ESCOPO_DIRETO (mesma justificativa de EtapaJuridico) — o vínculo opcional
+/// com Associado é validado manualmente no controller (confirma que
+/// "associado_id" pertence à mesma franquia antes de aceitar), já que a
+/// extension só valida automaticamente esse tipo de relação pros models
+/// ESCOPO_RELACAO (Cobranca/HistoricoStatusAssociado).
+model CardJuridico {
+  id          String        @id @default(uuid())
+  franquiaId  String        @map("franquia_id")
+  franquia    Franquia      @relation(fields: [franquiaId], references: [id])
+  etapaId     String        @map("etapa_id")
+  etapa       EtapaJuridico @relation(fields: [etapaId], references: [id], onDelete: Cascade)
+  /// Posição dentro da etapa (0-based) — reindexado por inteiro a cada
+  /// criação/exclusão/movimentação entre colunas.
+  ordem       Int
+  associadoId String?    @map("associado_id")
+  associado   Associado? @relation(fields: [associadoId], references: [id], onDelete: Cascade)
+  titulo      String?
+  descricao   String?
+  responsavel String?
+  prazo       DateTime?  @db.Date
+  /// Preenchido (data/hora atual) toda vez que "etapaId" muda via
+  /// PATCH /api/juridico/cards/:id/mover — registro simples de "quando
+  /// mudou de etapa pela última vez", sem tabela de histórico completa
+  /// (escopo pediu isso só "se for fácil", não bloqueante pro MVP).
+  etapaAlteradaEm DateTime? @map("etapa_alterada_em")
+  criadoEm     DateTime  @default(now()) @map("criado_em")
+  atualizadoEm DateTime  @updatedAt @map("atualizado_em")
+
+  @@index([franquiaId])
+  @@index([etapaId])
+  @@index([associadoId])
+  @@map("cards_juridico")
 }

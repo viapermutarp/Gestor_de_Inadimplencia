@@ -75,6 +75,31 @@ export function isSuperAdmin() {
   return getClaims()?.papel === "SUPER_ADMIN";
 }
 
+/**
+ * Restrição de telas por franquia (ver escopo do pedido, item 2). Chaves
+ * válidas: "dashboard" | "inadimplencia" | "cadastro" | "contratos" |
+ * "juridico" | "configuracoes" (mesmas de RECURSOS no backend, ver
+ * src/config/recursos.js). `temRecurso` é usado tanto pelo AppHeader (só
+ * mostra o link de tela liberada) quanto por RequireRecurso.js (bloqueia
+ * acesso direto pela URL) — SUPER_ADMIN sempre "tem" qualquer recurso,
+ * nunca lê o claim "recursosPermitidos" (que nem existe no token dele, ver
+ * refreshTokens.service.js:gerarAccessToken).
+ *
+ * Só UX: o claim vem do access token (até 15min desatualizado se o
+ * SUPER_ADMIN mudar os recursos da franquia no meio da sessão) — a
+ * proteção de verdade é sempre o backend (middleware/exigirRecurso.js, que
+ * consulta o banco a cada requisição). Se o claim ficar stale e permitir
+ * renderizar uma tela que acabou de perder acesso, as chamadas de API
+ * daquela tela tomam 403 normalmente e mostram o erro de sempre — não
+ * quebra a aplicação, só não antecipa o bloqueio no clique do menu.
+ */
+export function temRecurso(chave) {
+  const claims = getClaims();
+  if (!claims) return false;
+  if (claims.papel === "SUPER_ADMIN") return true;
+  return Array.isArray(claims.recursosPermitidos) && claims.recursosPermitidos.includes(chave);
+}
+
 /** A franquia que o SUPER_ADMIN escolheu "entrar" (seletor no topo) — irrelevante para usuário de franquia comum (sempre a própria). */
 export function getFranquiaSelecionada() {
   if (typeof window === "undefined") return null;

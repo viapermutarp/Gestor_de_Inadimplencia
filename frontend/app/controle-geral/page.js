@@ -12,9 +12,34 @@ import {
   ApiError,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
+import { RECURSOS, CHAVES_RECURSOS } from "@/lib/recursos";
 import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
 import { IconBuilding, IconUser, IconPlus, IconLock, IconShield } from "@/components/icons";
+
+/** Checkboxes de "recursosPermitidos" (ver escopo do pedido, item 2.3) — reaproveitado no form de criação e na edição por franquia. */
+function CheckboxesRecursos({ selecionados, onAlternar, disabled }) {
+  return (
+    <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+      {RECURSOS.map((r) => (
+        <label key={r.chave} className="flex items-center gap-2 text-xs text-foreground">
+          <input
+            type="checkbox"
+            checked={selecionados.includes(r.chave)}
+            onChange={() => onAlternar(r.chave)}
+            disabled={disabled}
+            className="h-3.5 w-3.5 rounded border-border-soft accent-primary"
+          />
+          {r.label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function alternarChave(lista, chave) {
+  return lista.includes(chave) ? lista.filter((c) => c !== chave) : [...lista, chave];
+}
 
 export default function ControleGeralPage() {
   const [franquias, setFranquias] = useState([]);
@@ -26,12 +51,19 @@ export default function ControleGeralPage() {
   const [novoUsuarioNome, setNovoUsuarioNome] = useState("");
   const [novoUsuarioEmail, setNovoUsuarioEmail] = useState("");
   const [novoUsuarioSenha, setNovoUsuarioSenha] = useState("");
+  // Todos marcados por padrão (mais fácil desmarcar o que não quer do que
+  // esquecer de marcar o que precisa) — ver escopo do pedido, item 2.3.
+  const [recursosNovaFranquia, setRecursosNovaFranquia] = useState(CHAVES_RECURSOS);
   const [criandoFranquia, setCriandoFranquia] = useState(false);
   const [erroCriarFranquia, setErroCriarFranquia] = useState("");
 
   const [editandoNomeId, setEditandoNomeId] = useState(null);
   const [nomeEditado, setNomeEditado] = useState("");
   const [salvandoNomeId, setSalvandoNomeId] = useState(null);
+
+  const [editandoRecursosId, setEditandoRecursosId] = useState(null);
+  const [recursosEditados, setRecursosEditados] = useState([]);
+  const [salvandoRecursosId, setSalvandoRecursosId] = useState(null);
 
   const [confirmandoStatusFranquiaId, setConfirmandoStatusFranquiaId] = useState(null);
   const [alterandoStatusFranquiaId, setAlterandoStatusFranquiaId] = useState(null);
@@ -109,17 +141,38 @@ export default function ControleGeralPage() {
       await criarFranquia({
         nome: novaFranquiaNome.trim(),
         usuario: { nome: novoUsuarioNome.trim(), email: novoUsuarioEmail.trim(), senha: novoUsuarioSenha },
+        recursosPermitidos: recursosNovaFranquia,
       });
       setNovaFranquiaNome("");
       setNovoUsuarioNome("");
       setNovoUsuarioEmail("");
       setNovoUsuarioSenha("");
+      setRecursosNovaFranquia(CHAVES_RECURSOS);
       setMostrarFormCriar(false);
       await carregarFranquias();
     } catch (err) {
       setErroCriarFranquia(err instanceof ApiError ? err.message : "Erro ao criar a franquia.");
     } finally {
       setCriandoFranquia(false);
+    }
+  }
+
+  function iniciarEdicaoRecursos(franquia) {
+    setEditandoRecursosId(franquia.id);
+    setRecursosEditados(franquia.recursos_permitidos || []);
+  }
+
+  async function salvarRecursos(id) {
+    setSalvandoRecursosId(id);
+    marcarErroLinha(id, "");
+    try {
+      await atualizarFranquia(id, { recursos_permitidos: recursosEditados });
+      setEditandoRecursosId(null);
+      await carregarFranquias();
+    } catch (err) {
+      marcarErroLinha(id, err instanceof ApiError ? err.message : "Erro ao salvar os recursos.");
+    } finally {
+      setSalvandoRecursosId(null);
     }
   }
 
@@ -311,6 +364,17 @@ export default function ControleGeralPage() {
               />
             </div>
 
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                Telas liberadas pra esta franquia
+              </label>
+              <CheckboxesRecursos
+                selecionados={recursosNovaFranquia}
+                onAlternar={(chave) => setRecursosNovaFranquia((prev) => alternarChave(prev, chave))}
+                disabled={criandoFranquia}
+              />
+            </div>
+
             {erroCriarFranquia && <ErrorBanner message={erroCriarFranquia} />}
 
             <div className="flex items-center gap-2">
@@ -452,6 +516,60 @@ export default function ControleGeralPage() {
                     <ErrorBanner message={erroLinha[franquia.id]} />
                   </div>
                 )}
+
+                {/* Restrição de telas por franquia (ver escopo do pedido, item 2.3) */}
+                <div className="mt-3 rounded-lg border border-border-soft/70 bg-surface p-3">
+                  {editandoRecursosId === franquia.id ? (
+                    <div className="space-y-2.5">
+                      <CheckboxesRecursos
+                        selecionados={recursosEditados}
+                        onAlternar={(chave) => setRecursosEditados((prev) => alternarChave(prev, chave))}
+                        disabled={salvandoRecursosId === franquia.id}
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => salvarRecursos(franquia.id)}
+                          disabled={salvandoRecursosId === franquia.id}
+                          className="flex items-center gap-1.5 rounded-lg bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
+                        >
+                          {salvandoRecursosId === franquia.id && <Spinner className="h-3 w-3" />}
+                          Salvar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditandoRecursosId(null)}
+                          disabled={salvandoRecursosId === franquia.id}
+                          className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="mr-1 text-[11px] font-medium text-muted-foreground">Telas liberadas:</span>
+                      {RECURSOS.filter((r) => (franquia.recursos_permitidos || []).includes(r.chave)).map((r) => (
+                        <span
+                          key={r.chave}
+                          className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                        >
+                          {r.label}
+                        </span>
+                      ))}
+                      {(franquia.recursos_permitidos || []).length === 0 && (
+                        <span className="text-[11px] text-status-red">nenhuma tela liberada</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => iniciarEdicaoRecursos(franquia)}
+                        className="text-[11px] font-medium text-primary hover:underline"
+                      >
+                        editar
+                      </button>
+                    </div>
+                  )}
+                </div>
 
                 {/* Usuário titular */}
                 <div className="mt-3 rounded-lg border border-border-soft/70 bg-surface p-3">

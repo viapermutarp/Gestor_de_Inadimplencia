@@ -1,9 +1,23 @@
 const prisma = require('../config/prisma');
 const refreshTokens = require('../services/refreshTokens.service');
 const { criarUsuarioFranquia, pareceEmail, senhaValida, SENHA_TAMANHO_MINIMO } = require('../services/usuarios.service');
+const { RECURSOS } = require('../config/recursos');
 
 function campoPreenchido(valor) {
   return typeof valor === 'string' && valor.trim() !== '';
+}
+
+/**
+ * Restrição de telas por franquia (ver escopo do pedido, item 2). Valida um
+ * array de chaves de recurso — todas precisam estar em RECURSOS (ver
+ * src/config/recursos.js) e sem duplicatas. `undefined` é aceito (significa
+ * "não informado" — quem chama decide o default: criar() usa a lista
+ * completa, atualizar() simplesmente não mexe no campo).
+ */
+function recursosValidos(recursos) {
+  if (!Array.isArray(recursos)) return false;
+  const unicos = new Set(recursos);
+  return unicos.size === recursos.length && recursos.every((r) => RECURSOS.includes(r));
 }
 
 /**
@@ -28,6 +42,7 @@ function serializeFranquia(franquia) {
     nome: franquia.nome,
     ativo: franquia.ativo,
     criado_em: franquia.criadoEm,
+    recursos_permitidos: franquia.recursosPermitidos,
     usuario: usuario
       ? {
           id: usuario.id,
@@ -67,7 +82,7 @@ exports.listar = async (req, res, next) => {
  */
 exports.criar = async (req, res, next) => {
   try {
-    const { nome, usuario } = req.body || {};
+    const { nome, usuario, recursos_permitidos: recursosPermitidos } = req.body || {};
     const erros = [];
 
     if (!campoPreenchido(nome)) erros.push('"nome" da franquia é obrigatório.');
@@ -81,12 +96,22 @@ exports.criar = async (req, res, next) => {
       }
     }
 
+    // Restrição de telas por franquia (ver escopo do pedido, item 2.3):
+    // "recursos_permitidos" é opcional na criação — sem ele (ou array
+    // vazio omitido), a franquia nasce com TODOS os recursos liberados
+    // (mesmo default que os checkboxes já vêm marcados no frontend); se
+    // informado, precisa ser um array só com chaves válidas de RECURSOS.
+    const listaRecursos = recursosPermitidos === undefined ? RECURSOS : recursosPermitidos;
+    if (!recursosValidos(listaRecursos)) {
+      erros.push(`"recursos_permitidos" precisa ser um array só com estas chaves (sem repetir): ${RECURSOS.join(', ')}.`);
+    }
+
     if (erros.length > 0) {
       return res.status(400).json({ error: erros.join(' ') });
     }
 
     const resultado = await prisma.$transaction(async (tx) => {
-      const franquia = await tx.franquia.create({ data: { nome: nome.trim() } });
+      const franquia = await tx.franquia.create({ data: { nome: nome.trim(), recursosPermitidos: listaRecursos } });
       const usuarioCriado = await criarUsuarioFranquia(
         {
           franquiaId: franquia.id,
@@ -124,7 +149,7 @@ exports.atualizar = async (req, res, next) => {
       return res.status(404).json({ error: 'Franquia não encontrada.' });
     }
 
-    const { nome, ativo } = req.body || {};
+    const { nome, ativo, recursos_permitidos: recursosPermitidos } = req.body || {};
     const data = {};
     const erros = [];
 
@@ -135,6 +160,13 @@ exports.atualizar = async (req, res, next) => {
     if (ativo !== undefined) {
       if (typeof ativo !== 'boolean') erros.push('"ativo" deve ser booleano.');
       else data.ativo = ativo;
+    }
+    if (recursosPermitidos !== undefined) {
+      if (!recursosValidos(recursosPermitidos)) {
+        erros.push(`"recursos_permitidos" precisa ser um array só com estas chaves (sem repetir): ${RECURSOS.join(', ')}.`);
+      } else {
+        data.recursosPermitidos = recursosPermitidos;
+      }
     }
 
     if (erros.length > 0) {

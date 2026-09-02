@@ -3,17 +3,22 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { clearToken, isSuperAdmin } from "@/lib/auth";
+import { clearToken, isSuperAdmin, temRecurso } from "@/lib/auth";
 import { logout } from "@/lib/api";
 import { IconLogout, IconShield } from "@/components/icons";
 import FranquiaSelector from "@/components/FranquiaSelector";
 
+// "recurso": chave de RECURSOS (ver backend/src/config/recursos.js) — cada
+// link só aparece se `temRecurso(recurso)` for true pra sessão atual (ver
+// abaixo). Jurídico entra entre Taxa de Inadimplência e Cadastro, exatamente
+// como pedido no escopo.
 const NAV_LINKS = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/inadimplencia", label: "Taxa de Inadimplência %" },
-  { href: "/cadastro", label: "Cadastro" },
-  { href: "/contratos", label: "Contratos" },
-  { href: "/configuracoes", label: "Configurações" },
+  { href: "/dashboard", label: "Dashboard", recurso: "dashboard" },
+  { href: "/inadimplencia", label: "Taxa de Inadimplência %", recurso: "inadimplencia" },
+  { href: "/juridico", label: "Jurídico", recurso: "juridico" },
+  { href: "/cadastro", label: "Cadastro", recurso: "cadastro" },
+  { href: "/contratos", label: "Contratos", recurso: "contratos" },
+  { href: "/configuracoes", label: "Configurações", recurso: "configuracoes" },
 ];
 
 // Multi-franquia — Etapa 5 ("Controle Geral"): visível só pro SUPER_ADMIN —
@@ -28,12 +33,23 @@ export default function AppHeader() {
   // entre a primeira renderização do servidor/cliente (ambas começam com
   // `false`) e a real, que só existe no navegador.
   const [souSuperAdmin, setSouSuperAdmin] = useState(false);
+  // Restrição de telas por franquia (ver escopo do pedido, item 2.3): só
+  // mostra o link de tela liberada pra franquia da sessão — mesmo motivo
+  // de "montado" acima (evita mismatch de SSR/hidratação). Começa `null`
+  // ("ainda não sei") pra não piscar todos os links e depois sumir com
+  // alguns; enquanto `null`, mostra só os que não dependem de recurso
+  // nenhum (nenhum, na prática — todos os 6 são restringíveis).
+  const [recursosLiberados, setRecursosLiberados] = useState(null);
 
   useEffect(() => {
     setSouSuperAdmin(isSuperAdmin());
+    setRecursosLiberados(NAV_LINKS.filter((link) => temRecurso(link.recurso)).map((link) => link.href));
   }, []);
 
-  const links = souSuperAdmin ? [...NAV_LINKS, LINK_CONTROLE_GERAL] : NAV_LINKS;
+  const navLinksVisiveis = recursosLiberados
+    ? NAV_LINKS.filter((link) => recursosLiberados.includes(link.href))
+    : [];
+  const links = souSuperAdmin ? [...navLinksVisiveis, LINK_CONTROLE_GERAL] : navLinksVisiveis;
 
   function handleLogout() {
     // Revoga a sessão no servidor (o refresh token fica inválido, então

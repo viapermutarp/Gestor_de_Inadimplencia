@@ -50,12 +50,30 @@ function gerarHash(valor) {
  * `usuario`: o registro completo de `Usuario` (precisa de `id`, `papel`,
  * `franquiaId`) — não mais uma string crua. O access token passa a
  * carregar `papel`/`franquiaId` como claims, usados a partir da Fase 3
- * pela extension de isolamento; hoje (Fase 2) ainda não são lidos por
- * nada, só viajam no token.
+ * pela extension de isolamento.
+ *
+ * "recursosPermitidos" (restrição de telas por franquia — ver escopo do
+ * pedido, item 2, e src/config/recursos.js): só entra no token quando
+ * `usuario.franquia` já vem carregado (login/refresh sempre incluem essa
+ * relação — ver usuarios.service.js:buscarPorEmail e
+ * refreshTokens.service.js:rotacionar), e fica de fora pro SUPER_ADMIN
+ * (sem franquia própria, sempre irrestrito). É SÓ UX no frontend (ver
+ * lib/auth.js:getClaims — decide o que mostrar no menu, nunca decide
+ * acesso de verdade) — a mesma ressalva de "papel"/"franquiaId": um valor
+ * aqui pode ficar desatualizado até o token expirar (JWT_EXPIRES_IN, 15min
+ * por padrão) se o SUPER_ADMIN mudar os recursos da franquia no meio da
+ * sessão; a proteção real é sempre o backend (middleware/exigirRecurso.js),
+ * que consulta o banco a cada requisição, nunca confia neste claim.
  */
 function gerarAccessToken(usuario, jti) {
   return jwt.sign(
-    { sub: usuario.id, papel: usuario.papel, franquiaId: usuario.franquiaId, jti },
+    {
+      sub: usuario.id,
+      papel: usuario.papel,
+      franquiaId: usuario.franquiaId,
+      recursosPermitidos: usuario.franquia ? usuario.franquia.recursosPermitidos : undefined,
+      jti,
+    },
     env.jwtSecret,
     { expiresIn: env.jwtExpiresIn }
   );

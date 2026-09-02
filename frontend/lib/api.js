@@ -532,12 +532,17 @@ export function listarFranquias() {
 }
 
 /**
- * POST /api/franquias — body { nome, usuario: { nome, email, senha } }.
- * Cria a franquia e o usuário titular dela juntos (não existe franquia
- * "vazia" neste desenho).
+ * POST /api/franquias — body { nome, usuario: { nome, email, senha },
+ * recursos_permitidos? }. Cria a franquia e o usuário titular dela juntos
+ * (não existe franquia "vazia" neste desenho). "recursosPermitidos"
+ * (restrição de telas — ver escopo do pedido, item 2) é opcional: sem ele,
+ * o backend libera todos os recursos por padrão.
  */
-export function criarFranquia({ nome, usuario }) {
-  return request("/api/franquias", { method: "POST", body: { nome, usuario } });
+export function criarFranquia({ nome, usuario, recursosPermitidos }) {
+  return request("/api/franquias", {
+    method: "POST",
+    body: { nome, usuario, recursos_permitidos: recursosPermitidos },
+  });
 }
 
 /** PATCH /api/franquias/:id — body: qualquer subconjunto de { nome, ativo }. */
@@ -578,4 +583,96 @@ export function atualizarPerfil({ nome, email, senhaAtual, senhaNova }) {
       senha_nova: senhaNova || undefined,
     },
   });
+}
+
+/**
+ * Kanban "Jurídico" (aba nova — ver escopo do pedido, item 1). Todas as
+ * funções abaixo exigem o recurso "juridico" liberado pra franquia da
+ * sessão (403 do backend caso contrário — ver middleware/exigirRecurso.js).
+ */
+
+/** GET /api/juridico/etapas — o board inteiro: etapas ordenadas, cada uma já com seus cards (ordenados). */
+export function listarEtapasJuridico() {
+  return request("/api/juridico/etapas");
+}
+
+/** POST /api/juridico/etapas — body { nome }. Nasce como última coluna. */
+export function criarEtapaJuridico(nome) {
+  return request("/api/juridico/etapas", { method: "POST", body: { nome } });
+}
+
+/** PATCH /api/juridico/etapas/:id — body { nome }. Renomear (não mexe na ordem). */
+export function renomearEtapaJuridico(id, nome) {
+  return request(`/api/juridico/etapas/${encodeURIComponent(id)}`, { method: "PATCH", body: { nome } });
+}
+
+/** POST /api/juridico/etapas/reordenar — body { ids }, a nova ordem completa das colunas (drag and drop). */
+export function reordenarEtapasJuridico(ids) {
+  return request("/api/juridico/etapas/reordenar", { method: "POST", body: { ids } });
+}
+
+/**
+ * DELETE /api/juridico/etapas/:id — sem "confirmar", uma etapa com cards
+ * responde 409 { total_cards }; chame de novo com `confirmar: true` pra
+ * remover a etapa e os cards dela junto.
+ */
+export function removerEtapaJuridico(id, { confirmar } = {}) {
+  const query = confirmar ? "?confirmar=true" : "";
+  return request(`/api/juridico/etapas/${encodeURIComponent(id)}${query}`, { method: "DELETE" });
+}
+
+/**
+ * GET /api/juridico/associados-busca?busca=termo — busca por nome/CPF/CNPJ/
+ * telefone (mesmo padrão do Dashboard), usada só pra vincular um card a um
+ * associado existente. Resposta enxuta (top 20), já com "valor_em_aberto".
+ */
+export function buscarAssociadosJuridico(busca) {
+  const params = new URLSearchParams();
+  if (busca) params.set("busca", busca);
+  return request(`/api/juridico/associados-busca?${params.toString()}`);
+}
+
+/**
+ * POST /api/juridico/cards — body { etapa_id, associado_id?, titulo?,
+ * descricao?, responsavel?, prazo? }. Exatamente uma origem: "associadoId"
+ * (vinculado) OU "titulo" (livre) — nunca os dois, nunca nenhum.
+ */
+export function criarCardJuridico({ etapaId, associadoId, titulo, descricao, responsavel, prazo }) {
+  return request("/api/juridico/cards", {
+    method: "POST",
+    body: {
+      etapa_id: etapaId,
+      associado_id: associadoId || undefined,
+      titulo: titulo || undefined,
+      descricao: descricao || undefined,
+      responsavel: responsavel || undefined,
+      prazo: prazo || undefined,
+    },
+  });
+}
+
+/**
+ * PATCH /api/juridico/cards/:id — qualquer subconjunto de { titulo,
+ * descricao, responsavel, prazo }. Nunca muda associado/etapa (pra mover
+ * entre colunas, ver `moverCardJuridico`).
+ */
+export function atualizarCardJuridico(id, dados) {
+  return request(`/api/juridico/cards/${encodeURIComponent(id)}`, { method: "PATCH", body: dados });
+}
+
+/**
+ * PATCH /api/juridico/cards/:id/mover — body { etapa_id, indice }. Move o
+ * card (drag and drop) pra "etapaId" na posição "indice" (0-based) da
+ * lista de destino — pode ser a mesma etapa, só reordenando.
+ */
+export function moverCardJuridico(id, { etapaId, indice }) {
+  return request(`/api/juridico/cards/${encodeURIComponent(id)}/mover`, {
+    method: "PATCH",
+    body: { etapa_id: etapaId, indice },
+  });
+}
+
+/** DELETE /api/juridico/cards/:id */
+export function removerCardJuridico(id) {
+  return request(`/api/juridico/cards/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

@@ -55,7 +55,22 @@ const prisma = require('./prisma');
  *     nem "rouba" o registro de outra franquia).
  */
 
-const ESCOPO_DIRETO = ['associado', 'cadastroEnviado', 'modeloContrato', 'cobrancaIgnorada', 'syncLog', 'apiKey'];
+const ESCOPO_DIRETO = [
+  'associado',
+  'cadastroEnviado',
+  'modeloContrato',
+  'cobrancaIgnorada',
+  'syncLog',
+  'apiKey',
+  // Kanban "Jurídico" (aba nova) — ambos com franquiaId direto na própria
+  // tabela (ver docblock dos models em schema.prisma). O vínculo opcional
+  // de CardJuridico com Associado NÃO é tratado aqui como ESCOPO_RELACAO
+  // (a franquia do card já vem do próprio card, não do associado) — é
+  // validado manualmente no controller (juridico.controller.js), igual ao
+  // resto dos campos "extra" que apontam pra outro tenant-model.
+  'etapaJuridico',
+  'cardJuridico',
+];
 const ESCOPO_RELACAO = ['cobranca', 'historicoStatusAssociado'];
 const MODELOS_TENANT = new Set([...ESCOPO_DIRETO, ...ESCOPO_RELACAO]);
 
