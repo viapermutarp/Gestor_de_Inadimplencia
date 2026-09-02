@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { isSuperAdmin } from "@/lib/auth";
+import { isSuperAdmin, rotaInicial } from "@/lib/auth";
 import Spinner from "@/components/Spinner";
 
 /**
@@ -21,7 +21,7 @@ export default function RequireSuperAdmin({ children }) {
 
   useEffect(() => {
     if (!isSuperAdmin()) {
-      router.replace("/dashboard");
+      router.replace(rotaInicial());
       return;
     }
     setChecking(false);

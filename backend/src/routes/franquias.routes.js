@@ -18,5 +18,10 @@ router.patch('/franquias/:id', auth, exigirSuperAdmin, ctrl.atualizar);
 // franquia já existente, distinto do usuário titular criado junto com
 // POST /franquias.
 router.post('/franquias/:id/usuarios', auth, exigirSuperAdmin, ctrl.criarUsuarioExtra);
+// Ajuste "Excluir franquia permanentemente" (ALTO RISCO) — hard delete
+// definitivo, distinto do PATCH .../ativo (reversível). Ver docblock de
+// ctrl.excluirPermanentemente pra lista completa do que é apagado e pela
+// exigência de confirmar_nome no body.
+router.delete('/franquias/:id/excluir-permanente', auth, exigirSuperAdmin, ctrl.excluirPermanentemente);
 
 module.exports = router;

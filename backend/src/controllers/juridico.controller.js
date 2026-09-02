@@ -75,15 +75,18 @@ function serializeCard(card) {
       telefone: card.associado.telefone,
       valor_em_aberto: valorEmAberto(card.associado),
     };
+    // "titulo" continua exclusivo de card livre (o nome exibido pra card
+    // vinculado é sempre o do associado, acima) — mas "descricao"/
+    // "observacoes" já não são mais (ver ajuste "Observações também no
+    // modo Vincular associado"), por isso saem do "if" e valem pros dois
+    // tipos de card, abaixo.
     base.titulo = null;
-    base.descricao = null;
-    base.observacoes = null;
   } else {
     base.associado = null;
     base.titulo = card.titulo;
-    base.descricao = card.descricao;
-    base.observacoes = card.observacoes;
   }
+  base.descricao = card.descricao;
+  base.observacoes = card.observacoes;
 
   return base;
 }
@@ -268,12 +271,13 @@ exports.buscarAssociados = async (req, res, next) => {
  * POST /api/juridico/cards
  * Body: { etapa_id, associado_id? , titulo?, descricao?, observacoes?, responsavel?, prazo? }
  * Exatamente uma origem: "associado_id" (vinculado) OU "titulo" (livre) —
- * nunca os dois, nunca nenhum dos dois. Card vinculado também não aceita
- * "descricao"/"observacoes" (mesma regra de PATCH .../cards/:id — só
- * título/descrição/observações livres fazem sentido pra card sem
- * associado). "responsavel"/"prazo" são opcionais nos dois casos. Nasce
- * como último card da etapa informada. Registra um evento "criacao" no
- * histórico (ver HistoricoCardJuridico), na mesma transação.
+ * nunca os dois, nunca nenhum dos dois. "titulo" continua exclusivo de card
+ * livre (card vinculado usa sempre o nome do associado, ver serializeCard)
+ * — mas "descricao"/"observacoes" valem nos DOIS modos desde o ajuste
+ * "Observações também no modo Vincular associado" (antes eram exclusivas
+ * de card livre). "responsavel"/"prazo" são opcionais nos dois casos.
+ * Nasce como último card da etapa informada. Registra um evento "criacao"
+ * no histórico (ver HistoricoCardJuridico), na mesma transação.
  */
 exports.criarCard = async (req, res, next) => {
   try {
@@ -301,12 +305,6 @@ exports.criarCard = async (req, res, next) => {
         .status(400)
         .json({ error: 'Um card não pode ser vinculado a um associado e ter título livre ao mesmo tempo.' });
     }
-    if (temAssociado && (campoPreenchido(descricao) || campoPreenchido(observacoes))) {
-      return res.status(400).json({
-        error: 'Card vinculado a um associado não tem título/descrição/observações próprios (mesma regra de PATCH).',
-      });
-    }
-
     let prazoData;
     if (prazo !== undefined && prazo !== null && prazo !== '') {
       const data = new Date(prazo);
@@ -363,11 +361,13 @@ exports.criarCard = async (req, res, next) => {
  * Body: qualquer subconjunto de { titulo, descricao, observacoes,
  * responsavel, prazo }. Edição de conteúdo — nunca muda "associado_id" nem
  * "etapa_id" (pra mover entre colunas, ver PATCH .../mover). Card vinculado
- * a associado rejeita "titulo"/"descricao"/"observacoes" (não existem pra
- * esse tipo de card — são sempre ao vivo da relação). Registra um evento no
- * histórico (ver HistoricoCardJuridico) pra cada campo que MUDOU de
- * verdade (compara valor anterior x novo — não loga se o valor enviado for
- * igual ao que já estava salvo), na mesma transação da atualização.
+ * a associado rejeita só "titulo" (sempre ao vivo do nome do associado,
+ * ver serializeCard) — "descricao"/"observacoes" valem nos dois modos
+ * desde o ajuste "Observações também no modo Vincular associado" (antes
+ * eram exclusivas de card livre). Registra um evento no histórico (ver
+ * HistoricoCardJuridico) pra cada campo que MUDOU de verdade (compara
+ * valor anterior x novo — não loga se o valor enviado for igual ao que já
+ * estava salvo), na mesma transação da atualização.
  */
 exports.atualizarCard = async (req, res, next) => {
   try {
@@ -379,10 +379,10 @@ exports.atualizarCard = async (req, res, next) => {
     const data = {};
 
     if (existente.associadoId) {
-      if (titulo !== undefined || descricao !== undefined || observacoes !== undefined) {
+      if (titulo !== undefined) {
         return res
           .status(400)
-          .json({ error: 'Card vinculado a um associado não tem título/descrição/observações próprios.' });
+          .json({ error: 'Card vinculado a um associado não tem título próprio (vem sempre do nome do associado).' });
       }
     } else if (titulo !== undefined) {
       if (!campoPreenchido(titulo)) return res.status(400).json({ error: '"titulo" não pode ser vazio.' });
@@ -518,6 +518,57 @@ exports.moverCard = async (req, res, next) => {
       include: includeAssociadoComCobrancasAbertas,
     });
     res.json(serializeCard(atualizado));
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/juridico/cards/:id/historico — lista os eventos de
+ * `historico_card_juridico` do card indicado, mais recente primeiro (ver
+ * escopo do ajuste "Visualizar histórico do card dentro do modal").
+ * `historicoCardJuridico` está no ESCOPO_DIRETO da extension de isolamento
+ * (ver prismaComEscopo.js) — "req.prisma" já filtra por franquia sozinho,
+ * sem precisar repetir a checagem aqui. Confirma antes que o card existe
+ * NESTA franquia (404 caso contrário, mesmo padrão dos outros handlers
+ * deste controller) — hoje só é chamado com um card aberto de verdade no
+ * modal, mas o histórico em si continuaria consultável mesmo depois do
+ * card excluído (sem FK pro card, ver docblock do model), se um dia
+ * precisar disso.
+ */
+exports.listarHistoricoCard = async (req, res, next) => {
+  try {
+    const card = await req.prisma.cardJuridico.findUnique({ where: { id: req.params.id } });
+    if (!card) return res.status(404).json({ error: 'Card não encontrado.' });
+
+    const eventos = await req.prisma.historicoCardJuridico.findMany({
+      where: { cardId: req.params.id },
+      orderBy: { criadoEm: 'desc' },
+    });
+
+    // "usuarioId" é uma coluna solta, sem FK (ver docblock do model) —
+    // resolvido aqui num select à parte, nunca via "include"/relação do
+    // Prisma (não existe uma pra usar). null tanto pra ação via API key
+    // (usuarioId já nasce null, ver registrarHistoricoCard) quanto pro
+    // usuário já ter sido removido depois — os dois casos ficam
+    // distinguíveis pro frontend por "usuario_id" ser ou não null.
+    const usuarioIds = [...new Set(eventos.map((e) => e.usuarioId).filter(Boolean))];
+    const usuarios = usuarioIds.length
+      ? await req.prisma.usuario.findMany({ where: { id: { in: usuarioIds } }, select: { id: true, nome: true } })
+      : [];
+    const nomePorUsuarioId = new Map(usuarios.map((u) => [u.id, u.nome]));
+
+    res.json(
+      eventos.map((e) => ({
+        id: e.id,
+        campo_alterado: e.campoAlterado,
+        valor_anterior: e.valorAnterior,
+        valor_novo: e.valorNovo,
+        usuario_id: e.usuarioId,
+        usuario_nome: e.usuarioId ? (nomePorUsuarioId.get(e.usuarioId) ?? null) : null,
+        criado_em: e.criadoEm,
+      }))
+    );
   } catch (err) {
     next(err);
   }

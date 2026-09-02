@@ -251,3 +251,135 @@ exports.atualizar = async (req, res, next) => {
     next(err);
   }
 };
+
+/**
+ * DELETE /api/franquias/:id/excluir-permanente — ALTO RISCO: hard delete
+ * definitivo da franquia e de TODO dado vinculado a ela dentro do Gestor
+ * (ver escopo do ajuste "Excluir franquia permanentemente"). Diferente de
+ * `atualizar` com `ativo: false` (reversível, só bloqueia login — ver
+ * docblock acima), aqui a franquia e as linhas abaixo são apagadas de
+ * verdade, sem chance de desfazer:
+ *   - usuários (titular + extras)
+ *   - associados/cadastros — e, em cascata (onDelete: Cascade no schema,
+ *     ver models Cobranca/HistoricoStatusAssociado/CardJuridico), as
+ *     cobranças, o histórico de status do associado e os cards jurídicos
+ *     vinculados a cada um
+ *   - cards e etapas do Kanban Jurídico (inclusive os cards "livres", não
+ *     vinculados a nenhum associado)
+ *   - histórico de cards jurídicos (historico_card_juridico — sem FK pra
+ *     card/usuário, de propósito, ver docblock do model no schema, mas TEM
+ *     franquia_id direto, então também precisa ser apagado explicitamente
+ *     aqui)
+ *   - configurações, chaves de API, logs de sincronização, cadastros
+ *     enviados (fluxo de Cadastro/Faturamento) e modelos de contrato
+ *   - cobranças ignoradas do cálculo de Taxa de Inadimplência
+ *
+ * Essa é a lista COMPLETA de tabelas com "franquia_id" hoje no schema —
+ * conferida direto no model Franquia (relações .usuarios/.associados/
+ * .cadastrosEnviados/.modelosContrato/.cobrancasIgnoradas/.syncLogs/
+ * .apiKeys/.configuracoes/.etapasJuridico/.cardsJuridico/
+ * .historicosCardJuridico — 11 relações, batendo uma a uma com os 11
+ * deleteMany abaixo) mais as duas tabelas ESCOPO_RELACAO que não têm
+ * franquia_id próprio (Cobranca e HistoricoStatusAssociado, vinculadas via
+ * Associado — ver prismaComEscopo.js). Se um model novo ganhar
+ * "franquiaId" no futuro, ele PRECISA ser adicionado aqui também — senão a
+ * exclusão vai falhar com erro de FK (a maioria das relações pra Franquia é
+ * onDelete: Restrict por padrão, só EtapaJuridico->CardJuridico e
+ * Associado->{Cobranca,HistoricoStatusAssociado,CardJuridico} são Cascade)
+ * em vez de silenciosamente deixar dado órfão pra trás.
+ *
+ * NÃO apaga nada fora do Gestor: nenhuma chamada é feita pro Asaas, Bling
+ * ou Google Drive — as contas/credenciais externas da franquia continuam
+ * existindo e intactas nesses serviços, só o registro delas (e de tudo
+ * mais) some daqui de dentro. Isso fica explícito também na resposta (ver
+ * "aviso" abaixo), pro frontend exibir pro usuário.
+ *
+ * Confirmação de duas etapas: além do `exigirSuperAdmin` de sempre, exige
+ * `confirmar_nome` no body batendo EXATAMENTE (depois de `.trim()`) com o
+ * nome atual da franquia — mesmo padrão do "delete repo" do GitHub (digitar
+ * o nome pra confirmar), pra tornar impossível excluir a franquia errada
+ * por engano/clique duplo. A checagem acontece ANTES de abrir a transação.
+ *
+ * Tudo numa única transação (tudo ou nada): se qualquer passo falhar (ex.:
+ * uma tabela nova com franquia_id que ainda não foi adicionada aqui,
+ * estourando um erro de FK), a transação inteira é revertida e nada é
+ * apagado.
+ */
+exports.excluirPermanentemente = async (req, res, next) => {
+  try {
+    const franquia = await prisma.franquia.findUnique({ where: { id: req.params.id } });
+    if (!franquia) {
+      return res.status(404).json({ error: 'Franquia não encontrada.' });
+    }
+
+    const confirmarNome = typeof req.body?.confirmar_nome === 'string' ? req.body.confirmar_nome.trim() : '';
+    if (confirmarNome !== franquia.nome) {
+      return res.status(400).json({
+        error: 'Nome de confirmação não confere. Digite exatamente o nome da franquia pra confirmar a exclusão permanente.',
+      });
+    }
+
+    const franquiaId = franquia.id;
+
+    const registrosApagados = await prisma.$transaction(async (tx) => {
+      // Kanban Jurídico: cards antes das etapas (EtapaJuridico->CardJuridico
+      // é onDelete: Cascade no schema, mas apagamos explícito pra não
+      // depender só disso — ver docblock acima).
+      const cardsJuridico = await tx.cardJuridico.deleteMany({ where: { franquiaId } });
+      const etapasJuridico = await tx.etapaJuridico.deleteMany({ where: { franquiaId } });
+
+      // Histórico do Jurídico — franquia_id direto, sem FK pra card/usuário
+      // (sobrevive de propósito à exclusão do card em uso normal; aqui
+      // apagamos junto porque é a FRANQUIA inteira que está sumindo).
+      const historicoCardJuridico = await tx.historicoCardJuridico.deleteMany({ where: { franquiaId } });
+
+      // ESCOPO_RELACAO (sem franquia_id próprio, filtrados via relação com
+      // Associado) — onDelete: Cascade no schema já faria isso sozinho ao
+      // apagar o Associado logo abaixo; apagamos explícito mesmo assim,
+      // pra não depender só do cascade do banco numa operação irreversível.
+      const cobrancas = await tx.cobranca.deleteMany({ where: { associado: { franquiaId } } });
+      const historicoStatusAssociado = await tx.historicoStatusAssociado.deleteMany({
+        where: { associado: { franquiaId } },
+      });
+
+      const associados = await tx.associado.deleteMany({ where: { franquiaId } });
+
+      const configuracoes = await tx.configuracao.deleteMany({ where: { franquiaId } });
+      const apiKeys = await tx.apiKey.deleteMany({ where: { franquiaId } });
+      const syncLogs = await tx.syncLog.deleteMany({ where: { franquiaId } });
+      const cadastrosEnviados = await tx.cadastroEnviado.deleteMany({ where: { franquiaId } });
+      const modelosContrato = await tx.modeloContrato.deleteMany({ where: { franquiaId } });
+      const cobrancasIgnoradas = await tx.cobrancaIgnorada.deleteMany({ where: { franquiaId } });
+
+      const usuarios = await tx.usuario.deleteMany({ where: { franquiaId } });
+
+      await tx.franquia.delete({ where: { id: franquiaId } });
+
+      return {
+        usuarios: usuarios.count,
+        associados: associados.count,
+        cobrancas: cobrancas.count,
+        historico_status_associado: historicoStatusAssociado.count,
+        cards_juridico: cardsJuridico.count,
+        etapas_juridico: etapasJuridico.count,
+        historico_card_juridico: historicoCardJuridico.count,
+        configuracoes: configuracoes.count,
+        api_keys: apiKeys.count,
+        sync_logs: syncLogs.count,
+        cadastros_enviados: cadastrosEnviados.count,
+        modelos_contrato: modelosContrato.count,
+        cobrancas_ignoradas: cobrancasIgnoradas.count,
+      };
+    });
+
+    res.json({
+      excluido: true,
+      franquia: { id: franquiaId, nome: franquia.nome },
+      registros_apagados: registrosApagados,
+      aviso:
+        'Exclusão permanente dentro do Gestor de Inadimplência. Contas e dados em serviços externos (Asaas, Bling, Google Drive) NÃO são apagados automaticamente — continuam existindo e precisam ser encerrados/removidos manualmente nesses serviços, se for o caso.',
+    });
+  } catch (err) {
+    next(err);
+  }
+};

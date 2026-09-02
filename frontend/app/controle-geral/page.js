@@ -5,6 +5,7 @@ import {
   listarFranquias,
   criarFranquia,
   atualizarFranquia,
+  excluirFranquiaPermanentemente,
   criarUsuarioExtra,
   atualizarStatusUsuario,
   atualizarRecursosUsuario,
@@ -17,7 +18,7 @@ import { formatDateTime } from "@/lib/format";
 import { RECURSOS, CHAVES_RECURSOS } from "@/lib/recursos";
 import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
-import { IconBuilding, IconUser, IconPlus, IconLock, IconShield } from "@/components/icons";
+import { IconBuilding, IconUser, IconPlus, IconLock, IconShield, IconAlert } from "@/components/icons";
 
 /** Checkboxes de "recursosPermitidos" — reaproveitado no form de criar franquia (usuário titular), criar usuário extra e editar telas de um usuário existente. Por USUÁRIO desde o ajuste "Super Admin pode adicionar mais de 1 usuário numa franquia" (ver docs/plano-multi-franquia.md, seção 8, item 8). */
 function CheckboxesRecursos({ selecionados, onAlternar, disabled }) {
@@ -83,6 +84,13 @@ export default function ControleGeralPage() {
 
   const [confirmandoStatusFranquiaId, setConfirmandoStatusFranquiaId] = useState(null);
   const [alterandoStatusFranquiaId, setAlterandoStatusFranquiaId] = useState(null);
+
+  // Ajuste "Excluir franquia permanentemente" (ALTO RISCO) — franquia
+  // (objeto completo, não só o id, pra o modal exibir o nome sem precisar
+  // buscar de novo) selecionada pra exclusão definitiva. Fluxo totalmente
+  // separado de confirmandoStatusFranquiaId acima (que é só ativar/
+  // desativar, reversível) — ver ModalExcluirFranquia mais abaixo.
+  const [franquiaParaExcluir, setFranquiaParaExcluir] = useState(null);
 
   const [confirmandoStatusUsuarioId, setConfirmandoStatusUsuarioId] = useState(null);
   const [alterandoStatusUsuarioId, setAlterandoStatusUsuarioId] = useState(null);
@@ -548,17 +556,29 @@ export default function ControleGeralPage() {
                       </button>
                     </div>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => setConfirmandoStatusFranquiaId(franquia.id)}
-                      className={`shrink-0 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-                        franquia.ativo
-                          ? "border-status-red/40 text-status-red hover:bg-status-red/10"
-                          : "border-status-green/40 text-status-green hover:bg-status-green/10"
-                      }`}
-                    >
-                      {franquia.ativo ? "Desativar franquia" : "Reativar franquia"}
-                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setConfirmandoStatusFranquiaId(franquia.id)}
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                          franquia.ativo
+                            ? "border-status-red/40 text-status-red hover:bg-status-red/10"
+                            : "border-status-green/40 text-status-green hover:bg-status-green/10"
+                        }`}
+                      >
+                        {franquia.ativo ? "Desativar franquia" : "Reativar franquia"}
+                      </button>
+                      {/* Distinta de "Desativar" (reversível, só bloqueia
+                          login) — hard delete definitivo, ver
+                          ModalExcluirFranquia. */}
+                      <button
+                        type="button"
+                        onClick={() => setFranquiaParaExcluir(franquia)}
+                        className="rounded-lg border border-status-red/40 px-3 py-1.5 text-xs font-medium text-status-red hover:bg-status-red/10"
+                      >
+                        Excluir franquia
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -913,6 +933,107 @@ export default function ControleGeralPage() {
           </form>
         )}
       </section>
+
+      {franquiaParaExcluir && (
+        <ModalExcluirFranquia
+          franquia={franquiaParaExcluir}
+          onFechar={() => setFranquiaParaExcluir(null)}
+          onExcluida={async () => {
+            setFranquiaParaExcluir(null);
+            await carregarFranquias();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Modal de confirmação de duas etapas pra "Excluir franquia" (ALTO RISCO,
+ * ver escopo do ajuste "Excluir franquia permanentemente" e o docblock de
+ * excluirPermanentemente em franquias.controller.js). Mesmo padrão do
+ * "delete repo" do GitHub: só habilita o botão de excluir depois do
+ * usuário digitar o nome EXATO da franquia — o backend confere de novo do
+ * lado dele (nunca confia só nisso aqui). Deixa explícito no texto que é
+ * irreversível e que contas externas (Asaas/Bling/Drive) não são tocadas.
+ */
+function ModalExcluirFranquia({ franquia, onFechar, onExcluida }) {
+  const [nomeDigitado, setNomeDigitado] = useState("");
+  const [excluindo, setExcluindo] = useState(false);
+  const [erro, setErro] = useState("");
+
+  const nomeConfere = nomeDigitado.trim() === franquia.nome;
+
+  async function handleExcluir() {
+    if (!nomeConfere || excluindo) return;
+    setExcluindo(true);
+    setErro("");
+    try {
+      await excluirFranquiaPermanentemente(franquia.id, nomeDigitado.trim());
+      await onExcluida();
+    } catch (err) {
+      setErro(err instanceof ApiError ? err.message : "Erro ao excluir a franquia.");
+      setExcluindo(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+      <div className="w-full max-w-md rounded-2xl border border-status-red/40 bg-surface p-5 shadow-2xl">
+        <div className="mb-3 flex items-center gap-2">
+          <IconAlert className="h-5 w-5 text-status-red" />
+          <h3 className="font-display text-base font-bold text-foreground">Excluir franquia permanentemente</h3>
+        </div>
+
+        <p className="text-sm text-foreground">
+          Isso apaga <strong>{franquia.nome}</strong> e TODOS os dados dela dentro do Gestor — usuários, associados/cadastros, cobranças, cards e histórico do Jurídico, configurações etc. — de forma{" "}
+          <strong>irreversível</strong>. Diferente de &ldquo;Desativar&rdquo;, não tem como desfazer nem reativar depois.
+        </p>
+
+        <p className="mt-2 text-xs text-muted-foreground">
+          Contas em serviços externos (Asaas, Bling, Google Drive) NÃO são apagadas por aqui — só os dados dentro do Gestor.
+        </p>
+
+        <div className="mt-4">
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+            Digite <strong>{franquia.nome}</strong> pra confirmar
+          </label>
+          <input
+            type="text"
+            value={nomeDigitado}
+            onChange={(e) => setNomeDigitado(e.target.value)}
+            disabled={excluindo}
+            autoFocus
+            className="w-full rounded-xl border border-status-red/40 bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground focus:border-status-red focus:outline-none focus:ring-2 focus:ring-status-red/30 disabled:opacity-60"
+          />
+        </div>
+
+        {erro && (
+          <div className="mt-3">
+            <ErrorBanner message={erro} />
+          </div>
+        )}
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onFechar}
+            disabled={excluindo}
+            className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={handleExcluir}
+            disabled={!nomeConfere || excluindo}
+            className="flex items-center gap-2 rounded-xl bg-status-red px-4 py-2.5 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {excluindo && <Spinner className="h-3.5 w-3.5" />}
+            Excluir permanentemente
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -557,6 +557,26 @@ export function atualizarFranquia(id, dados) {
 }
 
 /**
+ * DELETE /api/franquias/:id/excluir-permanente — ALTO RISCO: apaga a
+ * franquia e TODO dado vinculado a ela dentro do Gestor, de forma
+ * definitiva e irreversível (ver docblock de
+ * excluirPermanentemente em franquias.controller.js pra lista completa
+ * do que é apagado). Diferente de `atualizarFranquia(id, { ativo: false })`
+ * (reversível). "confirmarNome" precisa bater EXATAMENTE com o nome atual
+ * da franquia — mesma checagem que o backend faz de novo do lado dele
+ * (nunca confie só na validação do frontend pra uma operação destrutiva
+ * como essa). Não apaga nada em serviços externos (Asaas, Bling, Google
+ * Drive) — ver "aviso" na resposta, exibido pelo ModalExcluirFranquia em
+ * app/controle-geral/page.js.
+ */
+export function excluirFranquiaPermanentemente(id, confirmarNome) {
+  return request(`/api/franquias/${encodeURIComponent(id)}/excluir-permanente`, {
+    method: "DELETE",
+    body: { confirmar_nome: confirmarNome },
+  });
+}
+
+/**
  * POST /api/franquias/:id/usuarios — body { nome, email, senha,
  * recursos_permitidos? }. Ajuste "Super Admin pode adicionar mais de 1
  * usuário numa franquia" — adiciona um login EXTRA a uma franquia já
@@ -670,8 +690,8 @@ export function buscarAssociadosJuridico(busca) {
  * POST /api/juridico/cards — body { etapa_id, associado_id?, titulo?,
  * descricao?, observacoes?, responsavel?, prazo? }. Exatamente uma origem:
  * "associadoId" (vinculado) OU "titulo" (livre) — nunca os dois, nunca
- * nenhum. "observacoes" segue a MESMA regra de "descricao": só existe pra
- * card livre (ver ModalCard em app/juridico/page.js).
+ * nenhum. "titulo" só existe pra card livre (vinculado usa o nome do
+ * associado). "descricao" e "observacoes" valem nos dois modos.
  */
 export function criarCardJuridico({ etapaId, associadoId, titulo, descricao, observacoes, responsavel, prazo }) {
   return request("/api/juridico/cards", {
@@ -691,10 +711,22 @@ export function criarCardJuridico({ etapaId, associadoId, titulo, descricao, obs
 /**
  * PATCH /api/juridico/cards/:id — qualquer subconjunto de { titulo,
  * descricao, observacoes, responsavel, prazo }. Nunca muda associado/etapa
- * (pra mover entre colunas, ver `moverCardJuridico`).
+ * (pra mover entre colunas, ver `moverCardJuridico`). "titulo" só é aceito
+ * pra card livre; "descricao" e "observacoes" valem nos dois modos.
  */
 export function atualizarCardJuridico(id, dados) {
   return request(`/api/juridico/cards/${encodeURIComponent(id)}`, { method: "PATCH", body: dados });
+}
+
+/**
+ * GET /api/juridico/cards/:id/historico — histórico de alterações do card
+ * (mudança de etapa, edição de campo, criação, exclusão), mais recente
+ * primeiro. Cada item: { id, campo_alterado, valor_anterior, valor_novo,
+ * usuario_id, usuario_nome, criado_em }. Isolado por franquia (mesma
+ * extensão do Prisma usada em todo o resto do Jurídico).
+ */
+export function historicoCardJuridico(id) {
+  return request(`/api/juridico/cards/${encodeURIComponent(id)}/historico`);
 }
 
 /**

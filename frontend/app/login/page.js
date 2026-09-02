@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { login, ApiError } from "@/lib/api";
-import { setSession, isAuthenticated } from "@/lib/auth";
+import { setSession, isAuthenticated, rotaInicial } from "@/lib/auth";
 import Spinner from "@/components/Spinner";
 
 export default function LoginPage() {
@@ -16,7 +16,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (isAuthenticated()) {
-      router.replace("/dashboard");
+      router.replace(rotaInicial());
       return;
     }
     setCheckingSession(false);
@@ -38,7 +38,7 @@ export default function LoginPage() {
         throw new ApiError("Resposta inválida do servidor.", 0);
       }
       setSession({ token: data.token, refreshToken: data.refresh_token });
-      router.replace("/dashboard");
+      router.replace(rotaInicial());
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Não foi possível entrar. Tente novamente.");
       setLoading(false);

@@ -100,6 +100,38 @@ export function temRecurso(chave) {
   return Array.isArray(claims.recursosPermitidos) && claims.recursosPermitidos.includes(chave);
 }
 
+/**
+ * Redirecionamento pós-login (ver escopo do pedido "Redirecionamento
+ * pós-login para tela acessível"): ordem de prioridade FIXA entre as telas
+ * restringíveis — usada só pra decidir onde cair depois de logar, não tem
+ * relação com a ordem de exibição no menu (AppHeader). Um usuário que não
+ * tem "dashboard" liberado mas tem "juridico", por exemplo, cai direto em
+ * `/juridico` em vez de ver "Sem acesso a esta tela" no Dashboard.
+ */
+const ORDEM_PRIORIDADE_ROTAS = [
+  { recurso: "dashboard", rota: "/dashboard" },
+  { recurso: "inadimplencia", rota: "/inadimplencia" },
+  { recurso: "juridico", rota: "/juridico" },
+  { recurso: "cadastro", rota: "/cadastro" },
+  { recurso: "contratos", rota: "/contratos" },
+  { recurso: "configuracoes", rota: "/configuracoes" },
+];
+
+/**
+ * Primeira rota que a sessão atual tem acesso, na ordem de prioridade
+ * acima. SUPER_ADMIN sempre cai em "/dashboard" (tem acesso a tudo, ver
+ * `temRecurso`). Se a sessão não tiver NENHUM recurso liberado (caso
+ * extremo — um usuário criado com "recursos_permitidos: []"), cai em
+ * "/dashboard" do mesmo jeito, mesmo comportamento de antes desse ajuste
+ * ("Sem acesso a esta tela") — não existe rota nenhuma pra oferecer nesse
+ * caso.
+ */
+export function rotaInicial() {
+  if (isSuperAdmin()) return "/dashboard";
+  const encontrada = ORDEM_PRIORIDADE_ROTAS.find(({ recurso }) => temRecurso(recurso));
+  return encontrada ? encontrada.rota : "/dashboard";
+}
+
 /** A franquia que o SUPER_ADMIN escolheu "entrar" (seletor no topo) — irrelevante para usuário de franquia comum (sempre a própria). */
 export function getFranquiaSelecionada() {
   if (typeof window === "undefined") return null;

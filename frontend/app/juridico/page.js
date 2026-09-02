@@ -12,12 +12,13 @@ import {
   atualizarCardJuridico,
   moverCardJuridico,
   removerCardJuridico,
+  historicoCardJuridico,
   ApiError,
 } from "@/lib/api";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
 import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
-import { IconPlus, IconClose, IconUser, IconSearch, IconClock, IconScale } from "@/components/icons";
+import { IconPlus, IconClose, IconUser, IconSearch, IconClock, IconScale, IconHistory } from "@/components/icons";
 
 // Kanban "Jurídico" (aba nova — ver escopo do pedido, item 1). Sem
 // biblioteca de drag and drop (o projeto não usa nenhuma) — implementado
@@ -520,6 +521,9 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState("");
 
+  // Aba "Histórico" só existe em edição (card novo ainda não tem eventos).
+  const [aba, setAba] = useState("dados"); // "dados" | "historico"
+
   useEffect(() => {
     if (origem !== "associado" || ehEdicao || !buscaAssociado.trim()) {
       setResultadosBusca([]);
@@ -561,8 +565,8 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
       if (ehEdicao) {
         await atualizarCardJuridico(cardExistente.id, {
           titulo: ehVinculado ? undefined : titulo.trim(),
-          descricao: ehVinculado ? undefined : descricao.trim() || null,
-          observacoes: ehVinculado ? undefined : observacoes.trim() || null,
+          descricao: descricao.trim() || null,
+          observacoes: observacoes.trim() || null,
           responsavel: responsavel.trim() || null,
           prazo: prazo || null,
         });
@@ -571,8 +575,8 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
           etapaId,
           associadoId: origem === "associado" ? associadoSelecionado.id : undefined,
           titulo: origem === "livre" ? titulo.trim() : undefined,
-          descricao: origem === "livre" ? descricao.trim() || undefined : undefined,
-          observacoes: origem === "livre" ? observacoes.trim() || undefined : undefined,
+          descricao: descricao.trim() || undefined,
+          observacoes: observacoes.trim() || undefined,
           responsavel: responsavel.trim() || undefined,
           prazo: prazo || undefined,
         });
@@ -614,6 +618,29 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
           </div>
         )}
 
+        {ehEdicao && (
+          <div className="mb-4 flex rounded-xl border border-border-soft p-1 text-xs font-medium">
+            <button
+              type="button"
+              onClick={() => setAba("dados")}
+              className={`flex-1 rounded-lg py-1.5 transition-colors ${aba === "dados" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              Dados
+            </button>
+            <button
+              type="button"
+              onClick={() => setAba("historico")}
+              className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 transition-colors ${aba === "historico" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <IconHistory className="h-3.5 w-3.5" />
+              Histórico
+            </button>
+          </div>
+        )}
+
+        {ehEdicao && aba === "historico" ? (
+          <HistoricoCard cardId={cardExistente.id} />
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-3">
           {origem === "associado" ? (
             ehEdicao ? (
@@ -686,31 +713,27 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
             </div>
           )}
 
-          {origem === "livre" && (
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Descrição (opcional)</label>
-              <textarea
-                value={descricao}
-                onChange={(e) => setDescricao(e.target.value)}
-                disabled={salvando}
-                rows={2}
-                className="w-full resize-none rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
-              />
-            </div>
-          )}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Descrição (opcional)</label>
+            <textarea
+              value={descricao}
+              onChange={(e) => setDescricao(e.target.value)}
+              disabled={salvando}
+              rows={2}
+              className="w-full resize-none rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+            />
+          </div>
 
-          {origem === "livre" && (
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Observações (opcional)</label>
-              <textarea
-                value={observacoes}
-                onChange={(e) => setObservacoes(e.target.value)}
-                disabled={salvando}
-                rows={2}
-                className="w-full resize-none rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
-              />
-            </div>
-          )}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Observações (opcional)</label>
+            <textarea
+              value={observacoes}
+              onChange={(e) => setObservacoes(e.target.value)}
+              disabled={salvando}
+              rows={2}
+              className="w-full resize-none rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+            />
+          </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -751,7 +774,87 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
             </button>
           </div>
         </form>
+        )}
       </div>
     </div>
+  );
+}
+
+// Rótulos amigáveis pros valores de "campo_alterado" gravados pelo backend
+// (ver CAMPOS_HISTORICO_CARD e registrarHistoricoCard em
+// juridico.controller.js) — qualquer valor não mapeado aqui aparece cru,
+// então não precisa manter as duas listas 100% sincronizadas.
+const CAMPO_HISTORICO_LABEL = {
+  criacao: "Card criado",
+  exclusao: "Card excluído",
+  etapa: "Etapa",
+  titulo: "Título",
+  descricao: "Descrição",
+  observacoes: "Observações",
+  responsavel: "Responsável",
+  prazo: "Prazo",
+};
+
+// Aba "Histórico" do ModalCard (ajuste: visualizar histórico do card). Busca
+// só quando a aba é aberta (sem cache entre aberturas — mesmo padrão de
+// "sempre recarrega" usado no resto da página). Mais recente primeiro já
+// vem garantido pelo backend (orderBy criadoEm desc).
+function HistoricoCard({ cardId }) {
+  const [eventos, setEventos] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+
+  useEffect(() => {
+    let cancelado = false;
+    setCarregando(true);
+    setErro("");
+    historicoCardJuridico(cardId)
+      .then((data) => {
+        if (!cancelado) setEventos(Array.isArray(data) ? data : []);
+      })
+      .catch((err) => {
+        if (!cancelado) setErro(err instanceof ApiError ? err.message : "Erro ao carregar o histórico.");
+      })
+      .finally(() => {
+        if (!cancelado) setCarregando(false);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [cardId]);
+
+  if (carregando) {
+    return (
+      <div className="flex justify-center py-6">
+        <Spinner className="h-5 w-5" />
+      </div>
+    );
+  }
+
+  if (erro) return <ErrorBanner message={erro} />;
+
+  if (eventos.length === 0) {
+    return <p className="py-4 text-center text-sm text-muted-foreground">Nenhum registro de histórico ainda.</p>;
+  }
+
+  return (
+    <ul className="max-h-[55vh] space-y-2 overflow-y-auto">
+      {eventos.map((ev) => (
+        <li key={ev.id} className="rounded-xl border border-border-soft bg-surface-elevated p-3 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-semibold text-foreground">{CAMPO_HISTORICO_LABEL[ev.campo_alterado] || ev.campo_alterado}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{formatDateTime(ev.criado_em)}</span>
+          </div>
+          {(ev.valor_anterior !== null || ev.valor_novo !== null) && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              <span className="line-through">{ev.valor_anterior ?? "vazio"}</span>
+              {" → "}
+              <span className="text-foreground">{ev.valor_novo ?? "vazio"}</span>
+            </p>
+          )}
+          <p className="mt-1 text-xs text-muted-foreground">{ev.usuario_nome || "Sistema (API)"}</p>
+        </li>
+      ))}
+    </ul>
   );
 }
