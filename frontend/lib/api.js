@@ -337,13 +337,31 @@ export function criarCadastro(payload) {
  * 400 com uma mensagem citando "asaas-key" — ver tratamento em
  * app/inadimplencia/page.js.
  */
-export function getResumoInadimplencia({ vencDe, vencAte, renegociacao, emJuridico, bloqueado, visaoFaixas, forcar } = {}) {
+/**
+ * `tipoPendencia` ("todos"|"vencidas"|"confirmadas", padrão "todos" no
+ * backend) — filtra quais status entram em "valor_inadimplente"/
+ * "taxa_inadimplencia_percentual": "vencidas" = só status OVERDUE,
+ * "confirmadas" = só status CONFIRMED (crédito futuro, ainda não caiu na
+ * conta). Nunca afeta "valor_adimplente" nem "valor_total_faturado" — ver
+ * README, seção "Taxa de Inadimplência".
+ */
+export function getResumoInadimplencia({
+  vencDe,
+  vencAte,
+  renegociacao,
+  emJuridico,
+  bloqueado,
+  tipoPendencia,
+  visaoFaixas,
+  forcar,
+} = {}) {
   const params = new URLSearchParams();
   if (vencDe) params.set("venc_de", vencDe);
   if (vencAte) params.set("venc_ate", vencAte);
   if (renegociacao) params.set("renegociacao", renegociacao);
   if (emJuridico) params.set("em_juridico", emJuridico);
   if (bloqueado) params.set("bloqueado", bloqueado);
+  if (tipoPendencia) params.set("tipo_pendencia", tipoPendencia);
   if (visaoFaixas) params.set("visao_faixas", visaoFaixas);
   if (forcar) params.set("forcar", "true");
 
@@ -355,16 +373,18 @@ export function getResumoInadimplencia({ vencDe, vencAte, renegociacao, emJuridi
  * GET /api/inadimplencia/evolucao-mensal — mesmos números do /resumo
  * (valor_total_faturado, valor_inadimplente, taxa_inadimplencia_percentual),
  * mais taxa_adimplencia_percentual, agrupados por mês ("YYYY-MM"). Mesmos
- * parâmetros de filtro do /resumo (`renegociacao`/`emJuridico`/`bloqueado`,
- * `forcar`), mas não aceita `visaoFaixas` (esse endpoint não devolve faixas).
+ * parâmetros de filtro do /resumo (`renegociacao`/`emJuridico`/`bloqueado`/
+ * `tipoPendencia`, `forcar`), mas não aceita `visaoFaixas` (esse endpoint
+ * não devolve faixas).
  */
-export function getEvolucaoMensal({ vencDe, vencAte, renegociacao, emJuridico, bloqueado, forcar } = {}) {
+export function getEvolucaoMensal({ vencDe, vencAte, renegociacao, emJuridico, bloqueado, tipoPendencia, forcar } = {}) {
   const params = new URLSearchParams();
   if (vencDe) params.set("venc_de", vencDe);
   if (vencAte) params.set("venc_ate", vencAte);
   if (renegociacao) params.set("renegociacao", renegociacao);
   if (emJuridico) params.set("em_juridico", emJuridico);
   if (bloqueado) params.set("bloqueado", bloqueado);
+  if (tipoPendencia) params.set("tipo_pendencia", tipoPendencia);
   if (forcar) params.set("forcar", "true");
 
   const query = params.toString();

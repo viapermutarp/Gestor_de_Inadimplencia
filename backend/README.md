@@ -136,7 +136,7 @@ Isso vale inclusive para chamadas **sem nenhum filtro** — antes, `GET /api/ass
 | GET | `/api/cadastros` | **Paginada** (`page`, `limit` — padrão 1/100, máximo 100, mesmo padrão de `GET /api/associados`). Lista os cadastros enviados, mais recentes primeiro. Resposta: `{ dados, paginacao }`. |
 | GET | `/api/config/asaas-key` | Retorna a chave de API do Asaas vigente mascarada (só os últimos 6 caracteres visíveis), `null` se ainda não configurada. |
 | PATCH | `/api/config/asaas-key` | Body `{ "chave": "$aact_..." }`. Salva (cria ou substitui) a chave na tabela `configuracoes`. Nunca ecoa o valor completo de volta — só a versão mascarada, mesmo em caso de sucesso. |
-| GET | `/api/inadimplencia/resumo` | Números da tela de "Taxa de Inadimplência", calculados em tempo real a partir da API do Asaas. Query params `venc_de`, `venc_ate` (`YYYY-MM-DD`, opcionais — padrão: últimos 12 meses), `renegociacao`, `em_juridico` e `bloqueado` (`todos`\|`sim`\|`nao`, padrão `todos` nos três), `visao_faixas` (`aberto`\|`historico`, padrão `aberto`) e `forcar` (`true`, opcional — ignora o cache dessa chamada, mas ainda atualiza o cache com o resultado novo). Cobranças excluídas (manualmente ou por palavra-chave — ver seção própria) nunca entram no cálculo; o quanto foi excluído vem em `excluidos`. Cacheado em memória por 4 minutos por combinação de filtros. Ver seções "Classificação histórica" e "Taxa de Inadimplência" abaixo. |
+| GET | `/api/inadimplencia/resumo` | Números da tela de "Taxa de Inadimplência", calculados em tempo real a partir da API do Asaas. Query params `venc_de`, `venc_ate` (`YYYY-MM-DD`, opcionais — padrão: últimos 12 meses), `renegociacao`, `em_juridico` e `bloqueado` (`todos`\|`sim`\|`nao`, padrão `todos` nos três), `tipo_pendencia` (`todos`\|`vencidas`\|`confirmadas`, padrão `todos` — AJUSTE 4), `visao_faixas` (`aberto`\|`historico`, padrão `aberto`) e `forcar` (`true`, opcional — ignora o cache dessa chamada, mas ainda atualiza o cache com o resultado novo). Cobranças excluídas (manualmente ou por palavra-chave — ver seção própria) nunca entram no cálculo; o quanto foi excluído vem em `excluidos`. Cacheado em memória por 4 minutos por combinação de filtros. Ver seções "Status atual x classificação histórica" e "Taxa de Inadimplência" abaixo. |
 | GET | `/api/contratos` | Lista todos os modelos de contrato (ativos e inativos), mais recentes primeiro. Aceita `?ativo=true`\|`false` opcional pra filtrar. |
 | GET | `/api/contratos/:id` | Detalhe de um modelo (inclui o HTML completo em `conteudo`). |
 | POST | `/api/contratos` | Body `{ "nome", "tipo": "TERMO"\|"ADITIVO", "conteudo" }`. Cria um modelo novo (nasce `ativo: true`). |
@@ -146,7 +146,7 @@ Isso vale inclusive para chamadas **sem nenhum filtro** — antes, `GET /api/ass
 | PATCH | `/api/config/drive-pasta-raiz` | Body `{ "drive_pasta_raiz_id": "..." }`. Aceita tanto o id puro quanto o link completo da pasta (extrai o id automaticamente). |
 | GET | `/api/config/google-service-account` | Retorna só metadados da credencial da conta de serviço do Google vigente **da própria franquia** (`{ "configurado": boolean, "client_email"?, "project_id"? }`) — nunca a chave privada. |
 | PATCH | `/api/config/google-service-account` | Body `{ "credencial": "..." }` — JSON cru ou base64 da conta de serviço (mesmo formato aceito antes por `GOOGLE_SERVICE_ACCOUNT_JSON`). Valida que é um JSON de conta de serviço válido com `client_email` (`400` caso contrário), salva **na franquia de quem está autenticado** (ou na franquia selecionada, pro `SUPER_ADMIN`) e invalida o cliente Drive em cache dessa franquia — a troca vale já na próxima geração de contrato, sem reiniciar o processo. |
-| GET | `/api/inadimplencia/evolucao-mensal` | Mesmos números de `valor_total_faturado`/`valor_inadimplente`/`taxa_inadimplencia_percentual` do `/resumo`, mas agrupados por mês, mais `taxa_adimplencia_percentual` (calculado de forma independente, não mais complementar — ver seção "Classificação histórica"). Mesmos query params de filtro do `/resumo` (`venc_de`, `venc_ate`, `renegociacao`, `em_juridico`, `bloqueado`, `forcar` — **não** aceita `visao_faixas`, que só afeta `faixas`/`criticos_90_dias`, campos que esse endpoint não tem). Ver seção própria abaixo. |
+| GET | `/api/inadimplencia/evolucao-mensal` | Mesmos números de `valor_total_faturado`/`valor_inadimplente`/`taxa_inadimplencia_percentual` do `/resumo`, mas agrupados por mês, mais `taxa_adimplencia_percentual` (calculado de forma independente, não mais complementar — ver seção "Status atual x classificação histórica"). Mesmos query params de filtro do `/resumo` (`venc_de`, `venc_ate`, `renegociacao`, `em_juridico`, `bloqueado`, `tipo_pendencia`, `forcar` — **não** aceita `visao_faixas`, que só afeta `faixas`/`criticos_90_dias`, campos que esse endpoint não tem). Ver seção própria abaixo. |
 | GET | `/api/inadimplencia/exclusoes` | Lista as cobranças do Asaas excluídas manualmente (por `asaas_payment_id`) do cálculo de Taxa de Inadimplência, mais recentes primeiro. |
 | POST | `/api/inadimplencia/exclusoes` | Body `{ "asaas_payment_id": "pay_...", "motivo"?: "..." }`. Adiciona uma exclusão manual. `409` se o `asaas_payment_id` já estiver na lista. |
 | DELETE | `/api/inadimplencia/exclusoes/:id` | Remove uma exclusão manual pelo `id` (uuid da tabela `cobrancas_ignoradas`, não o `asaas_payment_id`). `404` se não existir. |
@@ -305,7 +305,33 @@ Se `GET /api/inadimplencia/resumo` for chamado **antes** de configurar a chave, 
 - `GET /v3/payments?dueDate[ge]=...&dueDate[le]=...&limit=100&offset=N`, paginando com o mesmo esquema offset/limit da API do Asaas até `hasMore: false` — busca **todos** os pagamentos (qualquer status) com vencimento no período, não só os em atraso.
 - **Importante**: o objeto de pagamento do Asaas só traz o **ID do cliente** (`customer`, ex.: `"cus_000005219478"`), não o `cpfCnpj` diretamente. Por isso, para cruzar com `associados.em_negociacao`, o serviço faz uma chamada extra `GET /v3/customers/{id}` (com concorrência limitada a 5 em paralelo) para cada cliente único referenciado — só quando necessário, ver regra de "renegociacao" abaixo. Uma falha isolada ao resolver um cliente não derruba o cálculo inteiro: esse pagamento é tratado como "sem associado correspondente" (conta como "não em negociação").
 
-### Classificação histórica de inadimplência (data de pagamento, não status atual)
+### AJUSTE CRÍTICO 3 — `valor_inadimplente`/`valor_adimplente` por status atual do Asaas
+
+**Decisão de negócio (confirmada explicitamente, reverte o AJUSTE CRÍTICO 1 abaixo):** a Taxa de Inadimplência deve refletir **o que está em aberto agora**, não o histórico de atraso de algo já quitado. Por isso, desde este ajuste, `valor_inadimplente`/`valor_adimplente`/`taxa_inadimplencia_percentual`/`taxa_adimplencia_percentual` (em `/resumo` e `/evolucao-mensal`) usam o **status atual de cada cobrança no Asaas**, não mais a classificação histórica por data de pagamento da seção seguinte:
+
+| Grupo | Status Asaas | Observação |
+|---|---|---|
+| **INADIMPLENTE** | `OVERDUE` (vencida, não paga) ou `CONFIRMED` (confirmada — ex.: cartão aprovado, dinheiro ainda não caiu na conta) | Qual dos dois entra depende do filtro `tipo_pendencia` — ver AJUSTE 4 abaixo. |
+| **ADIMPLENTE** | `RECEIVED` ou `RECEIVED_IN_CASH` (baixa manual "recebido em dinheiro") | Nunca afetado por `tipo_pendencia`. |
+| *(nem um nem outro)* | Qualquer outro status — o mais comum é `PENDING` (ainda não venceu) | Não entra em nenhum dos dois somatórios. É **esperado e correto** que `valor_total_faturado !== valor_inadimplente + valor_adimplente` sempre que houver cobranças desse terceiro grupo no período. |
+
+Consequência direta: uma cobrança vencida em janeiro e paga com atraso em março passa a contar como **adimplente** assim que a consulta é feita depois de março (status `RECEIVED`) — o oposto exato do que o AJUSTE CRÍTICO 1 original buscava evitar. Essa reversão foi deliberada e confirmada com o operador antes de implementar.
+
+**AJUSTE 4 — filtro `tipo_pendencia`** (`todos`\|`vencidas`\|`confirmadas`, padrão `todos`) separa, dentro de `valor_inadimplente`, as cobranças vencidas (`OVERDUE`) das confirmadas/crédito futuro (`CONFIRMED`) — antes não havia como isolar uma da outra, as duas sempre apareciam somadas:
+
+```bash
+curl "https://api.exemplo.com/api/inadimplencia/resumo?tipo_pendencia=vencidas" -H "Authorization: Bearer <token>"
+# valor_inadimplente = só cobranças OVERDUE
+
+curl "https://api.exemplo.com/api/inadimplencia/resumo?tipo_pendencia=confirmadas" -H "Authorization: Bearer <token>"
+# valor_inadimplente = só cobranças CONFIRMED
+```
+
+Afeta **só** `valor_inadimplente` e `taxa_inadimplencia_percentual`. **Não** afeta `valor_adimplente`/`taxa_adimplencia_percentual` (sempre `RECEIVED`/`RECEIVED_IN_CASH`), nem `valor_total_faturado` (sempre o período inteiro, qualquer status), nem `top_devedores`/`associados_inadimplentes`/`criticos_90_dias`/`renegociacoes_abertas`/`faixas` (nenhum destes muda com este filtro).
+
+> **O que NÃO mudou**: a classificação histórica por data de pagamento (`classificarPagamento`, seção seguinte) continua existindo, sem nenhuma mudança de comportamento — só que agora alimenta **exclusivamente** `faixas`/`criticos_90_dias` no modo `historico` (ver AJUSTE CRÍTICO 2 e AJUSTE 5 mais abaixo), nunca mais `valor_inadimplente`/`valor_adimplente`. Essas duas coisas são conceitos deliberadamente diferentes agora: "quanto está inadimplente hoje" (por status) x "quanto atraso teve, historicamente, quem pagou" (por data) — não confundir.
+
+### Classificação histórica de inadimplência (data de pagamento) — usada só em `faixas`/`criticos_90_dias`
 
 **O problema que essa seção resolve:** consultar o `status` atual de uma cobrança no Asaas para decidir se ela foi "inadimplente" é errado para relatórios de período fechado. Uma cobrança vencida em janeiro e paga só em março aparece como `RECEIVED` quando você consulta hoje — e, se a classificação dependesse do status atual, ela simplesmente desapareceria da inadimplência de janeiro, sub-representando o histórico. O retrato de um mês fechado não pode mudar dependendo de quando você consulta.
 
@@ -315,9 +341,9 @@ Se `GET /api/inadimplencia/resumo` for chamado **antes** de configurar a chave, 
 
 - **ADIMPLENTE**: possui `paymentDate` **e** `paymentDate <= dataLimiteEfetiva`.
 - **INADIMPLENTE**: possui `paymentDate` **e** `paymentDate > dataLimiteEfetiva` (paga além da tolerância) **ou** não possui `paymentDate` **e** `dataLimiteEfetiva <= hoje` (ainda não paga, e a tolerância já esgotou) — **mesmo que o `status` atual já seja `RECEIVED`/`CONFIRMED`**.
-- **A_VENCER** (exceção): não possui `paymentDate` **e** `dataLimiteEfetiva > hoje`. Não conta nem como adimplente nem como inadimplente — só entra em `valor_total_faturado`, nunca nos numeradores de `valor_inadimplente` ou de adimplência. Cobre tanto o caso original (vencimento futuro) quanto, com tolerância configurada, uma cobrança já vencida pela data crua mas ainda dentro da janela de tolerância — nos dois casos ela ainda não pode ser julgada "em dia" nem "atrasada".
+- **A_VENCER** (exceção): não possui `paymentDate` **e** `dataLimiteEfetiva > hoje`. Não conta nem como adimplente nem como inadimplente **nesta classificação por data** — cobre tanto o caso original (vencimento futuro) quanto, com tolerância configurada, uma cobrança já vencida pela data crua mas ainda dentro da janela de tolerância. Desde o AJUSTE CRÍTICO 3, esse rótulo só importa pra decidir se a cobrança entra em `faixas`/`criticos_90_dias` no modo `historico` (não entra) — não tem mais relação direta com `valor_inadimplente`/`valor_adimplente`, que são por status atual (ver seção acima).
 
-Essa classificação (não mais o `status` bruto do Asaas) é a base de `valor_inadimplente`/`valor_adimplente`/`taxa_inadimplencia_percentual`/`taxa_adimplencia_percentual` (em `/resumo` e `/evolucao-mensal`) — por isso o "retrato" de qualquer mês passado fica **fixo**, independente de quando a consulta é feita (a única coisa que pode mudar esse retrato depois é alterar a tolerância configurada, o que é uma decisão deliberada do operador, não um efeito colateral do tempo passar).
+Desde o AJUSTE CRÍTICO 3 (seção acima), essa classificação **não** alimenta mais `valor_inadimplente`/`valor_adimplente`/as duas taxas (que passaram a usar o status atual do Asaas) — ela é usada **só** para bucketizar `faixas`/`criticos_90_dias` no modo `historico` (ver AJUSTE CRÍTICO 2 e AJUSTE 5 mais abaixo). Por isso o "retrato" de `faixas`/`criticos_90_dias` no modo `historico`, pra qualquer mês passado, continua **fixo**, independente de quando a consulta é feita (a única coisa que pode mudar esse retrato depois é alterar a tolerância configurada, o que é uma decisão deliberada do operador, não um efeito colateral do tempo passar).
 
 > **Decisão de design**: `associados_inadimplentes` e `top_devedores` **continuam** baseados no snapshot de hoje (`status: "OVERDUE"`), sem usar essa nova classificação nem a tolerância — são métricas operacionais ("quem eu ligo hoje"), diferentes da taxa histórica do período. O pedido original só nomeou explicitamente `valor_inadimplente`, `taxa_inadimplencia_percentual` e `taxa_adimplencia_percentual` como alvo da mudança.
 
@@ -340,7 +366,7 @@ curl -X PATCH https://api.exemplo.com/api/config/tolerancia-dias \
 # 400 — {"error":"\"dias\" deve ser um número inteiro entre 0 e 30."}
 ```
 
-**Fórmula**: `dataLimiteEfetiva = dueDate + diasTolerancia` (dias corridos). Toda comparação que hoje usa `dueDate` para decidir ADIMPLENTE x INADIMPLENTE — seja contra `paymentDate` (cobrança já paga) ou contra "hoje" (cobrança ainda não paga) — passa a usar `dataLimiteEfetiva` em vez do vencimento cru. Isso vale tanto para a classificação histórica (`valor_inadimplente`/`valor_adimplente`/as duas taxas, em `/resumo` e `/evolucao-mensal`) quanto para os dias de atraso usados para escolher a faixa em `faixas`/`criticos_90_dias`, nos dois modos de `visao_faixas`:
+**Fórmula**: `dataLimiteEfetiva = dueDate + diasTolerancia` (dias corridos). Toda comparação que usa `dueDate` para decidir ADIMPLENTE x INADIMPLENTE na classificação histórica — seja contra `paymentDate` (cobrança já paga) ou contra "hoje" (cobrança ainda não paga) — passa a usar `dataLimiteEfetiva` em vez do vencimento cru. **Desde o AJUSTE CRÍTICO 3, isso vale só** para os dias de atraso usados para escolher a faixa em `faixas`/`criticos_90_dias`, nos dois modos de `visao_faixas` — **não** mais para `valor_inadimplente`/`valor_adimplente`/as duas taxas (que passaram a ser por status atual do Asaas, sem nenhuma comparação de data):
 
 - **Modo `historico`**: os dias de atraso usados para bucketizar passam a ser `paymentDate - dataLimiteEfetiva` (se já paga) ou `hoje - dataLimiteEfetiva` (se não paga) — uma cobrança paga com 2 dias de atraso e tolerância de 2 dias nem entra no conjunto (é ADIMPLENTE, não aparece em nenhuma faixa); uma paga com 25 dias de atraso e tolerância de 2 dias entra na faixa correspondente a 23 dias efetivos, não 25.
 - **Modo `aberto`**: mesma lógica, com `hoje - dataLimiteEfetiva` para cobranças ainda não pagas. Uma cobrança cujo `hoje - dueDate` ainda esteja dentro da tolerância (ou seja, `hoje - dataLimiteEfetiva` seria negativo) **não aparece em nenhuma faixa** — mesmo que o Asaas já marque `status: "OVERDUE"` para ela (o Asaas não tem conceito de tolerância; quem decide isso é o Gestor).
@@ -349,7 +375,7 @@ curl -X PATCH https://api.exemplo.com/api/config/tolerancia-dias \
 
 | Tolerância | `dataLimiteEfetiva` | Comparação | Classificação | Aparece em `faixas`? |
 |---|---|---|---|---|
-| `0` dias | `2026-05-10` (= vencimento) | `2026-05-12 > 2026-05-10` | **INADIMPLENTE** | Sim — faixa `0_20`, com 2 dias de atraso |
+| `0` dias | `2026-05-10` (= vencimento) | `2026-05-12 > 2026-05-10` | **INADIMPLENTE** | Sim — faixa `1_20`, com 2 dias de atraso |
 | `2` dias | `2026-05-12` | `2026-05-12 <= 2026-05-12` | **ADIMPLENTE** | Não — não é inadimplente, não entra em nenhuma faixa |
 
 Com tolerância `0`, os 2 dias de atraso contam integralmente contra o associado. Com tolerância `2`, o mesmo pagamento — sem nenhuma outra mudança — passa a ser tratado como pago em dia.
@@ -363,14 +389,14 @@ Todos os valores em R$, calculados sobre o conjunto de pagamentos com vencimento
 | Campo | Cálculo |
 |---|---|
 | `valor_total_faturado` | Soma do `value` de **todos** os pagamentos do período, qualquer status (inclusive os "a vencer"). |
-| `valor_inadimplente` | Soma do `value` dos pagamentos classificados **INADIMPLENTE** pela regra histórica acima (data de pagamento vs **data limite efetiva**, já com a tolerância aplicada) — não mais pelo `status` atual, nem pelo vencimento cru. |
+| `valor_inadimplente` | **AJUSTE CRÍTICO 3** — soma do `value` dos pagamentos com status `OVERDUE` e/ou `CONFIRMED` no Asaas (qual dos dois depende do filtro `tipo_pendencia` — AJUSTE 4, padrão `todos` = os dois), não mais pela classificação histórica por data. |
 | `taxa_inadimplencia_percentual` | `valor_inadimplente / valor_total_faturado * 100`, arredondado a 2 casas — `0` se não houver faturamento no período. |
-| `valor_adimplente` | Soma do `value` dos pagamentos classificados **ADIMPLENTE** pela mesma regra histórica (possui `paymentDate` **e** `paymentDate <= dataLimiteEfetiva`). Calculado diretamente aqui no backend — **não** derive esse valor no frontend por subtração (`valor_total_faturado - valor_inadimplente`): o resultado ficaria errado sempre que houver cobranças "a vencer" no período, que não entram em nenhum dos dois numeradores (ver seção "Classificação histórica" acima). |
-| `taxa_adimplencia_percentual` | `valor_adimplente / valor_total_faturado * 100`, arredondado a 2 casas — `0` se não houver faturamento no período. Mesma lógica de `taxa_adimplencia_percentual` de `/evolucao-mensal`: não é o complementar de `taxa_inadimplencia_percentual` (as duas só somam 100% quando não há nenhuma cobrança "a vencer" no período). |
+| `valor_adimplente` | **AJUSTE CRÍTICO 3** — soma do `value` dos pagamentos com status `RECEIVED` ou `RECEIVED_IN_CASH` no Asaas, não mais pela classificação histórica por data. Nunca afetado por `tipo_pendencia`. Calculado diretamente aqui no backend — **não** derive esse valor no frontend por subtração (`valor_total_faturado - valor_inadimplente`): o resultado fica errado sempre que houver cobranças de outro status no período (ex.: `PENDING`, ainda não vencida), que não entram em nenhum dos dois somatórios — ver seção "AJUSTE CRÍTICO 3" acima. |
+| `taxa_adimplencia_percentual` | `valor_adimplente / valor_total_faturado * 100`, arredondado a 2 casas — `0` se não houver faturamento no período. Não é o complementar de `taxa_inadimplencia_percentual` (as duas só somam 100% quando não há nenhuma cobrança de outro status, tipicamente `PENDING`, no período). |
 | `associados_inadimplentes` | Contagem de clientes **distintos** (por `cpfCnpj` resolvido, ou pelo ID do Asaas quando não foi possível resolver) com pelo menos um pagamento `status: "OVERDUE"` **hoje** (snapshot operacional, não a classificação histórica — ver decisão de design acima). |
 | `renegociacoes_abertas` | **Não** usa mais `associados.em_negociacao`. Conta e soma, entre os pagamentos com `status` ainda em aberto (`PENDING` ou `OVERDUE` — não os já pagos), aqueles cuja `description` (do próprio Asaas) contém a palavra "Renegociação", case-insensitive, como substring. `quantidade` = número de **pagamentos** nessa condição; `valor` = soma desses pagamentos. Ver nota de nomenclatura abaixo. |
-| `criticos_90_dias` | Soma do `value` dos pagamentos com 90 dias de atraso ou mais, seguindo o mesmo modo (`aberto`/`historico`) de `faixas` — ver seção "Faixas de atraso: modo aberto x histórico". Métrica independente das faixas — um pagamento pode entrar tanto em `criticos_90_dias` quanto na faixa `50_100` (ex.: 90-99 dias caem na faixa `50_100` **e** em `criticos_90_dias`). |
-| `faixas` | Soma do `value` (não contagem), agrupada em 6 faixas de dias de atraso **efetivos** (já descontada a tolerância — ver "Período de tolerância" acima) não sobrepostas: `0_20` (0-19d), `20_30` (20-29d), `30_40` (30-39d), `40_50` (40-49d), `50_100` (50-99d), `100_180` (**100d ou mais** — sem teto). O **conjunto de pagamentos** e o **cálculo dos dias de atraso** dependem do parâmetro `visao_faixas` — ver seção própria abaixo. |
+| `criticos_90_dias` | Soma do `value` dos pagamentos com 90 dias de atraso ou mais, seguindo o mesmo modo (`aberto`/`historico`) de `faixas` — ver seção "Faixas de atraso: modo aberto x histórico". Métrica independente das faixas — um pagamento pode entrar tanto em `criticos_90_dias` quanto na faixa `51_100` (ex.: 90-99 dias caem na faixa `51_100` **e** em `criticos_90_dias`). |
+| `faixas` | Soma do `value` (não contagem), agrupada em **7 faixas** de dias de atraso **efetivos** (já descontada a tolerância — ver "Período de tolerância" acima) não sobrepostas — **AJUSTE 5**: `ate_vencimento` (atraso `<= 0`d — cobranças ainda dentro do vencimento ou da tolerância, antes descartadas sem aparecer em nenhuma faixa), `1_20` (1-20d), `21_30` (21-30d), `31_40` (31-40d), `41_50` (41-50d), `51_100` (51-100d), `acima_100` (**mais de 100d** — sem teto; renomeada de `100_180`, mesmo comportamento sem teto de sempre, só nome corrigido). O **conjunto de pagamentos** e o **cálculo dos dias de atraso** dependem do parâmetro `visao_faixas` — ver seção própria abaixo, e continuam usando a classificação histórica por data (não o status atual do AJUSTE CRÍTICO 3). |
 | `top_devedores` | Os 10 clientes com maior soma de pagamentos `status: "OVERDUE"` **hoje** no período (mesmo snapshot operacional de `associados_inadimplentes`), ordenados decrescente. `nome` vem do nosso cadastro local quando existe associado correspondente; senão, do nome do cliente no Asaas; `cpf_cnpj` vem do cpfCnpj resolvido (ou o ID do cliente no Asaas, como último recurso). |
 | `excluidos` | `{ "quantidade": number, "valor": number }` — quantas cobranças e qual valor foram **removidos do cálculo inteiro** (não entram em nenhum dos campos acima) pelos dois mecanismos de exclusão (manual por ID + palavra-chave na descrição). Ver seção "Exclusão de cobranças do cálculo" abaixo. |
 
@@ -387,7 +413,7 @@ O parâmetro `visao_faixas` (`aberto`\|`historico`, padrão `aberto`) controla *
 
 `dataLimiteEfetiva = dueDate + diasTolerancia` (ver seção "Período de tolerância" acima). Em qualquer um dos dois modos, se o resultado de "dias de atraso efetivos" for **negativo** (a cobrança ainda está dentro da janela de tolerância), ela **não aparece em nenhuma faixa nem em `criticos_90_dias`** — mesmo que o Asaas já marque `status: "OVERDUE"` (isso só pode acontecer no modo `aberto`; no `historico` o próprio conjunto de INADIMPLENTES já exclui essas cobranças antes de chegar aqui).
 
-**A diferença na prática**: o modo `aberto` é um **retrato do dia de hoje** — "quanto está em aberto agora, e há quanto tempo" — útil para o time de cobrança decidir quem ligar. O modo `historico` é o **retrato do período filtrado**, fixo: uma cobrança vencida em maio e paga com atraso em julho aparece na faixa correspondente ao atraso efetivo do pagamento (`paymentDate - dataLimiteEfetiva`) mesmo que hoje, em agosto, ela já não apareça mais em nenhuma lista de "em aberto". `valor_inadimplente`/`taxa_inadimplencia_percentual` (que já usam a classificação histórica, ver seção acima) **não mudam** entre os dois modos — só `faixas` e `criticos_90_dias` mudam, porque só eles dependem de "quais pagamentos" e "atraso calculado como".
+**A diferença na prática**: o modo `aberto` é um **retrato do dia de hoje** — "quanto está em aberto agora, e há quanto tempo" — útil para o time de cobrança decidir quem ligar. O modo `historico` é o **retrato do período filtrado**, fixo: uma cobrança vencida em maio e paga com atraso em julho aparece na faixa correspondente ao atraso efetivo do pagamento (`paymentDate - dataLimiteEfetiva`) mesmo que hoje, em agosto, ela já não apareça mais em nenhuma lista de "em aberto". `valor_inadimplente`/`taxa_inadimplencia_percentual` (que desde o AJUSTE CRÍTICO 3 usam o status atual do Asaas, não mais a classificação histórica) **não mudam** entre os dois modos — só `faixas` e `criticos_90_dias` mudam, porque só eles dependem de "quais pagamentos" e "atraso calculado como".
 
 ### Filtros `renegociacao`, `em_juridico` e `bloqueado`
 
@@ -440,7 +466,7 @@ taxa_inadimplencia_percentual = valor_inadimplente / valor_total_faturado * 100
 taxa_adimplencia_percentual   = valor_adimplente   / valor_total_faturado * 100
 ```
 
-Isso é proposital, não um bug: cobranças "a vencer" (vencimento futuro, ainda não pagas) entram em `valor_total_faturado` mas **não contam em nenhum dos dois numeradores** (ver exceção A_VENCER na seção "Classificação histórica"). Um mês com bastante cobrança futura em aberto vai legitimamente ter `taxa_inadimplencia_percentual + taxa_adimplencia_percentual < 100` — a diferença é exatamente a fatia "a vencer" daquele mês, que ainda não pode ser julgada nem como em dia nem como atrasada.
+Isso é proposital, não um bug: cobranças com status que não é nem `OVERDUE`/`CONFIRMED` nem `RECEIVED`/`RECEIVED_IN_CASH` — o caso mais comum é `PENDING` (vencimento futuro, ainda não paga) — entram em `valor_total_faturado` mas **não contam em nenhum dos dois numeradores** (ver AJUSTE CRÍTICO 3 acima). Um mês com bastante cobrança futura em aberto vai legitimamente ter `taxa_inadimplencia_percentual + taxa_adimplencia_percentual < 100` — a diferença é exatamente a fatia nesse "terceiro grupo" daquele mês.
 
 ```bash
 curl "https://api.exemplo.com/api/inadimplencia/evolucao-mensal?venc_de=2026-01-01&venc_ate=2026-06-30" \
@@ -452,9 +478,9 @@ curl "https://api.exemplo.com/api/inadimplencia/evolucao-mensal?venc_de=2026-01-
 # ]
 ```
 
-**Cache** (`src/services/cache.service.js`) — assim como o `/resumo`, o resultado completo é cacheado em memória por **4 minutos**, num namespace de cache separado, com a chave sendo a combinação exata `(venc_de, venc_ate, renegociacao, em_juridico, bloqueado)`.
+**Cache** (`src/services/cache.service.js`) — assim como o `/resumo`, o resultado completo é cacheado em memória por **4 minutos**, num namespace de cache separado, com a chave sendo a combinação exata `(venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia)`.
 
-**Cache do `/resumo`** — mesma lógica, mesma janela de 4 minutos, mesma chave `(venc_de, venc_ate, renegociacao, em_juridico, bloqueado, visao_faixas)`. Chamadas repetidas com os mesmos filtros dentro da janela não fazem nenhuma requisição nova ao Asaas. É um cache só do processo (não distribuído, não sobrevive a restart) — adequado para uma tela consultada por poucos usuários do painel; se a API rodar em múltiplas instâncias atrás de um load balancer, cada instância mantém seu próprio cache.
+**Cache do `/resumo`** — mesma lógica, mesma janela de 4 minutos, mesma chave `(venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia, visao_faixas)` (AJUSTE 4: `tipo_pendencia` entrou na chave). Chamadas repetidas com os mesmos filtros dentro da janela não fazem nenhuma requisição nova ao Asaas. É um cache só do processo (não distribuído, não sobrevive a restart) — adequado para uma tela consultada por poucos usuários do painel; se a API rodar em múltiplas instâncias atrás de um load balancer, cada instância mantém seu próprio cache.
 
 **Atualização forçada (`forcar=true`)** — tanto `/resumo` quanto `/evolucao-mensal` aceitam `?forcar=true` (qualquer outro valor, incluindo ausente, é tratado como `false`). Com `forcar=true`, a chamada **ignora a leitura do cache** — sempre consulta a API do Asaas de novo, mesmo que já exista uma entrada válida (dentro do TTL) para aquela combinação exata de filtros — mas o resultado novo **ainda é gravado no cache** ao final, com o TTL normal de 4 minutos. Ou seja: `forcar=true` força só *aquela* chamada a buscar dados frescos; não desliga o cache para as chamadas seguintes (sem `forcar=`), que voltam a se beneficiar do resultado recém-gravado normalmente. Pensado para um botão de "Atualizar agora" na tela — sem precisar esperar o TTL expirar nem invalidar o cache pra todo mundo.
 
@@ -483,18 +509,21 @@ curl "https://api.exemplo.com/api/inadimplencia/resumo?forcar=true" -H "Authoriz
 #   "associados_inadimplentes": 18,
 #   "renegociacoes_abertas": { "quantidade": 6, "valor": 7800.00 },
 #   "criticos_90_dias": 5200.00,
-#   "faixas": { "0_20": 9000.00, "20_30": 4500.00, "30_40": 3200.00, "40_50": 2100.00, "50_100": 3150.50, "100_180": 2200.00 },
+#   "faixas": { "ate_vencimento": 1800.00, "1_20": 9000.00, "21_30": 4500.00, "31_40": 3200.00, "41_50": 2100.00, "51_100": 3150.50, "acima_100": 2200.00 },
 #   "top_devedores": [ { "nome": "Empresa X", "cpf_cnpj": "12.345.678/0001-90", "valor": 4800.00 }, ... ],
 #   "excluidos": { "quantidade": 2, "valor": 950.00 }
 # }
 # (note que 24150.50 + 150200.00 = 174350.50 < 182300.00 nesse exemplo — a
-# diferença, 7949.50, é o valor "a vencer" do período, que não entra em
-# nenhum dos dois numeradores.)
+# diferença, 7949.50, é o valor de cobranças com outro status — tipicamente
+# "PENDING", ainda não vencidas — que não entram em nenhum dos dois
+# numeradores desde o AJUSTE CRÍTICO 3, ver seção acima.)
 ```
 
 ### Como testar a tela de Inadimplência com dados fictícios
 
 A tela "Taxa de Inadimplência" do painel depende de uma chave de API real do Asaas para funcionar. Para testar a tela manualmente no navegador **sem precisar de uma conta/chave real do Asaas**, este repositório traz um mock standalone da API do Asaas em `scripts/mock-asaas-server.js`.
+
+> **Nota (AJUSTE CRÍTICO 3 / AJUSTE 5)**: o dataset fixo de `scripts/mock-asaas-server.js` e os logs de validação abaixo (rodadas anteriores a este ajuste) usam as chaves antigas das faixas (`0_20`...`100_180`) e descrevem `valor_inadimplente`/`valor_adimplente` pela classificação histórica por data — ambas coisas mudaram (ver seção "AJUSTE CRÍTICO 3" e AJUSTE 5 acima). Os números específicos desses logs ficam como registro histórico do que foi validado em cada rodada; para o comportamento **atual**, veja `backend/test-status-ajustes.js` (suíte dedicada a este ajuste, 42/42 validado com Postgres real).
 
 **1. Rode o mock** (num terminal separado, deixe rodando):
 

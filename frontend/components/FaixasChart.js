@@ -10,19 +10,25 @@ const compactCurrencyFormatter = new Intl.NumberFormat("pt-BR", {
 });
 
 /**
- * As 6 faixas, na ordem de exibição, com a cor de cada uma. As cores são
- * interpoladas entre as 4 cores semânticas de atraso já usadas no resto do
- * app (verde → amarelo → laranja → vermelho — ver lib/atraso.js), criando
- * uma rampa de calor com 6 degraus sem introduzir nenhuma cor de marca nova.
- * Faixa mais branda = mais fria/verde; faixa mais crítica = mais quente/vermelha.
+ * As 7 faixas, na ordem de exibição, com a cor de cada uma — AJUSTE 5:
+ * ganhou a faixa "ate_vencimento" (cobranças ainda dentro do vencimento ou
+ * da tolerância, que antes não apareciam em nenhuma faixa) e a antiga
+ * "100_180" foi renomeada pra "acima_100" (mesmo comportamento sem teto de
+ * sempre, só corrigindo o nome). As cores são interpoladas entre as 4 cores
+ * semânticas de atraso já usadas no resto do app (azul/neutro → verde →
+ * amarelo → laranja → vermelho — ver lib/atraso.js), criando uma rampa de
+ * calor com 7 degraus sem introduzir nenhuma cor de marca nova. "Até o
+ * vencimento" é a mais fria/neutra (nem chegou a atrasar); faixa mais
+ * crítica = mais quente/vermelha.
  */
 const FAIXAS = [
-  { chave: "0_20", label: "0-20d", cor: "#22c55e" },
-  { chave: "20_30", label: "20-30d", cor: "#a1ba26" },
-  { chave: "30_40", label: "30-40d", cor: "#f6a808" },
-  { chave: "40_50", label: "40-50d", cor: "#fa851d" },
-  { chave: "50_100", label: "50-100d", cor: "#f76534" },
-  { chave: "100_180", label: "100-180d", cor: "#f2454b" },
+  { chave: "ate_vencimento", label: "Até o vencimento", cor: "#38bdf8" },
+  { chave: "1_20", label: "1-20d", cor: "#22c55e" },
+  { chave: "21_30", label: "21-30d", cor: "#a1ba26" },
+  { chave: "31_40", label: "31-40d", cor: "#f6a808" },
+  { chave: "41_50", label: "41-50d", cor: "#fa851d" },
+  { chave: "51_100", label: "51-100d", cor: "#f76534" },
+  { chave: "acima_100", label: "100d+", cor: "#f2454b" },
 ];
 
 const ALTURA_MAXIMA_PX = 160;

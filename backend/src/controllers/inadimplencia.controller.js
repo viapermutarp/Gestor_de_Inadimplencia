@@ -5,10 +5,44 @@ const { resolverFranquiaIdOuPadrao } = require('../services/franquiaPadrao.servi
 
 const FILTRO_TRI_ESTADO_VALIDAS = ['todos', 'sim', 'nao'];
 const VISAO_FAIXAS_VALIDAS = ['aberto', 'historico'];
+const TIPO_PENDENCIA_VALIDAS = ['todos', 'vencidas', 'confirmadas'];
 const CACHE_TTL_MS = 4 * 60 * 1000; // 4 minutos — dentro da faixa de 3-5min pedida.
 const MESES_PADRAO = 12;
 const UM_DIA_MS = 24 * 60 * 60 * 1000;
 const PALAVRA_RENEGOCIACAO = 'renegociação';
+
+/**
+ * AJUSTE CRÍTICO 3 — critério de "valor_inadimplente"/"valor_adimplente"
+ * deixou de ser a classificação histórica por data de pagamento
+ * (`classificarPagamento`, ver docblock dela) e passou a ser o STATUS
+ * ATUAL de cada cobrança no Asaas — decisão de negócio confirmada
+ * explicitamente: a Taxa de Inadimplência deve refletir o que está em
+ * aberto AGORA, não o histórico de atraso de algo já quitado (reverte de
+ * propósito o raciocínio do AJUSTE CRÍTICO 1, feito originalmente pro caso
+ * oposto). `classificarPagamento` continua existindo e sendo usada, sem
+ * NENHUMA mudança de comportamento, só para `faixas`/`criticos_90_dias` no
+ * modo "historico" — ver docblocks de `resumo` e `computarFaixasECriticos`.
+ *
+ *   - INADIMPLENTE: status "OVERDUE" (vencida, ainda não paga) ou
+ *     "CONFIRMED" (confirmada — ex.: cartão de crédito aprovado, dinheiro
+ *     ainda não caiu na conta). `STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA`
+ *     conforme o filtro "tipo_pendencia" controla quais dos dois entram
+ *     (AJUSTE 4).
+ *   - ADIMPLENTE: status "RECEIVED" ou "RECEIVED_IN_CASH" (dinheiro já
+ *     confirmado na conta — a segunda variante é a baixa manual "recebido
+ *     em dinheiro" do Asaas).
+ *   - Nem um nem outro (não entra em nenhum dos dois somatórios): qualquer
+ *     outro status — o mais comum sendo "PENDING" (ainda não venceu, ainda
+ *     não foi pago). É esperado e correto que
+ *     `valor_total_faturado !== valor_inadimplente + valor_adimplente`
+ *     sempre que houver cobranças desse terceiro grupo no período.
+ */
+const STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA = {
+  todos: ['OVERDUE', 'CONFIRMED'],
+  vencidas: ['OVERDUE'],
+  confirmadas: ['CONFIRMED'],
+};
+const STATUS_ADIMPLENTE = ['RECEIVED', 'RECEIVED_IN_CASH'];
 
 function formatarDataISO(data) {
   const ano = data.getFullYear();
@@ -90,6 +124,23 @@ function validarFiltroTriEstado(valorParam, nomeParam) {
   const valor = valorParam === undefined ? 'todos' : valorParam;
   if (!FILTRO_TRI_ESTADO_VALIDAS.includes(valor)) {
     return { erro: `"${nomeParam}" deve ser "todos", "sim" ou "nao".` };
+  }
+  return { valor, erro: null };
+}
+
+/**
+ * Valida o filtro "tipo_pendencia" ("todos"|"vencidas"|"confirmadas",
+ * padrão "todos") — AJUSTE 4: separa, dentro de "valor_inadimplente", as
+ * cobranças vencidas (status "OVERDUE") das confirmadas/crédito futuro
+ * (status "CONFIRMED"), que antes desta correção sempre apareciam somadas.
+ * Afeta só "valor_inadimplente"/"taxa_inadimplencia_percentual" — nunca
+ * "valor_adimplente" (sempre RECEIVED/RECEIVED_IN_CASH, independente deste
+ * filtro) nem "valor_total_faturado" (sempre o período inteiro).
+ */
+function validarTipoPendencia(valorParam) {
+  const valor = valorParam === undefined ? 'todos' : valorParam;
+  if (!TIPO_PENDENCIA_VALIDAS.includes(valor)) {
+    return { erro: '"tipo_pendencia" deve ser "todos", "vencidas" ou "confirmadas".' };
   }
   return { valor, erro: null };
 }
@@ -325,9 +376,9 @@ function gerarChavesMeses(vencDe, vencAte) {
 }
 
 /**
- * Soma as 6 faixas de atraso (0_20 ... 100_180, sem teto na última) e o
- * total de "críticos 90+ dias" sobre uma lista de pagamentos já filtrada
- * para o modo certo (ver AJUSTE CRÍTICO 2):
+ * Soma as 7 faixas de atraso ("ate_vencimento", "1_20" ... "acima_100",
+ * sem teto na última) e o total de "críticos 90+ dias" sobre uma lista de
+ * pagamentos já filtrada para o modo certo (ver AJUSTE CRÍTICO 2):
  *   - modo "aberto": `pagamentos` já vem restrito a status OVERDUE (snapshot
  *     de hoje) — dias efetivos de atraso = hoje - dataLimiteEfetiva.
  *   - modo "historico": `pagamentos` já vem restrito às INADIMPLENTES pela
@@ -336,23 +387,41 @@ function gerarChavesMeses(vencDe, vencAte) {
  *     paymentDate - dataLimiteEfetiva quando já foi paga (com atraso), ou
  *     hoje - dataLimiteEfetiva quando ainda não foi paga.
  *
+ * IMPORTANTE — esta função NÃO foi afetada pelo AJUSTE CRÍTICO 3 (critério
+ * de "valor_inadimplente"/"valor_adimplente" por status atual do Asaas):
+ * "faixas"/"criticos_90_dias" continuam sendo, de propósito, sobre o
+ * HISTÓRICO de atraso por data (pagamento vs. vencimento) — não sobre se a
+ * cobrança "ainda conta como inadimplente hoje" (confirmado explicitamente
+ * no brief de correção que originou o AJUSTE CRÍTICO 3).
+ *
+ * AJUSTE 5 — faixa nova "ate_vencimento" (`diasAtraso <= 0`): cobranças
+ * ainda dentro do vencimento (ou da tolerância) passam a aparecer nesta
+ * faixa em vez de serem descartadas (`continue`) como antes. A faixa final
+ * foi renomeada de "100_180" pra "acima_100" — é só correção de nome/
+ * chave: o comportamento (somar tudo com `diasAtraso > 100`, sem teto) já
+ * era esse antes, "180" nunca foi de fato um corte.
+ *
  * PERÍODO DE TOLERÂNCIA (`diasTolerancia`) — `dataLimiteEfetiva` =
  * dueDate + diasTolerancia (mesma "data limite efetiva" de
  * `classificarPagamento`, ver docblock lá para a fórmula e um exemplo
  * numérico completo no README). Isso desloca o próprio número de dias
  * usado para escolher a faixa (uma cobrança paga com 25 dias de atraso e
  * 2 dias de tolerância cai na faixa correspondente a 23 dias efetivos, não
- * 25) e, no modo "aberto", pode zerar o atraso de cobranças que o Asaas já
- * marca como OVERDUE mas que ainda estão dentro da janela de tolerância —
- * nesse caso `diasAtraso` fica negativo e o pagamento é pulado (`continue`)
- * SEM entrar em nenhuma faixa nem em `criticos90Dias`, exatamente como
- * pedido ("não devem aparecer em nenhuma faixa"). No modo "historico" isso
- * não deveria acontecer na prática (o conjunto já vem restrito a
- * INADIMPLENTE, que por definição já esgotou a tolerância), mas o guard
- * fica por segurança/simetria entre os dois modos.
+ * 25) e, no modo "aberto", pode zerar (ou tornar negativo) o atraso de
+ * cobranças que o Asaas já marca como OVERDUE mas que ainda estão dentro
+ * da janela de tolerância — nesse caso `diasAtraso <= 0` e o pagamento cai
+ * em "ate_vencimento", não em nenhuma outra faixa nem em `criticos90Dias`.
  */
 function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
-  const faixas = { '0_20': 0, '20_30': 0, '30_40': 0, '40_50': 0, '50_100': 0, '100_180': 0 };
+  const faixas = {
+    ate_vencimento: 0,
+    '1_20': 0,
+    '21_30': 0,
+    '31_40': 0,
+    '41_50': 0,
+    '51_100': 0,
+    acima_100: 0,
+  };
   let criticos90Dias = 0;
 
   for (const pagamento of pagamentos) {
@@ -363,14 +432,13 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
         ? diferencaDias(pagamento.paymentDate, dataLimiteEfetiva)
         : diferencaDias(hojeStr, dataLimiteEfetiva);
 
-    if (diasAtraso < 0) continue; // ainda dentro da tolerância — não conta em nenhuma faixa, nem em críticos 90+ dias
-
-    if (diasAtraso < 20) faixas['0_20'] += valor;
-    else if (diasAtraso < 30) faixas['20_30'] += valor;
-    else if (diasAtraso < 40) faixas['30_40'] += valor;
-    else if (diasAtraso < 50) faixas['40_50'] += valor;
-    else if (diasAtraso < 100) faixas['50_100'] += valor;
-    else faixas['100_180'] += valor; // 100+ dias (sem teto — atrasos além de 180d continuam contados aqui, não desaparecem do relatório)
+    if (diasAtraso <= 0) faixas.ate_vencimento += valor;
+    else if (diasAtraso <= 20) faixas['1_20'] += valor;
+    else if (diasAtraso <= 30) faixas['21_30'] += valor;
+    else if (diasAtraso <= 40) faixas['31_40'] += valor;
+    else if (diasAtraso <= 50) faixas['41_50'] += valor;
+    else if (diasAtraso <= 100) faixas['51_100'] += valor;
+    else faixas.acima_100 += valor; // 100+ dias (sem teto)
 
     if (diasAtraso >= 90) criticos90Dias += valor;
   }
@@ -382,6 +450,7 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
  * GET /api/inadimplencia/resumo
  *   ?venc_de=YYYY-MM-DD&venc_ate=YYYY-MM-DD
  *   &renegociacao=todos|sim|nao&em_juridico=todos|sim|nao&bloqueado=todos|sim|nao
+ *   &tipo_pendencia=todos|vencidas|confirmadas
  *   &visao_faixas=aberto|historico&forcar=true
  *
  * Calcula, a partir dos pagamentos do Asaas com vencimento no período
@@ -401,20 +470,42 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
  * "não"). Quando algum dos três é "sim" ou "nao", ele restringe TODO o
  * conjunto de pagamentos usado no cálculo (inclusive valor_total_faturado).
  *
- * PERÍODO DE TOLERÂNCIA — todo cálculo que classifica ADIMPLENTE x
- * INADIMPLENTE (valor_inadimplente/valor_adimplente/as duas taxas) e a
- * bucketização de "faixas"/"criticos_90_dias" nos dois modos de
- * visao_faixas usam o período de tolerância vigente (dias corridos,
- * GET/PATCH /api/config/tolerancia-dias, padrão 0), lido uma vez no início
- * da requisição. Ver `classificarPagamento` e `computarFaixasECriticos`
- * para a fórmula ("data limite efetiva" = dueDate + diasTolerancia) e o
- * README para um exemplo numérico completo.
+ * PERÍODO DE TOLERÂNCIA — a bucketização de "faixas"/"criticos_90_dias"
+ * nos dois modos de visao_faixas usa o período de tolerância vigente (dias
+ * corridos, GET/PATCH /api/config/tolerancia-dias, padrão 0), lido uma vez
+ * no início da requisição. NÃO afeta mais "valor_inadimplente"/
+ * "valor_adimplente"/as duas taxas desde o AJUSTE CRÍTICO 3 (critério por
+ * status atual, sem nenhuma comparação de data) — ver
+ * `computarFaixasECriticos` para a fórmula da tolerância ("data limite
+ * efetiva" = dueDate + diasTolerancia) e o README para um exemplo numérico
+ * completo.
  *
- * AJUSTE CRÍTICO 1 — "valor_inadimplente"/"taxa_inadimplencia_percentual"
- * usam a classificação HISTÓRICA por data de pagamento
- * (`classificarPagamento` — ADIMPLENTE/INADIMPLENTE/A_VENCER), não mais o
- * status atual do Asaas. Isso torna o retrato de qualquer período passado
- * fixo, independente de quando a consulta é feita.
+ * AJUSTE CRÍTICO 3 (substitui o AJUSTE CRÍTICO 1) — "valor_inadimplente"/
+ * "valor_adimplente"/as duas taxas passaram a usar o STATUS ATUAL de cada
+ * cobrança no Asaas, não mais a classificação histórica por data de
+ * pagamento. Decisão de negócio confirmada explicitamente: a Taxa de
+ * Inadimplência deve refletir o que está em aberto AGORA, não o histórico
+ * de atraso de algo já quitado — reverte de propósito o raciocínio
+ * original do AJUSTE CRÍTICO 1 (que existia justamente pro caso oposto:
+ * uma cobrança paga com atraso "esconder" esse atraso ao virar RECEIVED).
+ * Ver `STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA`/`STATUS_ADIMPLENTE` no topo
+ * do arquivo para os status exatos de cada grupo. `classificarPagamento`
+ * (a função da classificação histórica) continua existindo e sendo usada,
+ * sem NENHUMA mudança de comportamento, só para "faixas"/"criticos_90_dias"
+ * no modo "historico" (ver AJUSTE CRÍTICO 2 abaixo e AJUSTE 5) — essas
+ * faixas continuam sendo sobre o histórico de atraso por data de quem já
+ * pagou, e não mudam com este ajuste.
+ *
+ * AJUSTE 4 — "tipo_pendencia" ("todos"|"vencidas"|"confirmadas", padrão
+ * "todos") separa, dentro de "valor_inadimplente", as cobranças vencidas
+ * (status "OVERDUE") das confirmadas/crédito futuro (status "CONFIRMED") —
+ * antes desta correção sempre apareciam somadas, sem forma de isolar uma
+ * da outra. Afeta "valor_inadimplente" e "taxa_inadimplencia_percentual";
+ * NÃO afeta "valor_adimplente"/"taxa_adimplencia_percentual" (sempre
+ * RECEIVED/RECEIVED_IN_CASH) nem "valor_total_faturado" (sempre o período
+ * inteiro, qualquer status) nem "top_devedores"/"associados_inadimplentes"/
+ * "criticos_90_dias"/"renegociacoes_abertas" (nenhum destes muda com este
+ * ajuste — ver docblocks próprios).
  *
  * AJUSTE CRÍTICO 2 — "faixas" e "criticos_90_dias" têm dois modos,
  * controlados por "visao_faixas" (padrão "aberto"):
@@ -422,36 +513,36 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
  *     bucketed por (hoje - dueDate) — é um snapshot do que está em aberto
  *     agora, muda a cada consulta.
  *   - "historico": cobranças do período que NÃO foram pagas em dia (mesma
- *     regra de INADIMPLENTE do Ajuste 1), bucketed por (paymentDate -
- *     dueDate) se já paga, ou (hoje - dueDate) se ainda não paga — fixo
- *     para o período, como a taxa de inadimplência histórica.
+ *     regra de INADIMPLENTE de `classificarPagamento` — histórica por
+ *     data, ver docblock dela), bucketed por (paymentDate - dueDate) se já
+ *     paga, ou (hoje - dueDate) se ainda não paga — fixo para o período.
+ *
+ * AJUSTE 5 — "faixas" ganhou uma 7ª faixa, "ate_vencimento" (atraso <= 0,
+ * já considerando a tolerância), pras cobranças ainda dentro do vencimento
+ * que antes eram descartadas sem aparecer em nenhuma faixa. A faixa final
+ * foi renomeada de "100_180" pra "acima_100" (só o nome/chave — o
+ * comportamento de somar tudo com mais de 100 dias, sem teto, já era esse
+ * antes). Ver `computarFaixasECriticos`.
  *
  * "associados_inadimplentes" e "top_devedores" continuam baseados no
  * snapshot "aberto" (quem tem cobrança OVERDUE agora) — são listas
- * operacionais ("quem cobrar hoje"), independentes de "visao_faixas" e da
- * classificação histórica do Ajuste 1 — ver README.
+ * operacionais ("quem cobrar hoje"), independentes de "visao_faixas" e de
+ * "tipo_pendencia" — ver README.
  *
  * AJUSTE 3 — "renegociacoes_abertas" conta/soma cobranças cuja descrição
  * (no próprio Asaas) contém "Renegociação" (case-insensitive, substring) e
  * cujo status ainda está em aberto (PENDING ou OVERDUE) — não cruza mais
  * com `associados.em_negociacao` (esse cruzamento continua existindo, mas
- * só como o filtro `renegociacao` do parágrafo acima).
- *
- * AJUSTE 1 (rodada seguinte) — "valor_adimplente" e
- * "taxa_adimplencia_percentual" usam a mesma classificação histórica do
- * Ajuste Crítico 1 (numerador = soma dos pagamentos ADIMPLENTE), calculados
- * já prontos aqui no backend — nunca derivados no frontend por subtração
- * (ex.: `total - inadimplente`), porque isso daria errado sempre que houver
- * cobranças "A_VENCER" no período (que não entram nem no numerador de
- * inadimplência, nem no de adimplência).
+ * só como o filtro `renegociacao` do parágrafo acima). Sem mudança neste
+ * ajuste.
  *
  * Cacheado em memória por 4 minutos, por combinação exata de
- * (venc_de, venc_ate, renegociacao, em_juridico, bloqueado, visao_faixas).
- * O cache é limpo sempre que a lista de exclusões manuais ou de
- * palavras-chave muda. AJUSTE 2 — "forcar=true" ignora a LEITURA do cache
- * (sempre busca dados frescos do Asaas para essa chamada), mas o resultado
- * novo ainda é gravado no cache ao final, com o TTL normal — as próximas
- * chamadas sem "forcar=" voltam a se beneficiar dele.
+ * (venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia,
+ * visao_faixas). O cache é limpo sempre que a lista de exclusões manuais
+ * ou de palavras-chave muda. AJUSTE 2 — "forcar=true" ignora a LEITURA do
+ * cache (sempre busca dados frescos do Asaas para essa chamada), mas o
+ * resultado novo ainda é gravado no cache ao final, com o TTL normal — as
+ * próximas chamadas sem "forcar=" voltam a se beneficiar dele.
  */
 exports.resumo = async (req, res, next) => {
   try {
@@ -461,6 +552,7 @@ exports.resumo = async (req, res, next) => {
       renegociacao: renegociacaoParam,
       em_juridico: emJuridicoParam,
       bloqueado: bloqueadoParam,
+      tipo_pendencia: tipoPendenciaParam,
       visao_faixas: visaoFaixasParam,
     } = req.query;
 
@@ -484,6 +576,11 @@ exports.resumo = async (req, res, next) => {
       return res.status(400).json({ error: erroBloqueado });
     }
 
+    const { valor: tipoPendencia, erro: erroTipoPendencia } = validarTipoPendencia(tipoPendenciaParam);
+    if (erroTipoPendencia) {
+      return res.status(400).json({ error: erroTipoPendencia });
+    }
+
     const visaoFaixas = visaoFaixasParam === undefined ? 'aberto' : visaoFaixasParam;
     if (!VISAO_FAIXAS_VALIDAS.includes(visaoFaixas)) {
       return res.status(400).json({ error: '"visao_faixas" deve ser "aberto" ou "historico".' });
@@ -495,7 +592,7 @@ exports.resumo = async (req, res, next) => {
     // a se beneficiar dele normalmente.
     const forcar = req.query.forcar === 'true';
 
-    const chaveCache = `inadimplencia:resumo:${vencDe}:${vencAte}:${renegociacao}:${emJuridico}:${bloqueado}:${visaoFaixas}`;
+    const chaveCache = `inadimplencia:resumo:${vencDe}:${vencAte}:${renegociacao}:${emJuridico}:${bloqueado}:${tipoPendencia}:${visaoFaixas}`;
     const cacheado = forcar ? undefined : cache.get(chaveCache);
     if (cacheado) {
       return res.json(cacheado);
@@ -534,18 +631,20 @@ exports.resumo = async (req, res, next) => {
 
     const valorTotalFaturado = conjuntoTrabalho.reduce((soma, p) => soma + (Number(p.value) || 0), 0);
 
-    // AJUSTE CRÍTICO 1 — classificação histórica por data de pagamento.
-    // AJUSTE 1 (rodada seguinte) — "valor_adimplente"/"taxa_adimplencia_percentual"
-    // usam a mesma classificação, com numerador próprio (ADIMPLENTE), igual
-    // já era feito em /evolucao-mensal — não é o complementar de
-    // taxa_inadimplencia_percentual, já que cobranças "A_VENCER" não entram
-    // em nenhum dos dois numeradores (ver docblock do endpoint).
+    // AJUSTE CRÍTICO 3 — "valor_inadimplente"/"valor_adimplente" por STATUS
+    // ATUAL do Asaas (ver STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA/
+    // STATUS_ADIMPLENTE no topo do arquivo) — não mais pela classificação
+    // histórica por data de pagamento (`classificarPagamento`, que segue
+    // existindo só para "faixas"/"criticos_90_dias", ver AJUSTE 5).
+    // AJUSTE 4 — "tipo_pendencia" restringe quais status entram em
+    // "valor_inadimplente"; "valor_adimplente" nunca é afetado por ele.
+    const statusInadimplenteValidos = STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA[tipoPendencia];
     let valorInadimplente = 0;
     let valorAdimplente = 0;
     for (const pagamento of conjuntoTrabalho) {
-      const classe = classificarPagamento(pagamento, hojeStr, diasTolerancia);
-      if (classe === 'INADIMPLENTE') valorInadimplente += Number(pagamento.value) || 0;
-      else if (classe === 'ADIMPLENTE') valorAdimplente += Number(pagamento.value) || 0;
+      const valor = Number(pagamento.value) || 0;
+      if (statusInadimplenteValidos.includes(pagamento.status)) valorInadimplente += valor;
+      else if (STATUS_ADIMPLENTE.includes(pagamento.status)) valorAdimplente += valor;
     }
     const taxaInadimplencia = calcularTaxa(valorTotalFaturado, valorInadimplente);
     const taxaAdimplencia = calcularTaxa(valorTotalFaturado, valorAdimplente);
@@ -623,7 +722,7 @@ exports.resumo = async (req, res, next) => {
 };
 
 /**
- * GET /api/inadimplencia/evolucao-mensal?venc_de=&venc_ate=&renegociacao=&em_juridico=&bloqueado=
+ * GET /api/inadimplencia/evolucao-mensal?venc_de=&venc_ate=&renegociacao=&em_juridico=&bloqueado=&tipo_pendencia=
  *
  * Mesma base de cálculo do /resumo — mesma exclusão combinada e mesmos
  * cross-references de renegociacao/em_juridico/bloqueado — mas agrupada por
@@ -632,27 +731,32 @@ exports.resumo = async (req, res, next) => {
  * dentro do intervalo aparece no resultado, mesmo sem nenhum pagamento
  * naquele mês (valores zerados; as duas taxas ficam 0%).
  *
- * AJUSTE CRÍTICO 1 — "valor_inadimplente"/"taxa_inadimplencia_percentual"/
- * "taxa_adimplencia_percentual" usam a mesma classificação histórica por
- * data de pagamento do /resumo (`classificarPagamento`), não mais o status
- * atual. IMPORTANTE: "taxa_adimplencia_percentual" NÃO é mais o simples
- * complementar de "taxa_inadimplencia_percentual" (100 - taxa) — é
- * calculada com seu próprio numerador (soma dos valores ADIMPLENTES) sobre
+ * AJUSTE CRÍTICO 3 (substitui o AJUSTE CRÍTICO 1) — "valor_inadimplente"/
+ * "taxa_inadimplencia_percentual"/"taxa_adimplencia_percentual" usam o
+ * mesmo critério por STATUS ATUAL do /resumo (ver docblock lá e
+ * `STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA`/`STATUS_ADIMPLENTE` no topo do
+ * arquivo), não mais a classificação histórica por data de pagamento.
+ * "taxa_adimplencia_percentual" continua NÃO sendo o simples complementar
+ * de "taxa_inadimplencia_percentual" (100 - taxa): tem numerador próprio
+ * (soma dos valores com status RECEIVED/RECEIVED_IN_CASH) sobre
  * "valor_total_faturado". As duas taxas só somam 100% quando não há
- * nenhuma cobrança "A_VENCER" (vencimento futuro, ainda não paga) no mês —
- * quando há, a diferença é exatamente o valor "a vencer" daquele mês, que
- * não entra em nenhuma das duas (ver AJUSTE CRÍTICO 1 no README).
+ * nenhuma cobrança do "terceiro grupo" (nem inadimplente nem adimplente —
+ * o mais comum sendo status PENDING, ainda não vencida) no mês.
  *
- * PERÍODO DE TOLERÂNCIA — mesma regra do /resumo: a classificação usa a
- * "data limite efetiva" (dueDate + dias de tolerância vigentes,
- * GET/PATCH /api/config/tolerancia-dias) em vez do vencimento cru — ver
- * `classificarPagamento` e o README.
+ * AJUSTE 4 — aceita "tipo_pendencia" (mesma semântica do /resumo): afeta
+ * "valor_inadimplente"/"taxa_inadimplencia_percentual" de cada mês, nunca
+ * "valor_adimplente"/"taxa_adimplencia_percentual".
+ *
+ * PERÍODO DE TOLERÂNCIA — não é mais lida por este endpoint: desde o
+ * AJUSTE CRÍTICO 3, nenhum dos números aqui devolvidos depende de
+ * comparação de datas (só de status atual). Fica só no /resumo, pra
+ * "faixas"/"criticos_90_dias" (que este endpoint não tem).
  *
  * Cacheado em memória por 4 minutos, por combinação exata de
- * (venc_de, venc_ate, renegociacao, em_juridico, bloqueado), em um
- * namespace de cache separado do /resumo. AJUSTE 2 — aceita "forcar=true"
- * com a mesma semântica do /resumo: ignora a leitura do cache, mas ainda
- * grava o resultado novo.
+ * (venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia),
+ * em um namespace de cache separado do /resumo. AJUSTE 2 — aceita
+ * "forcar=true" com a mesma semântica do /resumo: ignora a leitura do
+ * cache, mas ainda grava o resultado novo.
  */
 exports.evolucaoMensal = async (req, res, next) => {
   try {
@@ -662,6 +766,7 @@ exports.evolucaoMensal = async (req, res, next) => {
       renegociacao: renegociacaoParam,
       em_juridico: emJuridicoParam,
       bloqueado: bloqueadoParam,
+      tipo_pendencia: tipoPendenciaParam,
     } = req.query;
 
     const { vencDe, vencAte, erro: erroPeriodo } = resolverPeriodo(vencDeParam, vencAteParam);
@@ -684,11 +789,16 @@ exports.evolucaoMensal = async (req, res, next) => {
       return res.status(400).json({ error: erroBloqueado });
     }
 
+    const { valor: tipoPendencia, erro: erroTipoPendencia } = validarTipoPendencia(tipoPendenciaParam);
+    if (erroTipoPendencia) {
+      return res.status(400).json({ error: erroTipoPendencia });
+    }
+
     // AJUSTE 2 — mesma semântica de "forcar=true" do /resumo (ver docblock
     // acima): ignora a leitura do cache, mas ainda grava o resultado novo.
     const forcar = req.query.forcar === 'true';
 
-    const chaveCache = `inadimplencia:evolucao-mensal:${vencDe}:${vencAte}:${renegociacao}:${emJuridico}:${bloqueado}`;
+    const chaveCache = `inadimplencia:evolucao-mensal:${vencDe}:${vencAte}:${renegociacao}:${emJuridico}:${bloqueado}:${tipoPendencia}`;
     const cacheado = forcar ? undefined : cache.get(chaveCache);
     if (cacheado) {
       return res.json(cacheado);
@@ -696,10 +806,7 @@ exports.evolucaoMensal = async (req, res, next) => {
 
     const franquiaId = await resolverFranquiaIdOuPadrao(req);
 
-    const [{ validos: pagamentosValidos }, diasTolerancia] = await Promise.all([
-      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
-      getDiasTolerancia(franquiaId),
-    ]);
+    const { validos: pagamentosValidos } = await buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte });
 
     let conjuntoTrabalho = pagamentosValidos;
     if (renegociacao !== 'todos' || emJuridico !== 'todos' || bloqueado !== 'todos') {
@@ -717,7 +824,10 @@ exports.evolucaoMensal = async (req, res, next) => {
       );
     }
 
-    const hojeStr = formatarDataISO(new Date());
+    // AJUSTE CRÍTICO 3 — mesmo critério por status atual do /resumo (ver
+    // docblock acima e STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA/
+    // STATUS_ADIMPLENTE no topo do arquivo).
+    const statusInadimplenteValidos = STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA[tipoPendencia];
     const meses = gerarChavesMeses(vencDe, vencAte);
     const porMes = new Map(meses.map((mes) => [mes, { valorTotalFaturado: 0, valorInadimplente: 0, valorAdimplente: 0 }]));
 
@@ -729,10 +839,9 @@ exports.evolucaoMensal = async (req, res, next) => {
       const valor = Number(pagamento.value) || 0;
       acumulado.valorTotalFaturado += valor;
 
-      const classe = classificarPagamento(pagamento, hojeStr, diasTolerancia);
-      if (classe === 'INADIMPLENTE') acumulado.valorInadimplente += valor;
-      else if (classe === 'ADIMPLENTE') acumulado.valorAdimplente += valor;
-      // A_VENCER: não soma em nenhum dos dois — ver docblock.
+      if (statusInadimplenteValidos.includes(pagamento.status)) acumulado.valorInadimplente += valor;
+      else if (STATUS_ADIMPLENTE.includes(pagamento.status)) acumulado.valorAdimplente += valor;
+      // Nem um nem outro (ex.: PENDING, ainda não vencida): não soma em nenhum dos dois — ver docblock.
     }
 
     const resultado = meses.map((mes) => {

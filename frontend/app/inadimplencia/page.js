@@ -17,12 +17,24 @@ import { IconKey, IconRefresh, IconCheck } from "@/components/icons";
 
 const OPCOES_FAIXA = [
   { value: "todas", label: "Todas" },
-  { value: "0_20", label: "0-20 dias" },
-  { value: "20_30", label: "20-30 dias" },
-  { value: "30_40", label: "30-40 dias" },
-  { value: "40_50", label: "40-50 dias" },
-  { value: "50_100", label: "50-100 dias" },
-  { value: "100_180", label: "100-180 dias" },
+  { value: "ate_vencimento", label: "Até o vencimento" },
+  { value: "1_20", label: "1-20 dias" },
+  { value: "21_30", label: "21-30 dias" },
+  { value: "31_40", label: "31-40 dias" },
+  { value: "41_50", label: "41-50 dias" },
+  { value: "51_100", label: "51-100 dias" },
+  { value: "acima_100", label: "100+ dias" },
+];
+
+// Opções do filtro "Tipo de pendência" (AJUSTE 4) — separa, dentro de
+// "Valor inadimplente", as cobranças vencidas (status OVERDUE no Asaas) das
+// confirmadas/crédito futuro (status CONFIRMED, dinheiro ainda não caiu na
+// conta). Igual aos demais filtros "pesados" da tela (período, status do
+// associado), só aplica de fato depois do botão "Aplicar".
+const OPCOES_TIPO_PENDENCIA = [
+  { value: "todos", label: "Todas" },
+  { value: "vencidas", label: "Só vencidas" },
+  { value: "confirmadas", label: "Só confirmadas" },
 ];
 
 const STATUS_ASSOCIADO_VAZIO = { emNegociacao: false, bloqueado: false, emJuridico: false };
@@ -49,10 +61,15 @@ export default function InadimplenciaPage() {
   // jurídico) num único multi-select — cada chave marcada vira "sim" na
   // chamada à API, desmarcada vira "todos" (ver `params` em carregarDados).
   const [statusInput, setStatusInput] = useState(STATUS_ASSOCIADO_VAZIO);
+  // "Tipo de pendência" (AJUSTE 4) — mesmo padrão dos filtros acima: só
+  // aplica de fato depois de "Aplicar" (afeta valor_inadimplente, então
+  // dispara nova chamada ao Asaas).
+  const [tipoPendenciaInput, setTipoPendenciaInput] = useState("todos");
 
   const [vencDe, setVencDe] = useState("");
   const [vencAte, setVencAte] = useState("");
   const [status, setStatus] = useState(STATUS_ASSOCIADO_VAZIO);
+  const [tipoPendencia, setTipoPendencia] = useState("todos");
 
   // Toggle "Em aberto hoje" x "Histórico do período" do card de faixas —
   // diferente dos demais filtros, aplica na hora (não fica atrás do botão
@@ -112,6 +129,7 @@ export default function InadimplenciaPage() {
         renegociacao: status.emNegociacao ? "sim" : "todos",
         emJuridico: status.emJuridico ? "sim" : "todos",
         bloqueado: status.bloqueado ? "sim" : "todos",
+        tipoPendencia,
         forcar,
       };
 
@@ -138,7 +156,7 @@ export default function InadimplenciaPage() {
 
       await Promise.all([resumoPromise, evolucaoPromise]);
     },
-    [vencDe, vencAte, status, visaoFaixas]
+    [vencDe, vencAte, status, tipoPendencia, visaoFaixas]
   );
 
   useEffect(() => {
@@ -167,16 +185,19 @@ export default function InadimplenciaPage() {
     setVencDe(vencDeInput);
     setVencAte(vencAteInput);
     setStatus(statusInput);
+    setTipoPendencia(tipoPendenciaInput);
   }
 
   function handleLimpar() {
     setVencDeInput("");
     setVencAteInput("");
     setStatusInput(STATUS_ASSOCIADO_VAZIO);
+    setTipoPendenciaInput("todos");
     setFaixaSelecionada("todas");
     setVencDe("");
     setVencAte("");
     setStatus(STATUS_ASSOCIADO_VAZIO);
+    setTipoPendencia("todos");
   }
 
   return (
@@ -231,7 +252,7 @@ export default function InadimplenciaPage() {
         <>
           {/* Filtros */}
           <div className="rounded-2xl border border-border-soft bg-surface p-4 shadow-lg shadow-black/20">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
               <Campo label="Vencimento de">
                 <DatePicker value={vencDeInput} onChange={setVencDeInput} placeholder="Últimos 12 meses" />
               </Campo>
@@ -253,6 +274,19 @@ export default function InadimplenciaPage() {
               </Campo>
               <Campo label="Status do associado">
                 <StatusAssociadoFilter value={statusInput} onChange={setStatusInput} />
+              </Campo>
+              <Campo label="Tipo de pendência">
+                <select
+                  className={INPUT}
+                  value={tipoPendenciaInput}
+                  onChange={(e) => setTipoPendenciaInput(e.target.value)}
+                >
+                  {OPCOES_TIPO_PENDENCIA.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
               </Campo>
               <div className="flex items-end gap-2">
                 <button
