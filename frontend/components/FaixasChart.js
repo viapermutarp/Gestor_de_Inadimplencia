@@ -40,17 +40,19 @@ function formatPercentual(valor, total) {
 }
 
 /**
- * Gráfico de barras das 6 faixas de atraso (valor em R$ em cada uma, mais o
+ * Gráfico de barras das 7 faixas de atraso (valor em R$ em cada uma, mais o
  * percentual que representa sobre o total inadimplente do período).
  * `faixaSelecionada` (chave da faixa, ou "todas") controla o destaque: a
  * faixa escolhida no filtro fica em opacidade cheia, as demais ficam
  * esmaecidas — dá uma resposta visual imediata ao filtro "Faixa de atraso",
  * já que a API não filtra o próprio cálculo por faixa (ela sempre retorna
- * as 6 somas do período inteiro).
+ * as 7 somas do período inteiro).
  *
- * `visaoFaixas` ("aberto" | "historico") reflete o parâmetro `visao_faixas`
- * do backend, escolhido pelas abas no cabeçalho do card — trocar a aba
- * chama `onAlterarVisaoFaixas`, que a página usa para refazer a chamada a
+ * `visao` ("aberto" | "historico") reflete o parâmetro `visao` do backend
+ * (renomeado de `visao_faixas` — AJUSTE 6: agora controla, além destas
+ * faixas, também os 3 cards do topo da tela — ver ResumoInadimplenciaCards),
+ * escolhido pelas abas no cabeçalho deste card — trocar a aba chama
+ * `onAlterarVisao`, que a página usa para refazer a chamada a
  * GET /api/inadimplencia/resumo com o novo valor. "aberto" (padrão) é o
  * snapshot de hoje (só quem ainda não pagou); "historico" inclui quem
  * pagou com atraso no período, mesmo já com status atual de pago — ver
@@ -71,8 +73,8 @@ export default function FaixasChart({
   onSelecionarFaixa,
   loading,
   totalInadimplente,
-  visaoFaixas = "aberto",
-  onAlterarVisaoFaixas,
+  visao = "aberto",
+  onAlterarVisao,
 }) {
   const valores = FAIXAS.map((f) => Number(faixas?.[f.chave] ?? 0));
   const valorMaximo = Math.max(...valores, 0);
@@ -84,27 +86,27 @@ export default function FaixasChart({
         <div>
           <h3 className="text-sm font-semibold text-foreground">Valor em atraso por faixa</h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            {visaoFaixas === "historico"
-              ? "Histórico do período: inclui quem venceu no período e não pagou em dia — mesmo quem já pagou (com atraso)."
-              : "Em aberto hoje: só dívida ainda não paga neste momento."}
+            {visao === "historico"
+              ? "Histórico do período: inclui quem venceu no período e não pagou em dia — mesmo quem já pagou (com atraso). Também é o critério usado nos cards de Valor Inadimplente/Adimplente/Taxa acima."
+              : "Em aberto hoje: só dívida ainda não paga neste momento — mesmo critério usado nos cards acima."}
           </p>
         </div>
 
         <div className="flex shrink-0 rounded-xl border border-border-soft bg-surface-elevated p-1 text-xs font-medium">
           <button
             type="button"
-            onClick={() => onAlterarVisaoFaixas?.("aberto")}
+            onClick={() => onAlterarVisao?.("aberto")}
             className={`rounded-lg px-3 py-1.5 transition-colors ${
-              visaoFaixas === "aberto" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+              visao === "aberto" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
             }`}
           >
             Em aberto hoje
           </button>
           <button
             type="button"
-            onClick={() => onAlterarVisaoFaixas?.("historico")}
+            onClick={() => onAlterarVisao?.("historico")}
             className={`rounded-lg px-3 py-1.5 transition-colors ${
-              visaoFaixas === "historico" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+              visao === "historico" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
             }`}
           >
             Histórico do período

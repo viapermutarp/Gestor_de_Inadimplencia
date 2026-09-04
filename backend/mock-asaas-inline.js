@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
  * Mock inline do Asaas para o teste do AJUSTE CRÍTICO 3 / AJUSTE 4 /
- * AJUSTE 5 (backend/test-status-ajustes.js) — dataset pequeno e desenhado
- * caso a caso, em vez de reaproveitar o dataset grande e antigo de
- * scripts/mock-asaas-server.js (feito pro esquema de 6 faixas / classificação
- * por data que este ajuste substitui).
+ * AJUSTE 5 / AJUSTE 6 / AJUSTE 7 (backend/test-status-ajustes.js) — dataset
+ * pequeno e desenhado caso a caso, em vez de reaproveitar o dataset grande e
+ * antigo de scripts/mock-asaas-server.js (feito pro esquema de 6 faixas /
+ * classificação por data que este ajuste substitui).
  */
 require('dotenv').config();
 const http = require('http');
@@ -30,6 +30,10 @@ function diasAtras(n) {
 const CLIENTES = {
   cus_a: { name: 'Cliente A', cpfCnpj: '11.111.111/0001-11' },
   cus_b: { name: 'Cliente B', cpfCnpj: '22.222.222/0001-22' },
+  // Grupo C (AJUSTE 7 — exclusão por CPF/CNPJ e nome) — clientes próprios,
+  // sem relação com cus_a/cus_b, pra isolar o teste de exclusão.
+  cus_c: { name: 'Empresa Terceira', cpfCnpj: '33.333.333/0001-33' },
+  cus_d: { name: 'Quarta Pessoa', cpfCnpj: '44.444.444/0001-44' },
 };
 
 // dueOffset/payOffset são "dias atrás" (ver diasAtras). diasAtraso de um
@@ -61,6 +65,20 @@ const FIXTURES = [
   { id: 'b_pago_31_40', customer: 'cus_b', value: 606, dueOffset: 45, status: 'RECEIVED', payOffset: 8 },
   { id: 'b_pago_41_50', customer: 'cus_a', value: 707, dueOffset: 48, status: 'RECEIVED', payOffset: 2 },
   { id: 'b_tolerancia', customer: 'cus_b', value: 777, dueOffset: 2, status: 'OVERDUE', payOffset: null },
+  // AJUSTE 6/CORREÇÃO — pago ANTES do vencimento (payOffset > dueOffset =>
+  // diasAtraso = dueOffset - payOffset < 0 => cai em "ate_vencimento" no
+  // modo "historico"). Faltava um caso assim no dataset original: todos os
+  // outros pagamentos "pagos" do Grupo B foram pagos COM atraso, então a
+  // faixa "ate_vencimento" nunca recebia nada além de OVERDUE ainda não
+  // pago — exatamente o bug relatado (ver test-status-ajustes.js).
+  { id: 'b_pago_em_dia', customer: 'cus_a', value: 888, dueOffset: 70, status: 'RECEIVED', payOffset: 75 },
+
+  // ---- Grupo C: AJUSTE 7 (exclusão por CPF/CNPJ e nome) — período
+  // próprio (400-410 dias atrás), bem afastado dos Grupos A (150-340) e B
+  // (-5-140), pra não interferir nas somas deles quando a exclusão por
+  // palavra-chave estiver configurada. ----
+  { id: 'c_por_cpf', customer: 'cus_c', value: 1500, dueOffset: 405, status: 'OVERDUE', payOffset: null },
+  { id: 'c_por_nome', customer: 'cus_d', value: 2500, dueOffset: 402, status: 'OVERDUE', payOffset: null },
 ];
 
 const PAGAMENTOS = FIXTURES.map((f) => ({

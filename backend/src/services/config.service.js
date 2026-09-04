@@ -108,11 +108,14 @@ const CHAVE_PALAVRAS_EXCLUIDAS = 'inadimplencia_palavras_excluidas';
 /**
  * Lista de palavras-chave usadas para excluir automaticamente cobranças do
  * cálculo de Taxa de Inadimplência (ver GET /api/inadimplencia/resumo):
- * qualquer pagamento do Asaas cuja descrição contenha (case-insensitive,
- * substring) uma dessas palavras é ignorado no cálculo — independente da
- * lista manual por ID (ver model CobrancaIgnorada). Persistida na tabela
- * "configuracoes" como um array JSON serializado em string (a coluna
- * "valor" é texto puro), por isso o parse/stringify aqui.
+ * qualquer pagamento do Asaas cuja descrição, CPF/CNPJ (com ou sem
+ * formatação) ou nome/razão social do associado contenha (case-insensitive,
+ * substring) uma dessas palavras é ignorado no cálculo (AJUSTE 7 — antes,
+ * só a descrição) — independente da lista manual por ID (ver model
+ * CobrancaIgnorada). Ver `separarExcluidos` em inadimplencia.controller.js
+ * para o critério de match completo. Persistida na tabela "configuracoes"
+ * como um array JSON serializado em string (a coluna "valor" é texto
+ * puro), por isso o parse/stringify aqui.
  */
 async function getPalavrasExcluidas(franquiaId) {
   const valor = await getConfigValor(CHAVE_PALAVRAS_EXCLUIDAS, franquiaId);

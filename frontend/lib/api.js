@@ -326,9 +326,20 @@ export function criarCadastro(payload) {
  * segundos). Todos os parâmetros são opcionais: sem `vencDe`/`vencAte`, o
  * backend usa os últimos 12 meses; sem `renegociacao`/`emJuridico`/`bloqueado`,
  * usa "todos" nos três. Esses três aceitam exatamente "todos" | "sim" | "nao".
- * `visaoFaixas` aceita "aberto" (padrão, snapshot de hoje) | "historico"
- * (mesma regra de classificação por data de pagamento usada em
- * `valor_inadimplente`) — controla só `faixas`/`criticos_90_dias`.
+ *
+ * `visao` (renomeado de `visaoFaixas`/"visao_faixas" — AJUSTE 6) aceita
+ * "aberto" (padrão, sem regressão) | "historico", e agora controla AO MESMO
+ * TEMPO `faixas`/`criticos_90_dias` E `valor_inadimplente`/
+ * `valor_adimplente`/as duas taxas (antes, só as faixas):
+ *   - "aberto": os 3 cards por STATUS ATUAL de cada cobrança no Asaas
+ *     (snapshot de hoje).
+ *   - "historico": os 3 cards pela mesma classificação por data de
+ *     pagamento vs. vencimento que já alimentava só as faixas — reflete o
+ *     comportamento do associado no período (pagou em dia ou não),
+ *     independente do status atual.
+ * `tipoPendencia` só tem efeito quando `visao: "aberto"` — ver docblock
+ * abaixo.
+ *
  * `forcar: true` ignora o cache do backend para ESTA chamada (sempre busca
  * dados frescos do Asaas), mas o resultado novo ainda fica cacheado lá para
  * as chamadas seguintes — usado pelo botão "Atualizar" da tela.
@@ -342,8 +353,12 @@ export function criarCadastro(payload) {
  * backend) — filtra quais status entram em "valor_inadimplente"/
  * "taxa_inadimplencia_percentual": "vencidas" = só status OVERDUE,
  * "confirmadas" = só status CONFIRMED (crédito futuro, ainda não caiu na
- * conta). Nunca afeta "valor_adimplente" nem "valor_total_faturado" — ver
- * README, seção "Taxa de Inadimplência".
+ * conta). Nunca afeta "valor_adimplente" nem "valor_total_faturado". SÓ TEM
+ * EFEITO quando `visao: "aberto"` (padrão) — em `visao: "historico"` é
+ * ignorado pelo backend (não há um equivalente de "vencidas"/"confirmadas"
+ * numa classificação por data); o frontend desabilita visualmente o campo
+ * nesse caso (ver app/inadimplencia/page.js) — ver README, seção "Taxa de
+ * Inadimplência".
  */
 export function getResumoInadimplencia({
   vencDe,
@@ -352,7 +367,7 @@ export function getResumoInadimplencia({
   emJuridico,
   bloqueado,
   tipoPendencia,
-  visaoFaixas,
+  visao,
   forcar,
 } = {}) {
   const params = new URLSearchParams();
@@ -362,7 +377,7 @@ export function getResumoInadimplencia({
   if (emJuridico) params.set("em_juridico", emJuridico);
   if (bloqueado) params.set("bloqueado", bloqueado);
   if (tipoPendencia) params.set("tipo_pendencia", tipoPendencia);
-  if (visaoFaixas) params.set("visao_faixas", visaoFaixas);
+  if (visao) params.set("visao", visao);
   if (forcar) params.set("forcar", "true");
 
   const query = params.toString();
@@ -374,8 +389,10 @@ export function getResumoInadimplencia({
  * (valor_total_faturado, valor_inadimplente, taxa_inadimplencia_percentual),
  * mais taxa_adimplencia_percentual, agrupados por mês ("YYYY-MM"). Mesmos
  * parâmetros de filtro do /resumo (`renegociacao`/`emJuridico`/`bloqueado`/
- * `tipoPendencia`, `forcar`), mas não aceita `visaoFaixas` (esse endpoint
- * não devolve faixas).
+ * `tipoPendencia`, `forcar`), mas NÃO aceita `visao` (AJUSTE 6 — a
+ * unificação com o toggle "aberto"/"historico" foi só para os 3 cards do
+ * /resumo; este endpoint continua exclusivamente por status atual, sempre,
+ * e também não devolve faixas).
  */
 export function getEvolucaoMensal({ vencDe, vencAte, renegociacao, emJuridico, bloqueado, tipoPendencia, forcar } = {}) {
   const params = new URLSearchParams();
@@ -419,8 +436,10 @@ export function atualizarWebhookCadastroUrl(url) {
 
 /**
  * GET /api/config/palavras-excluidas — { palavras: string[] } usadas para
- * excluir automaticamente cobranças do cálculo de Taxa de Inadimplência
- * pela descrição (contains, case-insensitive).
+ * excluir automaticamente cobranças do cálculo de Taxa de Inadimplência.
+ * Cada palavra casa (contains, case-insensitive) contra a descrição da
+ * cobrança, o CPF/CNPJ do associado (com ou sem formatação) ou o nome/razão
+ * social do associado — ver ExclusoesPanel.js.
  */
 export function getPalavrasExcluidas() {
   return request("/api/config/palavras-excluidas");

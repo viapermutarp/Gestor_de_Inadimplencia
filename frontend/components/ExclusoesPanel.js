@@ -20,8 +20,9 @@ const INPUT =
 /**
  * Seção expansível/colapsável da tela de Taxa de Inadimplência para
  * gerenciar os dois mecanismos de exclusão de cobranças do cálculo (ver
- * backend: AJUSTE 1) — palavras-chave (exclusão automática por descrição) e
- * a lista manual por ID de cobrança. Carrega os dados só na primeira vez
+ * backend: AJUSTE 1) — palavras-chave (exclusão automática por descrição,
+ * CPF/CNPJ ou nome/razão social do associado — AJUSTE 7) e a lista manual
+ * por ID de cobrança. Carrega os dados só na primeira vez
  * que é aberta (evita 2 chamadas extras à API em toda visita à página,
  * já que a maioria dos usuários provavelmente nunca abre este painel).
  *
@@ -182,8 +183,9 @@ export default function ExclusoesPanel({ onAlterado }) {
               Palavras-chave excluídas
             </h4>
             <p className="mt-1 text-xs text-muted-foreground">
-              Cobrança cuja descrição contenha uma dessas palavras (sem diferenciar maiúsculas/minúsculas) é
-              excluída automaticamente do cálculo.
+              Cobrança cuja descrição, CPF/CNPJ ou nome/razão social do associado contenha uma dessas palavras
+              (sem diferenciar maiúsculas/minúsculas, com ou sem pontuação no CPF/CNPJ) é excluída
+              automaticamente do cálculo.
             </p>
 
             {erroPalavras && (

@@ -53,8 +53,19 @@ function CardSecundario({ label, valor, subtitulo, Icon, loading }) {
  * (dois cards "hero" lado a lado na primeira linha, fonte bem maior) —
  * são os dois números mais importantes da tela, um espelhando o outro
  * (vermelho = risco, verde = saúde da carteira).
+ *
+ * `visao` ("aberto" | "historico", AJUSTE 6) — "Valor inadimplente",
+ * "Valor adimplente" e "Taxa de inadimplência" mudam de critério conforme
+ * esse parâmetro (ver backend: `visao=aberto` é por status atual;
+ * `visao=historico` é por data de pagamento vs. vencimento, mesma
+ * classificação que já alimentava só o gráfico de faixas abaixo). Como o
+ * controle desse toggle mora no card de faixas (mais abaixo na tela), os
+ * 2 cards "hero" mostram um selo indicando o modo atual, pra deixar claro
+ * que o número mudou de critério sem precisar rolar a tela pra ver o
+ * toggle.
  */
-export default function ResumoInadimplenciaCards({ resumo, loading }) {
+export default function ResumoInadimplenciaCards({ resumo, loading, visao = "aberto" }) {
+  const rotuloVisao = visao === "historico" ? "Histórico do período" : "Em aberto hoje";
   const taxa = resumo?.taxa_inadimplencia_percentual ?? 0;
   const cores = corDaTaxa(taxa);
   const taxaAdimplencia = resumo?.taxa_adimplencia_percentual ?? 0;
@@ -68,6 +79,7 @@ export default function ResumoInadimplenciaCards({ resumo, loading }) {
     {
       label: "Valor inadimplente",
       valor: formatCurrency(resumo?.valor_inadimplente ?? 0),
+      subtitulo: rotuloVisao,
       Icon: IconBanknote,
     },
     {
@@ -108,6 +120,7 @@ export default function ResumoInadimplenciaCards({ resumo, loading }) {
           <p className="mt-1.5 text-xs font-normal uppercase tracking-wide text-muted-foreground">
             Taxa de inadimplência
           </p>
+          <p className="mt-0.5 text-[11px] text-muted-foreground/70">{rotuloVisao}</p>
         </div>
 
         {/* Valor adimplente — card hero verde, o contraponto positivo do
@@ -134,6 +147,7 @@ export default function ResumoInadimplenciaCards({ resumo, loading }) {
           <p className="mt-1.5 text-xs font-normal uppercase tracking-wide text-muted-foreground">
             Valor adimplente
           </p>
+          <p className="mt-0.5 text-[11px] text-status-green/60">{rotuloVisao}</p>
         </div>
       </div>
 

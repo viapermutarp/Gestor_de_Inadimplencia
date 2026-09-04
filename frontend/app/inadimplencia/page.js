@@ -30,7 +30,10 @@ const OPCOES_FAIXA = [
 // "Valor inadimplente", as cobranças vencidas (status OVERDUE no Asaas) das
 // confirmadas/crédito futuro (status CONFIRMED, dinheiro ainda não caiu na
 // conta). Igual aos demais filtros "pesados" da tela (período, status do
-// associado), só aplica de fato depois do botão "Aplicar".
+// associado), só aplica de fato depois do botão "Aplicar". AJUSTE 6 — sem
+// efeito quando o toggle "Histórico do período" (ver `visao`) está ativo,
+// já que esse modo classifica por data de pagamento, não por status atual
+// — o campo fica desabilitado na tela nesse caso (ver JSX abaixo).
 const OPCOES_TIPO_PENDENCIA = [
   { value: "todos", label: "Todas" },
   { value: "vencidas", label: "Só vencidas" },
@@ -71,11 +74,14 @@ export default function InadimplenciaPage() {
   const [status, setStatus] = useState(STATUS_ASSOCIADO_VAZIO);
   const [tipoPendencia, setTipoPendencia] = useState("todos");
 
-  // Toggle "Em aberto hoje" x "Histórico do período" do card de faixas —
-  // diferente dos demais filtros, aplica na hora (não fica atrás do botão
+  // Toggle "Em aberto hoje" x "Histórico do período" — AJUSTE 6: além do
+  // gráfico de faixas (uso original), agora também controla os 3 cards do
+  // topo (Valor Inadimplente/Adimplente/Taxa) — mesmo parâmetro `visao` do
+  // backend (renomeado de `visao_faixas`, que só afetava as faixas).
+  // Diferente dos demais filtros, aplica na hora (não fica atrás do botão
   // "Aplicar"): é um controle do próprio card, não um filtro de consulta
   // pesado como vencimento/status do associado.
-  const [visaoFaixas, setVisaoFaixas] = useState("aberto");
+  const [visao, setVisao] = useState("aberto");
 
   // "Faixa de atraso" é só um destaque visual sobre o gráfico de faixas — a
   // API sempre devolve as 6 somas do período inteiro (não filtra por
@@ -133,7 +139,7 @@ export default function InadimplenciaPage() {
         forcar,
       };
 
-      const resumoPromise = getResumoInadimplencia({ ...params, visaoFaixas })
+      const resumoPromise = getResumoInadimplencia({ ...params, visao })
         .then((data) => setResumo(data))
         .catch((err) => {
           if (err instanceof ApiError && err.status === 400 && /asaas-key/i.test(err.message)) {
@@ -156,7 +162,7 @@ export default function InadimplenciaPage() {
 
       await Promise.all([resumoPromise, evolucaoPromise]);
     },
-    [vencDe, vencAte, status, tipoPendencia, visaoFaixas]
+    [vencDe, vencAte, status, tipoPendencia, visao]
   );
 
   useEffect(() => {
@@ -280,6 +286,12 @@ export default function InadimplenciaPage() {
                   className={INPUT}
                   value={tipoPendenciaInput}
                   onChange={(e) => setTipoPendenciaInput(e.target.value)}
+                  disabled={visao === "historico"}
+                  title={
+                    visao === "historico"
+                      ? 'Sem efeito em "Histórico do período" — esse modo classifica por data de pagamento, não por status atual.'
+                      : undefined
+                  }
                 >
                   {OPCOES_TIPO_PENDENCIA.map((o) => (
                     <option key={o.value} value={o.value}>
@@ -319,7 +331,7 @@ export default function InadimplenciaPage() {
 
           {erro && <ErrorBanner message={erro} onRetry={carregarDados} />}
 
-          <ResumoInadimplenciaCards resumo={resumo} loading={loading} />
+          <ResumoInadimplenciaCards resumo={resumo} loading={loading} visao={visao} />
 
           {!loading && resumo?.excluidos?.quantidade > 0 && (
             <p className="-mt-2 text-xs text-muted-foreground">
@@ -348,8 +360,8 @@ export default function InadimplenciaPage() {
               onSelecionarFaixa={setFaixaSelecionada}
               loading={loading}
               totalInadimplente={resumo?.valor_inadimplente}
-              visaoFaixas={visaoFaixas}
-              onAlterarVisaoFaixas={setVisaoFaixas}
+              visao={visao}
+              onAlterarVisao={setVisao}
             />
             <TopDevedores devedores={resumo?.top_devedores} loading={loading} />
           </div>

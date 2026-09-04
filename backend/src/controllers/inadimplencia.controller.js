@@ -4,7 +4,10 @@ const { listarPagamentos, obterClientesPorId, AsaasApiError } = require('../serv
 const { resolverFranquiaIdOuPadrao } = require('../services/franquiaPadrao.service');
 
 const FILTRO_TRI_ESTADO_VALIDAS = ['todos', 'sim', 'nao'];
-const VISAO_FAIXAS_VALIDAS = ['aberto', 'historico'];
+const VISAO_VALIDAS = ['aberto', 'historico']; // AJUSTE 6 — renomeado de "visao_faixas"
+// pra "visao": o parâmetro deixou de controlar só as faixas de atraso e passou a
+// controlar também valor_inadimplente/valor_adimplente/as duas taxas do topo da
+// tela (ver docblock de `resumo`).
 const TIPO_PENDENCIA_VALIDAS = ['todos', 'vencidas', 'confirmadas'];
 const CACHE_TTL_MS = 4 * 60 * 1000; // 4 minutos — dentro da faixa de 3-5min pedida.
 const MESES_PADRAO = 12;
@@ -36,6 +39,20 @@ const PALAVRA_RENEGOCIACAO = 'renegociação';
  *     não foi pago). É esperado e correto que
  *     `valor_total_faturado !== valor_inadimplente + valor_adimplente`
  *     sempre que houver cobranças desse terceiro grupo no período.
+ *
+ * AJUSTE 6 — esta classificação por STATUS ATUAL só é usada quando "visao"
+ * (renomeado de "visao_faixas") = "aberto" (padrão, sem regressão). Em
+ * "visao=historico", "valor_inadimplente"/"valor_adimplente" passam a usar a
+ * MESMA classificação histórica por data de `classificarPagamento` que já
+ * alimenta "faixas"/"criticos_90_dias" — ver
+ * `computarValorInadimplenteAdimplenteHistorico` e o docblock de `resumo`.
+ * Consequência confirmada explicitamente: o filtro "tipo_pendencia" (que só
+ * faz sentido sobre status atual — OVERDUE x CONFIRMED) fica SEM EFEITO
+ * quando "visao=historico" — não existe um equivalente de "só vencidas"/"só
+ * confirmadas" numa classificação por data de pagamento. O frontend
+ * desabilita visualmente o campo "Tipo de pendência" nesse caso, pra deixar
+ * isso explícito pro usuário (em vez de aceitar o valor e simplesmente
+ * ignorá-lo em silêncio).
  */
 const STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA = {
   todos: ['OVERDUE', 'CONFIRMED'],
@@ -190,6 +207,13 @@ function validarTipoPendencia(valorParam) {
  * > entre vencimento e hoje, quando ainda não pago, use a data limite
  * > efetiva"), e é o que faz uma cobrança vencida ontem, ainda não paga, com
  * > 2 dias de tolerância, não ser contada como inadimplência real ainda.
+ *
+ * AJUSTE 6 — além de "faixas"/"criticos_90_dias" (uso original), esta
+ * classificação passou a alimentar também "valor_inadimplente"/
+ * "valor_adimplente" quando "visao=historico" (ver
+ * `computarValorInadimplenteAdimplenteHistorico`) — SEM NENHUMA mudança de
+ * comportamento aqui: é a mesma função, mesmas 3 categorias, só passou a
+ * ser lida por mais um lugar.
  */
 function classificarPagamento(pagamento, hojeStr, diasTolerancia = 0) {
   const dataLimiteEfetiva = somarDias(pagamento.dueDate, diasTolerancia);
@@ -241,23 +265,66 @@ async function buscarExclusoesConfiguradas(reqPrisma, franquiaId) {
 }
 
 /**
- * Separa os pagamentos em "válidos" (entram no cálculo) e "excluídos". Um
- * pagamento é excluído se: (a) seu ID estiver na lista manual, OU (b) sua
- * descrição contiver, de forma case-insensitive e por substring, alguma das
- * palavras configuradas. Os dois mecanismos são combinados com OU — como
- * cada pagamento passa por essa checagem uma única vez, um pagamento pego
- * pelos dois mecanismos ao mesmo tempo é contado só uma vez em `excluidos`
- * (nunca duplicado).
+ * Remove tudo que não for dígito de uma string — usado para comparar
+ * CPF/CNPJ independente de formatação (AJUSTE 7): tanto a palavra-chave
+ * configurada ("12.345.678/0001-90") quanto o CPF/CNPJ resolvido via Asaas
+ * (tipicamente já só dígitos, mas não presumimos isso) passam por aqui
+ * antes de comparar, então qualquer combinação de formatado/não formatado
+ * dos dois lados dá match.
  */
-function separarExcluidos(pagamentos, idsExcluidos, palavras) {
+function normalizarDocumento(valor) {
+  return (valor || '').replace(/\D/g, '');
+}
+
+/**
+ * Separa os pagamentos em "válidos" (entram no cálculo) e "excluídos". Um
+ * pagamento é excluído se: (a) seu ID estiver na lista manual, OU (b) uma
+ * das palavras-chave configuradas bater em pelo menos um destes 3 campos
+ * (AJUSTE 7 — antes só o primeiro):
+ *   - descrição da cobrança (case-insensitive, substring);
+ *   - CPF/CNPJ do associado, normalizado (só dígitos dos dois lados antes de
+ *     comparar, substring — ver `normalizarDocumento`);
+ *   - nome/razão social do associado (case-insensitive, substring; mesmo
+ *     fallback de `resolverPagamento` — nome local do associado se existir,
+ *     senão o nome do cliente no Asaas).
+ * Os mecanismos são combinados com OU — como cada pagamento passa por essa
+ * checagem uma única vez, um pagamento pego por mais de um ao mesmo tempo é
+ * contado só uma vez em `excluidos` (nunca duplicado).
+ *
+ * `resolucaoClientes` ({ mapaClientes, associadoPorCpfCnpj }, ver
+ * `resolverClientesEAssociados`) só é necessário pra checar CPF/CNPJ e nome
+ * — quando `null` (nenhuma palavra configurada, ver `buscarPagamentosValidos`,
+ * que evita o custo de resolver clientes à toa), a checagem cai de volta pra
+ * só descrição, e como não há palavras mesmo, nem chega a fazer diferença.
+ */
+function separarExcluidos(pagamentos, idsExcluidos, palavras, resolucaoClientes) {
   const palavrasMinusculas = palavras.filter(Boolean).map((p) => p.toLowerCase());
+  const palavrasComoDocumento = palavras.filter(Boolean).map(normalizarDocumento).filter(Boolean);
+  const mapaClientes = resolucaoClientes?.mapaClientes;
+  const associadoPorCpfCnpj = resolucaoClientes?.associadoPorCpfCnpj;
   const validos = [];
   const excluidos = [];
 
   for (const pagamento of pagamentos) {
     const excluidoPorId = idsExcluidos.has(pagamento.id);
-    const descricao = (pagamento.description || '').toLowerCase();
-    const excluidoPorPalavra = !excluidoPorId && palavrasMinusculas.some((palavra) => descricao.includes(palavra));
+    let excluidoPorPalavra = false;
+
+    if (!excluidoPorId && palavrasMinusculas.length > 0) {
+      const descricao = (pagamento.description || '').toLowerCase();
+      excluidoPorPalavra = palavrasMinusculas.some((palavra) => descricao.includes(palavra));
+
+      if (!excluidoPorPalavra && mapaClientes) {
+        const { cpfCnpj, nome } = resolverPagamento(pagamento, mapaClientes, associadoPorCpfCnpj);
+        const cpfCnpjDocumento = normalizarDocumento(cpfCnpj);
+        const nomeMinusculo = (nome || '').toLowerCase();
+
+        const bateDocumento =
+          cpfCnpjDocumento !== '' && palavrasComoDocumento.some((palavra) => cpfCnpjDocumento.includes(palavra));
+        const bateNome = nomeMinusculo !== '' && palavrasMinusculas.some((palavra) => nomeMinusculo.includes(palavra));
+
+        excluidoPorPalavra = bateDocumento || bateNome;
+      }
+    }
 
     if (excluidoPorId || excluidoPorPalavra) {
       excluidos.push(pagamento);
@@ -277,15 +344,39 @@ function separarExcluidos(pagamentos, idsExcluidos, palavras) {
 
 /**
  * Busca os pagamentos do Asaas no período informado e já separa os
- * excluídos pelos dois mecanismos (AJUSTE 1) — usado tanto por `resumo`
- * quanto por `evolucaoMensal`.
+ * excluídos pelos mecanismos configurados (lista manual por ID + palavras-
+ * chave, ver `separarExcluidos`) — usado tanto por `resumo` quanto por
+ * `evolucaoMensal`.
+ *
+ * AJUSTE 7 — quando há pelo menos uma palavra-chave configurada, o critério
+ * de match por palavra passou a cobrir também CPF/CNPJ e nome/razão social
+ * do associado, não só a descrição da cobrança. Isso exige saber quem é o
+ * cliente (via Asaas) de CADA pagamento do período ANTES de decidir quem é
+ * excluído — não só dos pagamentos que sobrarem depois, nem só do
+ * subconjunto (ex.: só OVERDUE) que outros filtros precisariam. Por isso,
+ * SÓ quando `palavras.length > 0`, resolvemos aqui a lista COMPLETA de
+ * clientes do período inteiro (via `resolverClientesEAssociados`) — e
+ * devolvemos essa resolução (`resolucaoClientes`) pra quem chamou reusar,
+ * em vez de resolver os mesmos clientes de novo mais adiante (ver `resumo`/
+ * `evolucaoMensal`). Franquias sem nenhuma palavra-chave configurada
+ * (`palavras.length === 0`) continuam com o comportamento e o custo de
+ * antes: nenhuma resolução extra de cliente aqui, exclusão só por ID/
+ * descrição, e `resolucaoClientes` sai `null` (cada endpoint resolve só o
+ * que precisar, como já fazia).
  */
 async function buscarPagamentosValidos(reqPrisma, franquiaId, { vencDe, vencAte }) {
   const [pagamentos, { idsExcluidos, palavras }] = await Promise.all([
     listarPagamentos({ dueDateGe: vencDe, dueDateLe: vencAte }, franquiaId),
     buscarExclusoesConfiguradas(reqPrisma, franquiaId),
   ]);
-  return separarExcluidos(pagamentos, idsExcluidos, palavras);
+
+  const resolucaoClientes =
+    palavras.filter(Boolean).length > 0
+      ? await resolverClientesEAssociados(reqPrisma, franquiaId, pagamentos.map((p) => p.customer))
+      : null;
+
+  const resultado = separarExcluidos(pagamentos, idsExcluidos, palavras, resolucaoClientes);
+  return { ...resultado, resolucaoClientes };
 }
 
 /**
@@ -381,11 +472,25 @@ function gerarChavesMeses(vencDe, vencAte) {
  * pagamentos já filtrada para o modo certo (ver AJUSTE CRÍTICO 2):
  *   - modo "aberto": `pagamentos` já vem restrito a status OVERDUE (snapshot
  *     de hoje) — dias efetivos de atraso = hoje - dataLimiteEfetiva.
- *   - modo "historico": `pagamentos` já vem restrito às INADIMPLENTES pela
- *     classificação de `classificarPagamento` (não pagas em dia, já
- *     considerando a tolerância) — dias efetivos de atraso =
- *     paymentDate - dataLimiteEfetiva quando já foi paga (com atraso), ou
+ *   - modo "historico": `pagamentos` já vem restrito a quem JÁ TEVE UM
+ *     DESFECHO decidido pela classificação de `classificarPagamento` —
+ *     INADIMPLENTE (não pagas em dia) OU ADIMPLENTE (pagas em dia,
+ *     ver CORREÇÃO abaixo) — excluindo só A_VENCER (ainda dentro do
+ *     vencimento/tolerância, ainda não paga: não tem o que julgar ainda).
+ *     Dias efetivos de atraso = paymentDate - dataLimiteEfetiva quando já
+ *     foi paga (negativo/zero se em dia, positivo se com atraso), ou
  *     hoje - dataLimiteEfetiva quando ainda não foi paga.
+ *
+ *     CORREÇÃO (bug da faixa "ate_vencimento" sempre zerada em "historico"):
+ *     antes desta correção, `pagamentosParaFaixas` em `resumo` filtrava só
+ *     `=== 'INADIMPLENTE'`, então nenhum pagamento ADIMPLENTE (pago em dia)
+ *     chegava a esta função — a faixa "ate_vencimento" (diasAtraso <= 0)
+ *     nunca tinha como receber valor no modo "historico", mesmo havendo
+ *     associados que pagam em dia no período. O filtro em `resumo` passou a
+ *     excluir só `=== 'A_VENCER'` (deixando passar INADIMPLENTE e
+ *     ADIMPLENTE), corrigindo a causa raiz — ver teste
+ *     "RECEIVED pago em dia aparece em ate_vencimento no histórico" em
+ *     `test-status-ajustes.js`.
  *
  * IMPORTANTE — esta função NÃO foi afetada pelo AJUSTE CRÍTICO 3 (critério
  * de "valor_inadimplente"/"valor_adimplente" por status atual do Asaas):
@@ -447,11 +552,40 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
 }
 
 /**
+ * AJUSTE 6 — versão "historico" de valor_inadimplente/valor_adimplente:
+ * mesma classificação por data de pagamento vs. vencimento já usada em
+ * "faixas"/"criticos_90_dias" (`classificarPagamento`), só que agregada em
+ * 2 somas (inadimplente/adimplente) em vez de 7 faixas de dias. Espelha
+ * exatamente a estrutura da versão "aberto" (por status, ver `resumo`):
+ * cada pagamento cai em UM dos dois somatórios, ou em nenhum — cobranças
+ * A_VENCER (ainda dentro do vencimento ou da tolerância, ainda não pagas)
+ * são o "terceiro grupo" aqui, análogo ao PENDING da versão por status.
+ *
+ * NÃO é afetada por "tipo_pendencia" — ver docblock de
+ * `STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA` e de `resumo` para o porquê (esse
+ * filtro é sobre status atual, sem correspondência numa classificação por
+ * data de pagamento).
+ */
+function computarValorInadimplenteAdimplenteHistorico(pagamentos, hojeStr, diasTolerancia) {
+  let valorInadimplente = 0;
+  let valorAdimplente = 0;
+
+  for (const pagamento of pagamentos) {
+    const valor = Number(pagamento.value) || 0;
+    const classificacao = classificarPagamento(pagamento, hojeStr, diasTolerancia);
+    if (classificacao === 'INADIMPLENTE') valorInadimplente += valor;
+    else if (classificacao === 'ADIMPLENTE') valorAdimplente += valor;
+  }
+
+  return { valorInadimplente, valorAdimplente };
+}
+
+/**
  * GET /api/inadimplencia/resumo
  *   ?venc_de=YYYY-MM-DD&venc_ate=YYYY-MM-DD
  *   &renegociacao=todos|sim|nao&em_juridico=todos|sim|nao&bloqueado=todos|sim|nao
  *   &tipo_pendencia=todos|vencidas|confirmadas
- *   &visao_faixas=aberto|historico&forcar=true
+ *   &visao=aberto|historico&forcar=true
  *
  * Calcula, a partir dos pagamentos do Asaas com vencimento no período
  * informado (padrão: últimos 12 meses), os números da tela de "Taxa de
@@ -459,9 +593,10 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
  * decisões de design.
  *
  * Antes de qualquer cálculo, os pagamentos passam pela exclusão combinada
- * (lista manual por ID OU palavra-chave na descrição) — o que foi removido
- * nessa etapa é reportado em "excluidos", e NUNCA entra em nenhum outro
- * campo da resposta.
+ * (lista manual por ID OU palavra-chave — descrição, CPF/CNPJ ou nome do
+ * associado, ver AJUSTE 7 abaixo) — o que foi removido nessa etapa é
+ * reportado em "excluidos", e NUNCA entra em nenhum outro campo da
+ * resposta.
  *
  * "renegociacao", "em_juridico" e "bloqueado" cruzam o cpfCnpj de cada
  * pagamento do Asaas (resolvido via GET /v3/customers/{id}) com
@@ -470,52 +605,80 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
  * "não"). Quando algum dos três é "sim" ou "nao", ele restringe TODO o
  * conjunto de pagamentos usado no cálculo (inclusive valor_total_faturado).
  *
- * PERÍODO DE TOLERÂNCIA — a bucketização de "faixas"/"criticos_90_dias"
- * nos dois modos de visao_faixas usa o período de tolerância vigente (dias
- * corridos, GET/PATCH /api/config/tolerancia-dias, padrão 0), lido uma vez
- * no início da requisição. NÃO afeta mais "valor_inadimplente"/
- * "valor_adimplente"/as duas taxas desde o AJUSTE CRÍTICO 3 (critério por
- * status atual, sem nenhuma comparação de data) — ver
- * `computarFaixasECriticos` para a fórmula da tolerância ("data limite
- * efetiva" = dueDate + diasTolerancia) e o README para um exemplo numérico
- * completo.
+ * PERÍODO DE TOLERÂNCIA — usado em TODOS os cálculos de atraso por data
+ * deste endpoint (dias corridos, GET/PATCH /api/config/tolerancia-dias,
+ * padrão 0), lido uma vez no início da requisição: "faixas"/
+ * "criticos_90_dias" (os dois modos de "visao") E "valor_inadimplente"/
+ * "valor_adimplente"/as duas taxas quando "visao=historico" (AJUSTE 6) —
+ * ver `computarFaixasECriticos`/`computarValorInadimplenteAdimplenteHistorico`
+ * para a fórmula ("data limite efetiva" = dueDate + diasTolerancia) e o
+ * README para um exemplo numérico completo. Quando "visao=aberto"
+ * (padrão), "valor_inadimplente"/"valor_adimplente" continuam por STATUS
+ * ATUAL (AJUSTE CRÍTICO 3), sem nenhuma comparação de data — a tolerância
+ * não entra nessa conta.
  *
- * AJUSTE CRÍTICO 3 (substitui o AJUSTE CRÍTICO 1) — "valor_inadimplente"/
- * "valor_adimplente"/as duas taxas passaram a usar o STATUS ATUAL de cada
- * cobrança no Asaas, não mais a classificação histórica por data de
- * pagamento. Decisão de negócio confirmada explicitamente: a Taxa de
- * Inadimplência deve refletir o que está em aberto AGORA, não o histórico
- * de atraso de algo já quitado — reverte de propósito o raciocínio
- * original do AJUSTE CRÍTICO 1 (que existia justamente pro caso oposto:
- * uma cobrança paga com atraso "esconder" esse atraso ao virar RECEIVED).
- * Ver `STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA`/`STATUS_ADIMPLENTE` no topo
- * do arquivo para os status exatos de cada grupo. `classificarPagamento`
- * (a função da classificação histórica) continua existindo e sendo usada,
- * sem NENHUMA mudança de comportamento, só para "faixas"/"criticos_90_dias"
- * no modo "historico" (ver AJUSTE CRÍTICO 2 abaixo e AJUSTE 5) — essas
- * faixas continuam sendo sobre o histórico de atraso por data de quem já
- * pagou, e não mudam com este ajuste.
+ * AJUSTE 6 (renomeia e estende o parâmetro "visao_faixas" → "visao") —
+ * "visao" agora controla, ao mesmo tempo, "faixas"/"criticos_90_dias" (uso
+ * original, AJUSTE CRÍTICO 2) E "valor_inadimplente"/"valor_adimplente"/as
+ * duas taxas (novo):
+ *   - "visao=aberto" (padrão — SEM NENHUMA REGRESSÃO no comportamento
+ *     default da tela): "valor_inadimplente"/"valor_adimplente" por STATUS
+ *     ATUAL de cada cobrança no Asaas (AJUSTE CRÍTICO 3, mantido tal e
+ *     qual — ver `STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA`/
+ *     `STATUS_ADIMPLENTE` no topo do arquivo); "faixas"/"criticos_90_dias"
+ *     restritos a status OVERDUE (snapshot de hoje).
+ *   - "visao=historico": "valor_inadimplente"/"valor_adimplente" passam a
+ *     usar a MESMA classificação por data de pagamento vs. vencimento que
+ *     já alimentava só "faixas"/"criticos_90_dias" (`classificarPagamento`
+ *     — ver `computarValorInadimplenteAdimplenteHistorico`): reflete o
+ *     COMPORTAMENTO do associado no período (pagou em dia ou não),
+ *     independente do status atual da cobrança — uma cobrança paga com
+ *     atraso em março continua contando como "inadimplente" aqui mesmo
+ *     que hoje esteja RECEIVED. Decisão de negócio confirmada
+ *     explicitamente para esta visão (é o comportamento OPOSTO do
+ *     "aberto", de propósito — as duas visões coexistem, cada uma serve a
+ *     uma pergunta diferente: "quem está devendo agora" x "quem deveu
+ *     durante o período").
+ *   - Consequência: "tipo_pendencia" (AJUSTE 4, ver abaixo) só tem efeito
+ *     quando "visao=aberto" — é um filtro por status atual (OVERDUE x
+ *     CONFIRMED), sem equivalente numa classificação por data. Em
+ *     "visao=historico" ele é lido/validado normalmente mas NÃO altera o
+ *     resultado; o frontend desabilita visualmente o campo nesse caso.
+ *
+ * CORREÇÃO (bug corrigido junto com o AJUSTE 6 — faixa "ate_vencimento"
+ * sempre zerada em "visao=historico") — `pagamentosParaFaixas`, usado
+ * tanto para "faixas" quanto (agora) para os 2 números de
+ * "visao=historico", antes excluía qualquer pagamento que não fosse
+ * `=== 'INADIMPLENTE'` pela classificação de `classificarPagamento` — ou
+ * seja, um pagamento ADIMPLENTE (pago em dia) nunca chegava a ser
+ * bucketizado, e a faixa "ate_vencimento" (diasAtraso <= 0) não tinha como
+ * receber valor. Passou a excluir só `=== 'A_VENCER'` (ainda sem
+ * desfecho), deixando passar INADIMPLENTE e ADIMPLENTE — ver
+ * `computarFaixasECriticos` e o teste "RECEIVED pago em dia aparece em
+ * ate_vencimento no histórico" em `test-status-ajustes.js`.
  *
  * AJUSTE 4 — "tipo_pendencia" ("todos"|"vencidas"|"confirmadas", padrão
- * "todos") separa, dentro de "valor_inadimplente", as cobranças vencidas
- * (status "OVERDUE") das confirmadas/crédito futuro (status "CONFIRMED") —
- * antes desta correção sempre apareciam somadas, sem forma de isolar uma
- * da outra. Afeta "valor_inadimplente" e "taxa_inadimplencia_percentual";
- * NÃO afeta "valor_adimplente"/"taxa_adimplencia_percentual" (sempre
- * RECEIVED/RECEIVED_IN_CASH) nem "valor_total_faturado" (sempre o período
- * inteiro, qualquer status) nem "top_devedores"/"associados_inadimplentes"/
+ * "todos") separa, dentro de "valor_inadimplente" (só em "visao=aberto",
+ * ver AJUSTE 6 acima), as cobranças vencidas (status "OVERDUE") das
+ * confirmadas/crédito futuro (status "CONFIRMED") — antes desta correção
+ * sempre apareciam somadas, sem forma de isolar uma da outra. Afeta
+ * "valor_inadimplente" e "taxa_inadimplencia_percentual"; NÃO afeta
+ * "valor_adimplente"/"taxa_adimplencia_percentual" (sempre RECEIVED/
+ * RECEIVED_IN_CASH) nem "valor_total_faturado" (sempre o período inteiro,
+ * qualquer status) nem "top_devedores"/"associados_inadimplentes"/
  * "criticos_90_dias"/"renegociacoes_abertas" (nenhum destes muda com este
  * ajuste — ver docblocks próprios).
  *
  * AJUSTE CRÍTICO 2 — "faixas" e "criticos_90_dias" têm dois modos,
- * controlados por "visao_faixas" (padrão "aberto"):
+ * controlados por "visao" (padrão "aberto"):
  *   - "aberto": só cobranças AINDA NÃO PAGAS hoje (status OVERDUE),
  *     bucketed por (hoje - dueDate) — é um snapshot do que está em aberto
  *     agora, muda a cada consulta.
- *   - "historico": cobranças do período que NÃO foram pagas em dia (mesma
- *     regra de INADIMPLENTE de `classificarPagamento` — histórica por
- *     data, ver docblock dela), bucketed por (paymentDate - dueDate) se já
- *     paga, ou (hoje - dueDate) se ainda não paga — fixo para o período.
+ *   - "historico": cobranças do período que já tiveram um desfecho
+ *     decidido pela classificação de `classificarPagamento` — pagas em
+ *     dia OU não pagas em dia, ver CORREÇÃO acima — bucketed por
+ *     (paymentDate - dueDate) se já paga, ou (hoje - dueDate) se ainda não
+ *     paga — fixo para o período.
  *
  * AJUSTE 5 — "faixas" ganhou uma 7ª faixa, "ate_vencimento" (atraso <= 0,
  * já considerando a tolerância), pras cobranças ainda dentro do vencimento
@@ -526,7 +689,7 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
  *
  * "associados_inadimplentes" e "top_devedores" continuam baseados no
  * snapshot "aberto" (quem tem cobrança OVERDUE agora) — são listas
- * operacionais ("quem cobrar hoje"), independentes de "visao_faixas" e de
+ * operacionais ("quem cobrar hoje"), independentes de "visao" e de
  * "tipo_pendencia" — ver README.
  *
  * AJUSTE 3 — "renegociacoes_abertas" conta/soma cobranças cuja descrição
@@ -536,13 +699,24 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
  * só como o filtro `renegociacao` do parágrafo acima). Sem mudança neste
  * ajuste.
  *
+ * AJUSTE 7 — a exclusão por palavra-chave passou a casar contra 3 campos
+ * (antes, só a descrição da cobrança): descrição, CPF/CNPJ do associado
+ * (com ou sem formatação, dos dois lados) e nome/razão social do
+ * associado — ver `separarExcluidos`/`buscarPagamentosValidos`. Não muda o
+ * comportamento da lista manual por ID.
+ *
+ * ESCOPO — este ajuste ("visao" afetando os 3 cards) é só deste endpoint.
+ * GET /api/inadimplencia/evolucao-mensal continua exclusivamente por
+ * STATUS ATUAL (AJUSTE CRÍTICO 3), sem parâmetro "visao" — o gráfico de
+ * evolução mensal não foi incluído no pedido desta unificação.
+ *
  * Cacheado em memória por 4 minutos, por combinação exata de
  * (venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia,
- * visao_faixas). O cache é limpo sempre que a lista de exclusões manuais
- * ou de palavras-chave muda. AJUSTE 2 — "forcar=true" ignora a LEITURA do
- * cache (sempre busca dados frescos do Asaas para essa chamada), mas o
- * resultado novo ainda é gravado no cache ao final, com o TTL normal — as
- * próximas chamadas sem "forcar=" voltam a se beneficiar dele.
+ * visao). O cache é limpo sempre que a lista de exclusões manuais ou de
+ * palavras-chave muda. AJUSTE 2 — "forcar=true" ignora a LEITURA do cache
+ * (sempre busca dados frescos do Asaas para essa chamada), mas o resultado
+ * novo ainda é gravado no cache ao final, com o TTL normal — as próximas
+ * chamadas sem "forcar=" voltam a se beneficiar dele.
  */
 exports.resumo = async (req, res, next) => {
   try {
@@ -553,7 +727,7 @@ exports.resumo = async (req, res, next) => {
       em_juridico: emJuridicoParam,
       bloqueado: bloqueadoParam,
       tipo_pendencia: tipoPendenciaParam,
-      visao_faixas: visaoFaixasParam,
+      visao: visaoParam,
     } = req.query;
 
     const { vencDe, vencAte, erro: erroPeriodo } = resolverPeriodo(vencDeParam, vencAteParam);
@@ -581,9 +755,10 @@ exports.resumo = async (req, res, next) => {
       return res.status(400).json({ error: erroTipoPendencia });
     }
 
-    const visaoFaixas = visaoFaixasParam === undefined ? 'aberto' : visaoFaixasParam;
-    if (!VISAO_FAIXAS_VALIDAS.includes(visaoFaixas)) {
-      return res.status(400).json({ error: '"visao_faixas" deve ser "aberto" ou "historico".' });
+    // AJUSTE 6 — renomeado de "visao_faixas" pra "visao" (ver docblock acima).
+    const visao = visaoParam === undefined ? 'aberto' : visaoParam;
+    if (!VISAO_VALIDAS.includes(visao)) {
+      return res.status(400).json({ error: '"visao" deve ser "aberto" ou "historico".' });
     }
 
     // AJUSTE 2 — "forcar=true" ignora a LEITURA do cache (busca sempre dados
@@ -592,7 +767,7 @@ exports.resumo = async (req, res, next) => {
     // a se beneficiar dele normalmente.
     const forcar = req.query.forcar === 'true';
 
-    const chaveCache = `inadimplencia:resumo:${vencDe}:${vencAte}:${renegociacao}:${emJuridico}:${bloqueado}:${tipoPendencia}:${visaoFaixas}`;
+    const chaveCache = `inadimplencia:resumo:${vencDe}:${vencAte}:${renegociacao}:${emJuridico}:${bloqueado}:${tipoPendencia}:${visao}`;
     const cacheado = forcar ? undefined : cache.get(chaveCache);
     if (cacheado) {
       return res.json(cacheado);
@@ -600,25 +775,26 @@ exports.resumo = async (req, res, next) => {
 
     const franquiaId = await resolverFranquiaIdOuPadrao(req);
 
-    const [{ validos: pagamentosValidos, excluidos }, diasTolerancia] = await Promise.all([
-      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
-      getDiasTolerancia(franquiaId),
-    ]);
+    const [{ validos: pagamentosValidos, excluidos, resolucaoClientes: resolucaoDaExclusao }, diasTolerancia] =
+      await Promise.all([
+        buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
+        getDiasTolerancia(franquiaId),
+      ]);
 
     // Só precisamos resolver cpfCnpj de TODOS os pagamentos válidos quando
     // algum filtro de cross-reference está ativo (ele filtra o conjunto
     // inteiro, não só os OVERDUE). Sem filtro ativo, basta resolver os
     // OVERDUE — é tudo que "associados_inadimplentes"/"top_devedores"
-    // precisam.
+    // precisam. AJUSTE 7 — se `buscarPagamentosValidos` já resolveu TODOS os
+    // clientes do período (porque há palavra-chave de exclusão configurada),
+    // reaproveitamos essa resolução em vez de chamar a API do Asaas de novo
+    // pros mesmos clientes.
     const precisaResolverTodos = renegociacao !== 'todos' || emJuridico !== 'todos' || bloqueado !== 'todos';
     const idsOverdue = pagamentosValidos.filter((p) => p.status === 'OVERDUE').map((p) => p.customer);
     const idsParaResolver = precisaResolverTodos ? pagamentosValidos.map((p) => p.customer) : idsOverdue;
 
-    const { mapaClientes, associadoPorCpfCnpj } = await resolverClientesEAssociados(
-      req.prisma,
-      franquiaId,
-      idsParaResolver
-    );
+    const { mapaClientes, associadoPorCpfCnpj } =
+      resolucaoDaExclusao || (await resolverClientesEAssociados(req.prisma, franquiaId, idsParaResolver));
 
     const conjuntoTrabalho = aplicarFiltrosCrossReference(
       pagamentosValidos,
@@ -631,33 +807,40 @@ exports.resumo = async (req, res, next) => {
 
     const valorTotalFaturado = conjuntoTrabalho.reduce((soma, p) => soma + (Number(p.value) || 0), 0);
 
-    // AJUSTE CRÍTICO 3 — "valor_inadimplente"/"valor_adimplente" por STATUS
-    // ATUAL do Asaas (ver STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA/
-    // STATUS_ADIMPLENTE no topo do arquivo) — não mais pela classificação
-    // histórica por data de pagamento (`classificarPagamento`, que segue
-    // existindo só para "faixas"/"criticos_90_dias", ver AJUSTE 5).
-    // AJUSTE 4 — "tipo_pendencia" restringe quais status entram em
-    // "valor_inadimplente"; "valor_adimplente" nunca é afetado por ele.
-    const statusInadimplenteValidos = STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA[tipoPendencia];
+    // AJUSTE CRÍTICO 2 — "aberto" (snapshot OVERDUE de hoje) x "historico"
+    // (pagas em dia ou não, pelo período inteiro — ver CORREÇÃO no docblock
+    // acima). Os dois já levam o período de tolerância em conta (ver
+    // computarFaixasECriticos).
+    const pagamentosOverdue = conjuntoTrabalho.filter((p) => p.status === 'OVERDUE');
+    const pagamentosParaFaixas =
+      visao === 'aberto'
+        ? pagamentosOverdue
+        : conjuntoTrabalho.filter((p) => classificarPagamento(p, hojeStr, diasTolerancia) !== 'A_VENCER');
+    const { faixas, criticos90Dias } = computarFaixasECriticos(pagamentosParaFaixas, visao, hojeStr, diasTolerancia);
+
+    // AJUSTE 6 — "valor_inadimplente"/"valor_adimplente" seguem "visao":
+    // "aberto" por STATUS ATUAL (AJUSTE CRÍTICO 3, com "tipo_pendencia" —
+    // AJUSTE 4); "historico" pela mesma classificação por data usada acima
+    // em "faixas" (`computarValorInadimplenteAdimplenteHistorico`),
+    // ignorando "tipo_pendencia" (ver docblock).
     let valorInadimplente = 0;
     let valorAdimplente = 0;
-    for (const pagamento of conjuntoTrabalho) {
-      const valor = Number(pagamento.value) || 0;
-      if (statusInadimplenteValidos.includes(pagamento.status)) valorInadimplente += valor;
-      else if (STATUS_ADIMPLENTE.includes(pagamento.status)) valorAdimplente += valor;
+    if (visao === 'historico') {
+      ({ valorInadimplente, valorAdimplente } = computarValorInadimplenteAdimplenteHistorico(
+        conjuntoTrabalho,
+        hojeStr,
+        diasTolerancia
+      ));
+    } else {
+      const statusInadimplenteValidos = STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA[tipoPendencia];
+      for (const pagamento of conjuntoTrabalho) {
+        const valor = Number(pagamento.value) || 0;
+        if (statusInadimplenteValidos.includes(pagamento.status)) valorInadimplente += valor;
+        else if (STATUS_ADIMPLENTE.includes(pagamento.status)) valorAdimplente += valor;
+      }
     }
     const taxaInadimplencia = calcularTaxa(valorTotalFaturado, valorInadimplente);
     const taxaAdimplencia = calcularTaxa(valorTotalFaturado, valorAdimplente);
-
-    // AJUSTE CRÍTICO 2 — "aberto" (snapshot OVERDUE de hoje) x "historico"
-    // (não pagas em dia, pelo período inteiro). Os dois já levam o período
-    // de tolerância em conta (ver computarFaixasECriticos).
-    const pagamentosOverdue = conjuntoTrabalho.filter((p) => p.status === 'OVERDUE');
-    const pagamentosParaFaixas =
-      visaoFaixas === 'aberto'
-        ? pagamentosOverdue
-        : conjuntoTrabalho.filter((p) => classificarPagamento(p, hojeStr, diasTolerancia) === 'INADIMPLENTE');
-    const { faixas, criticos90Dias } = computarFaixasECriticos(pagamentosParaFaixas, visaoFaixas, hojeStr, diasTolerancia);
 
     // "associados_inadimplentes" / "top_devedores" — sempre pelo snapshot
     // "aberto" (ver docblock acima).
@@ -752,6 +935,17 @@ exports.resumo = async (req, res, next) => {
  * comparação de datas (só de status atual). Fica só no /resumo, pra
  * "faixas"/"criticos_90_dias" (que este endpoint não tem).
  *
+ * AJUSTE 7 — a exclusão por palavra-chave (compartilhada com /resumo via
+ * `buscarPagamentosValidos`) passou a casar contra CPF/CNPJ e nome do
+ * associado, além da descrição — ver docblock de `separarExcluidos`.
+ *
+ * ESCOPO — este endpoint NÃO recebeu o parâmetro "visao" do AJUSTE 6:
+ * "valor_inadimplente"/as duas taxas aqui continuam exclusivamente por
+ * STATUS ATUAL (AJUSTE CRÍTICO 3), sempre, independente de "visao" no
+ * /resumo — o pedido de unificação foi só para os 3 cards do topo da
+ * tela, que consomem /resumo; o gráfico de evolução mensal (que consome
+ * este endpoint) não foi incluído.
+ *
  * Cacheado em memória por 4 minutos, por combinação exata de
  * (venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia),
  * em um namespace de cache separado do /resumo. AJUSTE 2 — aceita
@@ -806,16 +1000,20 @@ exports.evolucaoMensal = async (req, res, next) => {
 
     const franquiaId = await resolverFranquiaIdOuPadrao(req);
 
-    const { validos: pagamentosValidos } = await buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte });
+    const { validos: pagamentosValidos, resolucaoClientes: resolucaoDaExclusao } = await buscarPagamentosValidos(
+      req.prisma,
+      franquiaId,
+      { vencDe, vencAte }
+    );
 
     let conjuntoTrabalho = pagamentosValidos;
     if (renegociacao !== 'todos' || emJuridico !== 'todos' || bloqueado !== 'todos') {
+      // AJUSTE 7 — reaproveita a resolução de clientes já feita pra exclusão
+      // (quando existir) em vez de chamar a API do Asaas de novo pros mesmos
+      // clientes.
       const idsParaResolver = pagamentosValidos.map((p) => p.customer);
-      const { mapaClientes, associadoPorCpfCnpj } = await resolverClientesEAssociados(
-        req.prisma,
-        franquiaId,
-        idsParaResolver
-      );
+      const { mapaClientes, associadoPorCpfCnpj } =
+        resolucaoDaExclusao || (await resolverClientesEAssociados(req.prisma, franquiaId, idsParaResolver));
       conjuntoTrabalho = aplicarFiltrosCrossReference(
         pagamentosValidos,
         { renegociacao, emJuridico, bloqueado },
