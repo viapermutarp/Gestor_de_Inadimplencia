@@ -359,7 +359,10 @@ export default function InadimplenciaPage() {
               faixaSelecionada={faixaSelecionada}
               onSelecionarFaixa={setFaixaSelecionada}
               loading={loading}
-              totalInadimplente={resumo?.valor_inadimplente}
+              // CORREÇÃO: o percentual de cada faixa deve ser sobre o valor
+              // total faturado do período, não sobre o valor inadimplente
+              // (senão uma faixa isolada pode dar >100% — ver FaixasChart.js).
+              totalFaturado={resumo?.valor_total_faturado}
               visao={visao}
               onAlterarVisao={setVisao}
             />

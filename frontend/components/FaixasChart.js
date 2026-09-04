@@ -38,10 +38,18 @@ function formatPercentual(valor, total) {
   if (!(total > 0)) return "—";
   return `${((valor / total) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
 }
+// (função em si não mudou — o bug estava em QUAL total era passado pra ela, ver `totalFaturado` abaixo)
 
 /**
  * Gráfico de barras das 7 faixas de atraso (valor em R$ em cada uma, mais o
- * percentual que representa sobre o total inadimplente do período).
+ * percentual que representa sobre o valor total faturado do período —
+ * CORREÇÃO: até este ajuste o denominador era `valor_inadimplente`, o que
+ * produzia percentuais logicamente impossíveis (ex.: "Até o vencimento"
+ * aparecendo com mais de 100%, já que uma faixa isolada pode superar o
+ * total inadimplente inteiro dependendo da composição do período). O
+ * denominador correto é `valor_total_faturado`, o mesmo usado por
+ * `taxa_inadimplencia_percentual` no backend — ver prop `totalFaturado`
+ * abaixo, antes chamada `totalInadimplente`).
  * `faixaSelecionada` (chave da faixa, ou "todas") controla o destaque: a
  * faixa escolhida no filtro fica em opacidade cheia, as demais ficam
  * esmaecidas — dá uma resposta visual imediata ao filtro "Faixa de atraso",
@@ -72,13 +80,20 @@ export default function FaixasChart({
   faixaSelecionada = "todas",
   onSelecionarFaixa,
   loading,
-  totalInadimplente,
+  totalFaturado,
   visao = "aberto",
   onAlterarVisao,
 }) {
   const valores = FAIXAS.map((f) => Number(faixas?.[f.chave] ?? 0));
   const valorMaximo = Math.max(...valores, 0);
-  const total = totalInadimplente ?? valores.reduce((soma, v) => soma + v, 0);
+  // CORREÇÃO: denominador do percentual era `valor_inadimplente` (prop
+  // antiga `totalInadimplente`) — trocado para `valor_total_faturado`
+  // (`totalFaturado`), o mesmo divisor que o backend usa em
+  // `taxa_inadimplencia_percentual`. Com o total inadimplente como
+  // denominador, uma faixa que sozinha supera o valor inadimplente do
+  // período (comum quando o período tem bastante cobrança "a vencer"/de
+  // outro status fora da faixa) gerava percentual > 100%, sem sentido.
+  const total = totalFaturado ?? valores.reduce((soma, v) => soma + v, 0);
 
   return (
     <div className="rounded-2xl border border-border-soft bg-surface p-5 shadow-lg shadow-black/20">
@@ -135,7 +150,7 @@ export default function FaixasChart({
                 onClick={() => onSelecionarFaixa?.(faixaSelecionada === f.chave ? "todas" : f.chave)}
                 className="flex flex-1 flex-col items-center rounded-lg transition-opacity"
                 style={{ opacity: destacada ? 1 : 0.35 }}
-                title={`${formatCurrency(valor)} (${formatPercentual(valor, total)} do total inadimplente)`}
+                title={`${formatCurrency(valor)} (${formatPercentual(valor, total)} do total faturado)`}
               >
                 {/* Rótulo — em fluxo normal, nunca disputa espaço com a barra */}
                 <span className="flex flex-col items-center leading-tight">
