@@ -1,3 +1,4 @@
+import DOMPurify from "dompurify";
 import { getToken, getRefreshToken, setSession, clearToken, getFranquiaSelecionada } from "./auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
@@ -896,4 +897,47 @@ export async function baixarDocumentoJuridico(id, nomeArquivo) {
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
+}
+
+/**
+ * GET /api/juridico/documentos/:id/preview — visualização INLINE (sem
+ * download), ver brief "Visualização inline de documentos". O backend
+ * devolve dois formatos bem diferentes dependendo do tipo do documento (ver
+ * `previewDocumento` em juridicoDocumentos.controller.js), então esta
+ * função normaliza os dois num único formato de retorno pro chamador
+ * (DocumentosCard, abaixo):
+ *
+ *   - PDF/imagem (JPG/PNG): o backend faz stream do arquivo original
+ *     (Content-Type real, ex. "application/pdf"). Vira um blob URL local —
+ *     mesmo truque de `baixarDocumentoJuridico` pra autenticar a requisição
+ *     (um `<iframe src="...">`/`<img src="...">` direto não consegue mandar
+ *     "Authorization: Bearer"), mas SEM disparar o "salvar como". Quem
+ *     chama precisa revogar essa URL com `URL.revokeObjectURL` quando não
+ *     for mais exibi-la (ver `useEffect` de limpeza em DocumentosCard).
+ *   - DOCX/XLSX: o backend devolve JSON `{ tipo: "html", html }`, já com o
+ *     HTML sanitizado NO BACKEND (fonte única da verdade — ver docblock de
+ *     previewDocumento.service.js). Mesmo assim, sanitiza DE NOVO aqui com
+ *     DOMPurify antes de devolver pro chamador — camada extra exigida pelo
+ *     brief ("nunca jogar o HTML... direto num dangerouslySetInnerHTML sem
+ *     sanitizar"), sem depender só do backend caso um bug apareça lá.
+ *
+ * Se a conversão falhar no backend (arquivo corrompido/formato inesperado),
+ * a chamada rejeita com `ApiError` (status 422 e mensagem clara vinda do
+ * backend) — quem chama trata isso caindo no estado "Não foi possível
+ * gerar visualização, baixe o arquivo" (ver DocumentosCard).
+ */
+export async function visualizarDocumentoJuridico(id) {
+  const res = await requestBinario(`/api/juridico/documentos/${encodeURIComponent(id)}/preview`, {
+    method: "GET",
+  });
+
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const data = await res.json();
+    return { tipo: "html", html: DOMPurify.sanitize(data.html || "") };
+  }
+
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  return { tipo: "arquivo", url, mime: contentType };
 }

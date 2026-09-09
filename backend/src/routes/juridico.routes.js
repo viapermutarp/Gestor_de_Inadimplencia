@@ -37,6 +37,10 @@ router.post(
 );
 router.get('/juridico/associados/:cpfCnpj/documentos', auth, juridico, escopoFranquia, ctrlDocs.listarDocumentos);
 router.get('/juridico/documentos/:id/download', auth, juridico, escopoFranquia, ctrlDocs.baixarDocumento);
+// Visualização inline (sem download) — PDF/imagem stream direto,
+// DOCX/XLSX convertidos pra HTML sanitizado na hora (ver
+// previewDocumento.service.js). Mesma cadeia de middleware do download.
+router.get('/juridico/documentos/:id/preview', auth, juridico, escopoFranquia, ctrlDocs.previewDocumento);
 router.delete('/juridico/documentos/:id', auth, juridico, escopoFranquia, ctrlDocs.removerDocumento);
 
 module.exports = router;

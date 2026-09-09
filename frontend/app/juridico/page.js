@@ -18,6 +18,7 @@ import {
   uploadDocumentoJuridico,
   removerDocumentoJuridico,
   baixarDocumentoJuridico,
+  visualizarDocumentoJuridico,
   ApiError,
 } from "@/lib/api";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
@@ -971,6 +972,67 @@ function DocumentosCard({ cpfCnpj }) {
   const [baixandoId, setBaixandoId] = useState(null);
   const [excluindoId, setExcluindoId] = useState(null);
 
+  // Visualização inline (ver brief "Visualização inline de documentos") —
+  // só um documento por vez fica expandido; "previewConteudo" guarda o
+  // formato já normalizado por `visualizarDocumentoJuridico`
+  // ({ tipo: "arquivo", url, mime } pra PDF/imagem via blob URL local, ou
+  // { tipo: "html", html } já sanitizado pra DOCX/XLSX).
+  const [previewAbertoId, setPreviewAbertoId] = useState(null);
+  const [previewCarregando, setPreviewCarregando] = useState(false);
+  const [previewErro, setPreviewErro] = useState("");
+  const [previewConteudo, setPreviewConteudo] = useState(null);
+  const previewUrlRef = useRef(null);
+
+  // Blob URL do preview atual (PDF/imagem) precisa ser revogado explicitamente
+  // — tanto ao trocar/fechar o preview quanto ao desmontar o componente
+  // (fechar o modal do card sem clicar em "Visualizar" de novo) — senão vaza
+  // memória a cada documento aberto.
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) window.URL.revokeObjectURL(previewUrlRef.current);
+    };
+  }, []);
+
+  function fecharPreview() {
+    if (previewUrlRef.current) {
+      window.URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+    setPreviewAbertoId(null);
+    setPreviewConteudo(null);
+    setPreviewErro("");
+    setPreviewCarregando(false);
+  }
+
+  async function handleVisualizar(doc) {
+    if (previewAbertoId === doc.id) {
+      fecharPreview();
+      return;
+    }
+    if (previewUrlRef.current) {
+      window.URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+    setPreviewAbertoId(doc.id);
+    setPreviewConteudo(null);
+    setPreviewErro("");
+    setPreviewCarregando(true);
+    try {
+      const resultado = await visualizarDocumentoJuridico(doc.id);
+      if (resultado.tipo === "arquivo") previewUrlRef.current = resultado.url;
+      setPreviewConteudo(resultado);
+    } catch (err) {
+      // Mensagem do backend (422, ex.: "arquivo corrompido ou em formato
+      // inesperado") já é clara o bastante pra mostrar direto; qualquer
+      // outro erro (rede, 404 etc.) cai no texto genérico pedido no brief.
+      setPreviewErro(
+        err instanceof ApiError ? err.message : "Não foi possível gerar visualização, baixe o arquivo."
+      );
+    } finally {
+      setPreviewCarregando(false);
+    }
+  }
+
   const carregar = useCallback(async () => {
     setCarregando(true);
     setErro("");
@@ -1036,6 +1098,7 @@ function DocumentosCard({ cpfCnpj }) {
     setExcluindoId(doc.id);
     try {
       await removerDocumentoJuridico(doc.id);
+      if (previewAbertoId === doc.id) fecharPreview();
       await carregar();
     } catch (err) {
       setErro(err instanceof ApiError ? err.message : "Erro ao excluir o documento.");
@@ -1104,6 +1167,18 @@ function DocumentosCard({ cpfCnpj }) {
                 <div className="flex shrink-0 flex-col items-end gap-1 text-xs font-medium">
                   <button
                     type="button"
+                    onClick={() => handleVisualizar(doc)}
+                    disabled={previewCarregando && previewAbertoId === doc.id}
+                    className="text-primary hover:underline disabled:opacity-50"
+                  >
+                    {previewAbertoId === doc.id
+                      ? previewCarregando
+                        ? "Carregando..."
+                        : "Fechar"
+                      : "Visualizar"}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => handleBaixar(doc)}
                     disabled={baixandoId === doc.id}
                     className="text-primary hover:underline disabled:opacity-50"
@@ -1120,6 +1195,50 @@ function DocumentosCard({ cpfCnpj }) {
                   </button>
                 </div>
               </div>
+
+              {previewAbertoId === doc.id && (
+                <div className="mt-3 border-t border-border-soft pt-3">
+                  {previewCarregando ? (
+                    <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
+                      <Spinner className="h-4 w-4" />
+                      Gerando visualização...
+                    </div>
+                  ) : previewErro ? (
+                    <div className="space-y-2">
+                      <ErrorBanner message={previewErro} />
+                      <button
+                        type="button"
+                        onClick={() => handleBaixar(doc)}
+                        disabled={baixandoId === doc.id}
+                        className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                      >
+                        {baixandoId === doc.id ? "Baixando..." : "Baixar o arquivo"}
+                      </button>
+                    </div>
+                  ) : previewConteudo?.tipo === "arquivo" && previewConteudo.mime.startsWith("application/pdf") ? (
+                    <iframe
+                      src={previewConteudo.url}
+                      title={doc.nome_original}
+                      className="h-[70vh] w-full rounded-lg border border-border-soft bg-white"
+                    />
+                  ) : previewConteudo?.tipo === "arquivo" && previewConteudo.mime.startsWith("image/") ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- "src" é um blob URL local (autenticado na hora, revogado ao trocar/fechar o preview), não uma URL estática que o otimizador de imagem do Next consiga tratar.
+                    <img
+                      src={previewConteudo.url}
+                      alt={doc.nome_original}
+                      className="max-h-[70vh] w-full rounded-lg border border-border-soft object-contain"
+                    />
+                  ) : previewConteudo?.tipo === "html" ? (
+                    // HTML já sanitizado (backend + DOMPurify em visualizarDocumentoJuridico,
+                    // ver lib/api.js) — nunca renderizar HTML de documento aqui sem essa dupla
+                    // sanitização.
+                    <div
+                      className="max-h-[70vh] overflow-auto rounded-lg border border-border-soft bg-white p-3 text-xs text-neutral-900"
+                      dangerouslySetInnerHTML={{ __html: previewConteudo.html }}
+                    />
+                  ) : null}
+                </div>
+              )}
             </li>
           ))}
         </ul>
