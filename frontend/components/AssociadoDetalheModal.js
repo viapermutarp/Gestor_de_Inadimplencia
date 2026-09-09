@@ -193,6 +193,15 @@ export default function AssociadoDetalheModal({ cpfCnpj, onClose, onAtualizado }
                 </h3>
                 <dl className="grid grid-cols-1 gap-3 rounded-2xl bg-surface-elevated p-4 sm:grid-cols-2">
                   <div>
+                    <dt className="text-xs text-muted-foreground">Nome</dt>
+                    {/* AJUSTE 9: nome exatamente como cadastrado no Asaas, verbatim
+                        (sem nenhum tratamento do Gestor) — inclui o prefixo numérico
+                        que o Asaas usa (ex: "45.493.621 ERICA DA COSTA ROSA"). Não
+                        confundir com o título do modal acima, que continua usando
+                        associado.nome. */}
+                    <dd className="text-sm font-medium text-foreground">{associado.nome_asaas || "-"}</dd>
+                  </div>
+                  <div>
                     <dt className="text-xs text-muted-foreground">CPF/CNPJ</dt>
                     <dd className="font-mono text-sm font-medium text-foreground">{associado.cpf_cnpj}</dd>
                   </div>

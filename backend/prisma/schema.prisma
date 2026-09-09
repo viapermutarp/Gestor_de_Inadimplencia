@@ -99,6 +99,12 @@ model Associado {
   franquia               Franquia  @relation(fields: [franquiaId], references: [id])
   cpfCnpj                String    @unique @map("cpf_cnpj")
   nome                   String
+  // Nome exatamente como cadastrado no Asaas (verbatim, sem parsing/tratamento),
+  // incluindo o prefixo numérico que o Asaas usa (ex: "45.493.621 ERICA DA COSTA ROSA").
+  // Populado no fluxo de sync (POST /api/sync) só quando ainda está nulo — nunca
+  // sobrescreve um valor já existente em sync incremental (ver AJUSTE 9 no README).
+  // NÃO confundir com "nome" acima, que segue sendo o nome tratado/exibido no título do modal.
+  nomeAsaas              String?   @map("nome_asaas")
   telefone               String
   email                  String?
   emNegociacao           Boolean   @default(false) @map("em_negociacao")

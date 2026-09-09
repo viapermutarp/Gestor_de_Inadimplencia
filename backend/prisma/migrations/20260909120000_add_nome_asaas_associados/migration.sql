@@ -1,0 +1,20 @@
+-- AJUSTE 9 — Exibir nome completo do Asaas nos dados cadastrais do associado
+-- (ver brief "Exibir nome completo do Asaas nos dados cadastrais do
+-- associado" e README para detalhes do fluxo completo).
+--
+-- Novo campo "nome_asaas" em associados: guarda o campo "name" retornado
+-- pela API do Asaas (GET /customers/{id} ou busca por cpfCnpj) de forma
+-- verbatim, sem nenhum parsing/tratamento — inclui o prefixo numérico que
+-- o Asaas usa (ex: "45.493.621 ERICA DA COSTA ROSA").
+--
+-- NÃO substitui nem sobrescreve a coluna "nome" já existente, que continua
+-- sendo o nome tratado/exibido no título do modal "Detalhe do Associado" —
+-- essa lógica de exibição não muda.
+--
+-- Populado em dois momentos:
+--   1) Backfill único (script backend/scripts/backfill-nome-asaas.js) para
+--      todos os associados já cadastrados hoje.
+--   2) Fluxo de sync (POST /api/sync, alimentado por "Sync Horário" e pelo
+--      botão "Atualizar"), só quando "nome_asaas" ainda está nulo — sync
+--      incremental nunca re-busca nem sobrescreve um valor já preenchido.
+ALTER TABLE "associados" ADD COLUMN "nome_asaas" TEXT;

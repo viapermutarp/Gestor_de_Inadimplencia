@@ -1,3 +1,5 @@
+const { buscarClientePorCpfCnpj } = require('../services/asaas.service');
+
 const STATUS_VALIDOS = ['pending', 'overdue', 'paid'];
 
 // Status considerados "em aberto" no banco — mesmo conjunto usado por
@@ -188,6 +190,29 @@ exports.sync = async (req, res, next) => {
         associadosAtualizados += 1;
       } else {
         associadosCriados += 1;
+      }
+
+      // AJUSTE 9 — popula Associado.nomeAsaas (nome verbatim do Asaas, com
+      // o prefixo numérico dele, exibido em "Dados cadastrais" no modal) SÓ
+      // quando ainda está nulo/vazio. Sync incremental reenvia o mesmo
+      // associado em aberto repetidamente (a cada "Sync Horário"/"Atualizar"),
+      // então nunca re-buscamos nem sobrescrevemos um valor já preenchido —
+      // uma atualização completa exige rodar o script de backfill de novo
+      // (decisão explícita do usuário, ver README). Uma falha aqui (Asaas
+      // fora do ar, chave inválida, cliente não encontrado) é só logada —
+      // não pode derrubar o sync do associado/cobranças em si.
+      if (!associado.nomeAsaas) {
+        try {
+          const nomeAsaas = await buscarClientePorCpfCnpj(cpfCnpj, req.franquiaId);
+          if (nomeAsaas) {
+            await req.prisma.associado.update({
+              where: { cpfCnpj },
+              data: { nomeAsaas },
+            });
+          }
+        } catch (err) {
+          console.error(`[sync] Falha ao buscar nomeAsaas para ${cpfCnpj}:`, err.message);
+        }
       }
 
       if (Array.isArray(cobrancas)) {

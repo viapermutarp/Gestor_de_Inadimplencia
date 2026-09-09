@@ -136,4 +136,33 @@ async function obterClientesPorId(idsClientes, franquiaId) {
   return porId;
 }
 
-module.exports = { listarPagamentos, obterClientesPorId, AsaasApiError, ASAAS_BASE_URL };
+/**
+ * Busca o cliente do Asaas pelo CPF/CNPJ (usado para popular
+ * Associado.nomeAsaas — ver AJUSTE 9), via GET /v3/customers?cpfCnpj=...
+ * (a API de clientes aceita busca por cpfCnpj, com ou sem formatação; aqui
+ * sempre enviamos só dígitos, mesma normalização usada no matching de
+ * exclusões). Retorna o campo "name" tal como veio do Asaas, VERBATIM (sem
+ * nenhum parsing/tratamento — inclui o prefixo numérico que o Asaas usa,
+ * ex: "45.493.621 ERICA DA COSTA ROSA"), ou null se não encontrar nenhum
+ * cliente com esse documento (removido do Asaas, documento divergente,
+ * etc.) — nunca lança nesse caso, só em falha de rede/autenticação (deixa a
+ * AsaasApiError subir pra quem chamou decidir como tratar).
+ */
+async function buscarClientePorCpfCnpj(cpfCnpj, franquiaId) {
+  const documento = (cpfCnpj || '').replace(/\D/g, '');
+  if (!documento) return null;
+
+  const pagina = await requisitar('/customers', { cpfCnpj: documento, limit: 2 }, franquiaId);
+  const clientes = Array.isArray(pagina.data) ? pagina.data : [];
+  if (clientes.length === 0) return null;
+
+  return clientes[0].name || null;
+}
+
+module.exports = {
+  listarPagamentos,
+  obterClientesPorId,
+  buscarClientePorCpfCnpj,
+  AsaasApiError,
+  ASAAS_BASE_URL,
+};

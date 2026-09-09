@@ -40,6 +40,9 @@ function serializeAssociado(associado) {
     id: associado.id,
     cpf_cnpj: associado.cpfCnpj,
     nome: associado.nome,
+    // Nome exatamente como cadastrado no Asaas, verbatim (sem parsing/tratamento) —
+    // ver AJUSTE 9. Pode ser null enquanto o backfill/sync ainda não populou.
+    nome_asaas: associado.nomeAsaas,
     telefone: associado.telefone,
     email: associado.email,
     em_negociacao: associado.emNegociacao,

@@ -11,7 +11,8 @@
     "prisma:migrate": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
     "mock:asaas": "node scripts/mock-asaas-server.js",
-    "diagnostico:ajuste8": "node scripts/diagnostico-ajuste8.js"
+    "diagnostico:ajuste8": "node scripts/diagnostico-ajuste8.js",
+    "backfill:nome-asaas": "node scripts/backfill-nome-asaas.js"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",
