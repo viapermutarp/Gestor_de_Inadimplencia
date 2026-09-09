@@ -269,3 +269,16 @@ export function IconShield({ className = "h-5 w-5" }) {
     </svg>
   );
 }
+
+// Setas nos 4 cantos ("expandir") — usado no botão "Abrir em tela cheia" do
+// preview de documentos do Jurídico (ver DocumentosCard em app/juridico/page.js).
+export function IconExpand({ className = "h-5 w-5" }) {
+  return (
+    <svg {...base} className={className}>
+      <path d="M9 4.5H5a1 1 0 0 0-1 1v4" />
+      <path d="M15 4.5h4a1 1 0 0 1 1 1v4" />
+      <path d="M9 19.5H5a1 1 0 0 1-1-1v-4" />
+      <path d="M15 19.5h4a1 1 0 0 0 1-1v-4" />
+    </svg>
+  );
+}

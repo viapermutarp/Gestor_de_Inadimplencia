@@ -33,6 +33,7 @@ import {
   IconScale,
   IconHistory,
   IconFileText,
+  IconExpand,
 } from "@/components/icons";
 
 // Tamanho máximo de upload — mesmo valor default do backend
@@ -951,6 +952,99 @@ function HistoricoCard({ cardId }) {
   );
 }
 
+function escapeHtml(valor) {
+  return String(valor)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Monta o documento HTML completo escrito na aba nova de "Abrir em tela
+ * cheia" pra DOCX/XLSX (ver `handleAbrirTelaCheia` em DocumentosCard — PDF/
+ * imagem não passam por aqui, só abrem o blob já carregado direto). O HTML
+ * de "htmlConteudo" já chega sanitizado duas vezes (backend + DOMPurify, ver
+ * `visualizarDocumentoJuridico` em lib/api.js) — só falta deixar
+ * "apresentável": fundo branco fixo (não o tema escuro do app — é conteúdo
+ * de documento pra leitura, não uma tela do sistema), a mesma fonte de
+ * corpo do app (IBM Plex Sans, via Google Fonts direto — o app carrega essa
+ * fonte com "next/font/google", que faz self-host só dentro do bundle do
+ * Next, sem uma URL própria pra reaproveitar aqui numa aba separada) e um
+ * container de largura confortável de leitura, centralizado. Tabelas
+ * largas (ex.: XLSX com muitas colunas) ficam dentro de um wrapper com
+ * scroll horizontal PRÓPRIO — sem isso, uma tabela larga estouraria a
+ * largura do container inteiro em vez de só rolar por dentro dela.
+ */
+function montarHtmlPreviewTelaCheia(nomeArquivo, htmlConteudo) {
+  const tituloSeguro = escapeHtml(nomeArquivo || "Documento");
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${tituloSeguro}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: #ffffff;
+    color: #1a1a1a;
+    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  }
+  .documento-cabecalho {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 32px 24px 0 24px;
+  }
+  .documento-cabecalho h1 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin: 0 0 4px 0;
+    word-break: break-word;
+  }
+  .documento-cabecalho p {
+    margin: 0 0 20px 0;
+    font-size: 0.8rem;
+    color: #6b7280;
+  }
+  .documento-corpo {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 24px 56px 24px;
+    line-height: 1.6;
+    font-size: 0.95rem;
+    border-top: 1px solid #e5e7eb;
+    padding-top: 20px;
+  }
+  .documento-corpo img { max-width: 100%; }
+  .documento-corpo table { border-collapse: collapse; width: 100%; }
+  .documento-corpo td, .documento-corpo th {
+    border: 1px solid #e5e7eb;
+    padding: 6px 10px;
+    text-align: left;
+    white-space: nowrap;
+  }
+  /* Wrapper com scroll horizontal próprio — uma tabela com muitas colunas
+     (XLSX largo) rola por dentro dela, sem estourar a largura confortável
+     de leitura do container inteiro (ver docblock desta função). */
+  .documento-tabela-scroll { max-width: 100%; overflow-x: auto; }
+</style>
+</head>
+<body>
+  <div class="documento-cabecalho">
+    <h1>${tituloSeguro}</h1>
+    <p>Visualização gerada pelo Gestor de Inadimplência</p>
+  </div>
+  <div class="documento-corpo"><div class="documento-tabela-scroll">${htmlConteudo}</div></div>
+</body>
+</html>`;
+}
+
 // Aba "Documentos" do ModalCard (AJUSTE 11 — "Documentos anexados ao
 // associado, visíveis no card Jurídico"). Ligados por "cpfCnpj" do
 // associado, não por "cardId" — por isso continuam existindo (e reaparecem
@@ -1031,6 +1125,41 @@ function DocumentosCard({ cpfCnpj }) {
     } finally {
       setPreviewCarregando(false);
     }
+  }
+
+  /**
+   * Botão "Abrir em tela cheia" (aditivo — o preview pequeno acima continua
+   * exatamente como estava, esse é só um caminho alternativo pra quem quer
+   * mais espaço). Só aparece quando o preview do documento já carregou com
+   * sucesso (`previewConteudo`), então nunca precisa buscar nada de novo —
+   * reaproveita o mesmo conteúdo já em memória:
+   *   - PDF/imagem: `previewConteudo.url` já é um blob local do arquivo
+   *     original — o navegador sabe renderizar isso nativamente numa aba,
+   *     sem HTML/CSS nenhum da nossa parte.
+   *   - DOCX/XLSX: não existe uma URL de arquivo pra abrir direto (é HTML
+   *     convertido) — abre uma aba em branco e escreve nela um documento
+   *     "apresentável" (ver `montarHtmlPreviewTelaCheia` acima).
+   * `window.open` chamado direto (síncrono) dentro do próprio `onClick`,
+   * nunca depois de um `await` — é isso que evita o bloqueador de pop-up
+   * do navegador. Se ainda assim vier bloqueado (`null`), avisa em vez de
+   * falhar silenciosamente.
+   */
+  function handleAbrirTelaCheia(doc) {
+    if (!previewConteudo) return;
+
+    if (previewConteudo.tipo === "arquivo") {
+      const aba = window.open(previewConteudo.url, "_blank");
+      if (!aba) setErro("Não foi possível abrir em tela cheia — verifique se o navegador bloqueou o pop-up.");
+      return;
+    }
+
+    const aba = window.open("", "_blank");
+    if (!aba) {
+      setErro("Não foi possível abrir em tela cheia — verifique se o navegador bloqueou o pop-up.");
+      return;
+    }
+    aba.document.write(montarHtmlPreviewTelaCheia(doc.nome_original, previewConteudo.html));
+    aba.document.close();
   }
 
   const carregar = useCallback(async () => {
@@ -1198,45 +1327,62 @@ function DocumentosCard({ cpfCnpj }) {
 
               {previewAbertoId === doc.id && (
                 <div className="mt-3 border-t border-border-soft pt-3">
-                  {previewCarregando ? (
-                    <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
-                      <Spinner className="h-4 w-4" />
-                      Gerando visualização...
-                    </div>
-                  ) : previewErro ? (
-                    <div className="space-y-2">
-                      <ErrorBanner message={previewErro} />
+                  <div className="relative">
+                    {/* Aditivo — o preview pequeno abaixo continua igual; isso só
+                        oferece um caminho alternativo pra quem quer mais espaço.
+                        Só aparece depois que o preview termina de carregar com
+                        sucesso (senão não há nada ainda pra abrir em tela cheia). */}
+                    {previewConteudo && (
                       <button
                         type="button"
-                        onClick={() => handleBaixar(doc)}
-                        disabled={baixandoId === doc.id}
-                        className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                        onClick={() => handleAbrirTelaCheia(doc)}
+                        title="Abrir em tela cheia"
+                        aria-label="Abrir em tela cheia"
+                        className="absolute right-2 top-2 z-10 rounded-lg bg-surface-elevated/90 p-1.5 text-muted-foreground shadow-sm ring-1 ring-border-soft transition-colors hover:text-foreground hover:bg-surface-elevated"
                       >
-                        {baixandoId === doc.id ? "Baixando..." : "Baixar o arquivo"}
+                        <IconExpand className="h-4 w-4" />
                       </button>
-                    </div>
-                  ) : previewConteudo?.tipo === "arquivo" && previewConteudo.mime.startsWith("application/pdf") ? (
-                    <iframe
-                      src={previewConteudo.url}
-                      title={doc.nome_original}
-                      className="h-[70vh] w-full rounded-lg border border-border-soft bg-white"
-                    />
-                  ) : previewConteudo?.tipo === "arquivo" && previewConteudo.mime.startsWith("image/") ? (
-                    // eslint-disable-next-line @next/next/no-img-element -- "src" é um blob URL local (autenticado na hora, revogado ao trocar/fechar o preview), não uma URL estática que o otimizador de imagem do Next consiga tratar.
-                    <img
-                      src={previewConteudo.url}
-                      alt={doc.nome_original}
-                      className="max-h-[70vh] w-full rounded-lg border border-border-soft object-contain"
-                    />
-                  ) : previewConteudo?.tipo === "html" ? (
-                    // HTML já sanitizado (backend + DOMPurify em visualizarDocumentoJuridico,
-                    // ver lib/api.js) — nunca renderizar HTML de documento aqui sem essa dupla
-                    // sanitização.
-                    <div
-                      className="max-h-[70vh] overflow-auto rounded-lg border border-border-soft bg-white p-3 text-xs text-neutral-900"
-                      dangerouslySetInnerHTML={{ __html: previewConteudo.html }}
-                    />
-                  ) : null}
+                    )}
+                    {previewCarregando ? (
+                      <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
+                        <Spinner className="h-4 w-4" />
+                        Gerando visualização...
+                      </div>
+                    ) : previewErro ? (
+                      <div className="space-y-2">
+                        <ErrorBanner message={previewErro} />
+                        <button
+                          type="button"
+                          onClick={() => handleBaixar(doc)}
+                          disabled={baixandoId === doc.id}
+                          className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                        >
+                          {baixandoId === doc.id ? "Baixando..." : "Baixar o arquivo"}
+                        </button>
+                      </div>
+                    ) : previewConteudo?.tipo === "arquivo" && previewConteudo.mime.startsWith("application/pdf") ? (
+                      <iframe
+                        src={previewConteudo.url}
+                        title={doc.nome_original}
+                        className="h-[70vh] w-full rounded-lg border border-border-soft bg-white"
+                      />
+                    ) : previewConteudo?.tipo === "arquivo" && previewConteudo.mime.startsWith("image/") ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- "src" é um blob URL local (autenticado na hora, revogado ao trocar/fechar o preview), não uma URL estática que o otimizador de imagem do Next consiga tratar.
+                      <img
+                        src={previewConteudo.url}
+                        alt={doc.nome_original}
+                        className="max-h-[70vh] w-full rounded-lg border border-border-soft object-contain"
+                      />
+                    ) : previewConteudo?.tipo === "html" ? (
+                      // HTML já sanitizado (backend + DOMPurify em visualizarDocumentoJuridico,
+                      // ver lib/api.js) — nunca renderizar HTML de documento aqui sem essa dupla
+                      // sanitização.
+                      <div
+                        className="max-h-[70vh] overflow-auto rounded-lg border border-border-soft bg-white p-3 text-xs text-neutral-900"
+                        dangerouslySetInnerHTML={{ __html: previewConteudo.html }}
+                      />
+                    ) : null}
+                  </div>
                 </div>
               )}
             </li>
