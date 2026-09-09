@@ -390,12 +390,17 @@ export function getResumoInadimplencia({
  * (valor_total_faturado, valor_inadimplente, taxa_inadimplencia_percentual),
  * mais taxa_adimplencia_percentual, agrupados por mês ("YYYY-MM"). Mesmos
  * parâmetros de filtro do /resumo (`renegociacao`/`emJuridico`/`bloqueado`/
- * `tipoPendencia`, `forcar`), mas NÃO aceita `visao` (AJUSTE 6 — a
- * unificação com o toggle "aberto"/"historico" foi só para os 3 cards do
- * /resumo; este endpoint continua exclusivamente por status atual, sempre,
- * e também não devolve faixas).
+ * `tipoPendencia`, `forcar`).
+ *
+ * `visao` (AJUSTE 13 — antes disso este endpoint era exclusivamente por
+ * status atual, sempre, independente do toggle "Em aberto hoje"/"Histórico
+ * do período" já usado no resto da tela — o que fazia o gráfico não bater
+ * com os cards do topo quando "Histórico do período" estava selecionado.
+ * Corrigido: agora aceita o mesmo "visao" do /resumo e reflete o mesmo
+ * critério mês a mês — ver README do backend, seção "AJUSTE 13"). Continua
+ * sem devolver faixas (isso é exclusivo do /resumo).
  */
-export function getEvolucaoMensal({ vencDe, vencAte, renegociacao, emJuridico, bloqueado, tipoPendencia, forcar } = {}) {
+export function getEvolucaoMensal({ vencDe, vencAte, renegociacao, emJuridico, bloqueado, tipoPendencia, visao, forcar } = {}) {
   const params = new URLSearchParams();
   if (vencDe) params.set("venc_de", vencDe);
   if (vencAte) params.set("venc_ate", vencAte);
@@ -403,6 +408,7 @@ export function getEvolucaoMensal({ vencDe, vencAte, renegociacao, emJuridico, b
   if (emJuridico) params.set("em_juridico", emJuridico);
   if (bloqueado) params.set("bloqueado", bloqueado);
   if (tipoPendencia) params.set("tipo_pendencia", tipoPendencia);
+  if (visao) params.set("visao", visao);
   if (forcar) params.set("forcar", "true");
 
   const query = params.toString();

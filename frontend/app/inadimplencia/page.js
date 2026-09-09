@@ -40,7 +40,18 @@ const OPCOES_TIPO_PENDENCIA = [
   { value: "confirmadas", label: "Só confirmadas" },
 ];
 
-const STATUS_ASSOCIADO_VAZIO = { emNegociacao: false, bloqueado: false, emJuridico: false };
+// "emJuridico" é uma string tri-estado ("todos" | "ativos" | "juridico"),
+// não mais um booleano — ver StatusAssociadoFilter.js e o AJUSTE
+// "Inadimplente Ativo x Inadimplente Jurídico" (reunião Suelen + Roberto,
+// 08/09).
+const STATUS_ASSOCIADO_VAZIO = { emNegociacao: false, bloqueado: false, emJuridico: "todos" };
+
+/** "todos"|"ativos"|"juridico" (UI) -> "todos"|"nao"|"sim" (parâmetro `em_juridico` da API). */
+function emJuridicoParaApi(valor) {
+  if (valor === "juridico") return "sim";
+  if (valor === "ativos") return "nao";
+  return "todos";
+}
 
 const INPUT =
   "w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40";
@@ -109,13 +120,18 @@ export default function InadimplenciaPage() {
   const [atualizando, setAtualizando] = useState(false);
   const [atualizadoAgora, setAtualizadoAgora] = useState(false);
 
-  // Busca /resumo e /evolucao-mensal juntos, com os mesmos filtros — os dois
+  // Busca /resumo e /evolucao-mensal juntos, com os MESMOS filtros — os dois
   // endpoints compartilham a mesma base de cálculo no backend (mesma
-  // exclusão combinada, mesmos cross-references de renegociação/jurídico).
-  // Erros de "chave do Asaas não configurada" só disparam o banner de
-  // /resumo (a seção inteira, incluindo o gráfico de evolução, já fica
-  // escondida nesse caso — ver JSX abaixo), então o erro equivalente vindo
-  // de /evolucao-mensal é silenciado para não duplicar a mensagem.
+  // exclusão combinada, mesmos cross-references de renegociação/jurídico) e,
+  // desde o AJUSTE 13 (reunião Suelen + Roberto, 08/09), também o mesmo
+  // "visao" — é exatamente essa unificação que corrige o gráfico de
+  // evolução mensal não bater com os cards do topo quando "Histórico do
+  // período" está selecionado (o card e o ponto do gráfico pro mesmo mês
+  // passam a usar o mesmo critério). Erros de "chave do Asaas não
+  // configurada" só disparam o banner de /resumo (a seção inteira, incluindo
+  // o gráfico de evolução, já fica escondida nesse caso — ver JSX abaixo),
+  // então o erro equivalente vindo de /evolucao-mensal é silenciado para não
+  // duplicar a mensagem.
   //
   // `forcar`: quando true, passa "forcar=true" pros dois endpoints — o
   // backend ignora o cache dessa chamada (sempre busca dados frescos do
@@ -133,13 +149,14 @@ export default function InadimplenciaPage() {
         vencDe: vencDe || undefined,
         vencAte: vencAte || undefined,
         renegociacao: status.emNegociacao ? "sim" : "todos",
-        emJuridico: status.emJuridico ? "sim" : "todos",
+        emJuridico: emJuridicoParaApi(status.emJuridico),
         bloqueado: status.bloqueado ? "sim" : "todos",
         tipoPendencia,
+        visao,
         forcar,
       };
 
-      const resumoPromise = getResumoInadimplencia({ ...params, visao })
+      const resumoPromise = getResumoInadimplencia(params)
         .then((data) => setResumo(data))
         .catch((err) => {
           if (err instanceof ApiError && err.status === 400 && /asaas-key/i.test(err.message)) {
@@ -369,7 +386,7 @@ export default function InadimplenciaPage() {
             <TopDevedores devedores={resumo?.top_devedores} loading={loading} />
           </div>
 
-          <EvolucaoMensalChart dados={evolucaoMensal} loading={loadingEvolucao} erro={erroEvolucao} />
+          <EvolucaoMensalChart dados={evolucaoMensal} loading={loadingEvolucao} erro={erroEvolucao} visao={visao} />
 
           <ExclusoesPanel onAlterado={carregarDados} />
         </>

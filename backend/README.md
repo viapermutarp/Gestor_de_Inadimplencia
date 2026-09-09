@@ -486,7 +486,7 @@ O parâmetro `visao` (`aberto`\|`historico`, padrão `aberto`; renomeado de `vis
 
 `dataLimiteEfetiva = dueDate + diasTolerancia` (ver seção "Período de tolerância" acima). Em qualquer um dos dois modos, se o resultado de "dias de atraso efetivos" for **negativo** (a cobrança ainda está dentro da janela de tolerância), ela **não aparece em nenhuma faixa nem em `criticos_90_dias`** — mesmo que o Asaas já marque `status: "OVERDUE"` (isso só pode acontecer no modo `aberto`; no `historico` o próprio conjunto de INADIMPLENTES já exclui essas cobranças antes de chegar aqui).
 
-**A diferença na prática**: o modo `aberto` é um **retrato do dia de hoje** — "quanto está em aberto agora, e há quanto tempo" — útil para o time de cobrança decidir quem ligar. O modo `historico` é o **retrato do período filtrado**, fixo: uma cobrança vencida em maio e paga com atraso em julho aparece na faixa correspondente ao atraso efetivo do pagamento (`paymentDate - dataLimiteEfetiva`) mesmo que hoje, em agosto, ela já não apareça mais em nenhuma lista de "em aberto". **Desde o AJUSTE 6**, `valor_inadimplente`/`valor_adimplente`/as duas taxas no `/resumo` **também mudam** entre os dois modos, pela mesma razão — em `aberto` usam o status atual do Asaas (AJUSTE CRÍTICO 3), em `historico` usam a mesma classificação por data que alimenta as faixas (ver seção "AJUSTE 6" acima). Em `/evolucao-mensal`, que não aceita `visao`, `valor_inadimplente`/`taxa_inadimplencia_percentual` continuam fixos na classificação histórica por data, sempre — ver seção "Evolução mensal" abaixo.
+**A diferença na prática**: o modo `aberto` é um **retrato do dia de hoje** — "quanto está em aberto agora, e há quanto tempo" — útil para o time de cobrança decidir quem ligar. O modo `historico` é o **retrato do período filtrado**, fixo: uma cobrança vencida em maio e paga com atraso em julho aparece na faixa correspondente ao atraso efetivo do pagamento (`paymentDate - dataLimiteEfetiva`) mesmo que hoje, em agosto, ela já não apareça mais em nenhuma lista de "em aberto". **Desde o AJUSTE 6**, `valor_inadimplente`/`valor_adimplente`/as duas taxas no `/resumo` **também mudam** entre os dois modos, pela mesma razão — em `aberto` usam o status atual do Asaas (AJUSTE CRÍTICO 3), em `historico` usam a mesma classificação por data que alimenta as faixas (ver seção "AJUSTE 6" acima). **Desde o AJUSTE 13**, `/evolucao-mensal` também aceita e respeita `visao`, com exatamente a mesma semântica — ver seção "AJUSTE 13" abaixo.
 
 ### Filtros `renegociacao`, `em_juridico` e `bloqueado`
 
@@ -526,9 +526,9 @@ Alterar qualquer uma das duas listas (criar/remover exclusão manual, ou substit
 
 ### Evolução mensal (`GET /api/inadimplencia/evolucao-mensal`)
 
-Mesma base de cálculo do `/resumo` — mesma exclusão combinada e os mesmos filtros `renegociacao`/`em_juridico`/`bloqueado` — mas devolvida **por mês**, para alimentar um gráfico de evolução. Aceita os mesmos query params de filtro (`venc_de`, `venc_ate`, `renegociacao`, `em_juridico`, `bloqueado`), com o mesmo padrão de período (últimos 12 meses quando `venc_de`/`venc_ate` não são informados). Não aceita `visao` (esse endpoint não devolve `faixas`/`criticos_90_dias`) — ver seção "AJUSTE 6" acima para o motivo desse endpoint ficar de fora da unificação.
+Mesma base de cálculo do `/resumo` — mesma exclusão combinada e os mesmos filtros `renegociacao`/`em_juridico`/`bloqueado` — mas devolvida **por mês**, para alimentar um gráfico de evolução. Aceita os mesmos query params de filtro (`venc_de`, `venc_ate`, `renegociacao`, `em_juridico`, `bloqueado`, `tipo_pendencia`), com o mesmo padrão de período (últimos 12 meses quando `venc_de`/`venc_ate` não são informados). **Desde o AJUSTE 13**, também aceita `visao` (`aberto`\|`historico`, mesmo default e mesma semântica do `/resumo` — ver seção "AJUSTE 13" abaixo).
 
-`valor_inadimplente` e `taxa_inadimplencia_percentual` usam a **classificação histórica por data de pagamento** (ver seção "Classificação histórica de inadimplência" acima) — o mês de vencimento de uma cobrança paga com atraso continua mostrando ela como inadimplente, mesmo que o `status` atual já seja `RECEIVED`.
+`valor_inadimplente` e `taxa_inadimplencia_percentual` de cada mês seguem `visao`, exatamente como no `/resumo`: em `aberto` (padrão), pelo `status` atual da cobrança no Asaas; em `historico`, pela **classificação por data de pagamento** (ver seção "Classificação histórica de inadimplência" acima) — o mês de vencimento de uma cobrança paga com atraso aparece como inadimplente nesse modo, mesmo que o `status` atual já seja `RECEIVED`.
 
 Todo mês dentro do intervalo pedido aparece no array de resposta, **mesmo sem nenhuma cobrança naquele mês** (todos os campos zerados).
 
@@ -551,7 +551,7 @@ curl "https://api.exemplo.com/api/inadimplencia/evolucao-mensal?venc_de=2026-01-
 # ]
 ```
 
-**Cache** (`src/services/cache.service.js`) — assim como o `/resumo`, o resultado completo é cacheado em memória por **4 minutos**, num namespace de cache separado, com a chave sendo a combinação exata `(venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia)`.
+**Cache** (`src/services/cache.service.js`) — assim como o `/resumo`, o resultado completo é cacheado em memória por **4 minutos**, num namespace de cache separado, com a chave sendo a combinação exata `(venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia, visao)` (AJUSTE 13: `visao` entrou na chave).
 
 **Cache do `/resumo`** — mesma lógica, mesma janela de 4 minutos, mesma chave `(venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia, visao)` (AJUSTE 4: `tipo_pendencia` entrou na chave; AJUSTE 6: `visao_faixas` da chave renomeado para `visao`, mesmo campo). Chamadas repetidas com os mesmos filtros dentro da janela não fazem nenhuma requisição nova ao Asaas. É um cache só do processo (não distribuído, não sobrevive a restart) — adequado para uma tela consultada por poucos usuários do painel; se a API rodar em múltiplas instâncias atrás de um load balancer, cada instância mantém seu próprio cache.
 
@@ -590,6 +590,64 @@ curl "https://api.exemplo.com/api/inadimplencia/resumo?forcar=true" -H "Authoriz
 # diferença, 7949.50, é o valor de cobranças com outro status — tipicamente
 # "PENDING", ainda não vencidas — que não entram em nenhum dos dois
 # numeradores desde o AJUSTE CRÍTICO 3, ver seção acima.)
+```
+
+### AJUSTE 13 — `/evolucao-mensal` passa a aceitar `visao` (reunião Suelen + Roberto, 08/09)
+
+**Contexto**: a transcrição de uma reunião com a Suelen (equipe de cobrança) confirmou que a maior parte do que ela precisava já estava implementada (7 faixas de atraso, toggle `aberto`/`historico`, automação Dashboard↔Jurídico). Restavam 2 pontos genuinamente novos/pendentes — este ajuste resolve o primeiro; o segundo (separar "Inadimplente Ativo" de "Inadimplente Jurídico") **não precisou de nenhuma mudança de backend** — ver nota no fim desta seção.
+
+**O bug**: desde o AJUSTE 6, os 3 cards do topo do `/resumo` (Valor Inadimplente/Adimplente/Taxa) já respeitavam `visao`, mas `/evolucao-mensal` (o gráfico de linha, "a bolinha") continuava fixo na classificação histórica por data de pagamento (documentado, antes deste ajuste, como uma exclusão intencional da unificação do AJUSTE 6). Isso fazia os dois números **parecerem não bater** para o mesmo período quando `visao=historico` estava selecionado no `/resumo` — o card do topo mostrava a taxa correta em `historico`, mas o ponto do gráfico continuava mostrando a taxa em modo histórico incondicionalmente, então em `visao=aberto` os dois batiam por coincidência e em `visao=historico` divergiam.
+
+**A correção**: `/evolucao-mensal` passou a receber e validar o mesmo parâmetro `visao` (`aberto`\|`historico`, default `aberto` — **sem nenhuma regressão**, o comportamento antigo era exatamente o modo `aberto`) e a aplicar, **por pagamento, dentro do mesmo laço de agrupamento por mês** que já existia, a mesma lógica de classificação já usada em outros lugares — sem recalcular do zero:
+
+- `visao=aberto`: `status` atual da cobrança no Asaas (`STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA`/`STATUS_ADIMPLENTE`, mesmas constantes do `/resumo`) — comportamento idêntico ao que existia antes deste ajuste.
+- `visao=historico`: `classificarPagamento` (a mesma função já usada pelo `/resumo` em `computarValorInadimplenteAdimplenteHistorico`), reaproveitada tal e qual — cada pagamento entra em INADIMPLENTE/ADIMPLENTE/A_VENCER pela data de pagamento vs. vencimento (+ tolerância), e é somado no mês do seu `dueDate`.
+
+`diasTolerancia` (necessária só para `historico`) voltou a ser buscada por este endpoint — tinha deixado de ser desde o AJUSTE CRÍTICO 3, quando nada aqui ainda dependia de comparação de datas.
+
+**Confirmado explicitamente com o usuário**: não é necessário nenhum registro congelado/imutável no banco para este ajuste — o cálculo histórico **ao vivo** a partir do Asaas já é suficiente, porque uma cobrança paga com atraso continua contando como inadimplente naquele mês para sempre (a data de pagamento não muda), independente de quando a consulta é feita. A única forma desse número mudar depois é uma correção retroativa rara direto no Asaas, considerada aceitável.
+
+**Teste realizado (Postgres + servidor Express reais, API do Asaas mockada com 6 cobranças fictícias em Agosto/2026 sobre 2 associados — um "ativo", um "jurídico" — via `ASAAS_API_BASE_URL` apontando para um mock HTTP local)**:
+
+```
+GET /api/inadimplencia/resumo?venc_de=2026-08-01&venc_ate=2026-08-31&visao=historico
+  → taxa_inadimplencia_percentual: 80.95, valor_inadimplente: 3400, valor_adimplente: 800
+
+GET /api/inadimplencia/evolucao-mensal?venc_de=2026-08-01&venc_ate=2026-08-31&visao=historico
+  → [{ "mes": "2026-08", "taxa_inadimplencia_percentual": 80.95, "valor_inadimplente": 3400 }]
+  # bate exatamente com o /resumo do mesmo mês — critério do "Teste esperado" do brief.
+
+GET /api/inadimplencia/resumo?venc_de=2026-08-01&venc_ate=2026-08-31&visao=aberto
+GET /api/inadimplencia/evolucao-mensal?venc_de=2026-08-01&venc_ate=2026-08-31&visao=aberto
+  → os dois: taxa_inadimplencia_percentual: 59.52, valor_inadimplente: 2500
+  # visao=aberto também bate (já batia, sem regressão) — E os números 59.52%
+  # (aberto) x 80.95% (historico) são REALMENTE diferentes, confirmando que a
+  # correção está de fato usando lógicas distintas, não uma coincidência.
+
+GET /api/inadimplencia/evolucao-mensal?venc_de=2026-08-01&venc_ate=2026-08-31   (sem "visao")
+  → taxa_inadimplencia_percentual: 59.52  # default "aberto" preservado, sem regressão.
+
+GET /api/inadimplencia/evolucao-mensal?venc_de=2026-08-01&venc_ate=2026-08-31&visao=invalido
+  → 400 { "error": "\"visao\" deve ser \"aberto\" ou \"historico\"." }
+```
+
+**Nota — "Inadimplente Ativo" x "Inadimplente Jurídico"**: o segundo pedido da mesma reunião (separar, no filtro "Status do associado" da tela, quem está só inadimplente de quem já foi para o jurídico) **não exigiu nenhuma mudança neste arquivo** — o filtro `em_juridico` tri-estado (`todos`\|`sim`\|`nao`) já existia por completo, desde antes, tanto em `/resumo` quanto em `/evolucao-mensal` (ver seção "Filtros `renegociacao`, `em_juridico` e `bloqueado`" acima — `validarFiltroTriEstado`/`aplicarFiltrosCrossReference`, compartilhados pelos dois endpoints, sem alteração nenhuma). Só a UI do painel (`StatusAssociadoFilter`) não expunha a opção `nao` ("Só ativos") — era um checkbox simples que só alcançava `todos`/`sim`. A mudança inteira desse ponto é só no frontend — ver AJUSTE 13 no README do frontend. Confirmado end-to-end no mesmo teste acima, combinando com `visao` nos dois modos:
+
+```
+                          faturado   inadimplente   adimplente   taxa
+visao=aberto,    todos      4200        2500          1700      59.52
+visao=aberto,    nao        1800        1300           500      72.22   (só o associado "ativo")
+visao=aberto,    sim        2400        1200          1200      50.00   (só o associado "jurídico")
+visao=historico, todos      4200        3400           800      80.95
+visao=historico, nao        1800        1800             0     100.00
+visao=historico, sim        2400        1600           800      66.67
+
+# "nao" + "sim" somam exatamente "todos" nos dois modos (1300+1200=2500,
+# 500+1200=1700, 1800+1600=3400, 0+800=800) — confirma que "Todos" soma os
+# dois grupos, "Só ativos" exclui o jurídico e "Só jurídico" mostra só ele,
+# em ambas as visões, como pedido no "Teste esperado" do brief. Verificado
+# também que /evolucao-mensal devolve os mesmos números que o /resumo para
+# cada combinação de visao + em_juridico (mesma base de cálculo).
 ```
 
 ### Como testar a tela de Inadimplência com dados fictícios

@@ -43,8 +43,21 @@ function construirPath(dados, campo) {
  *
  * Quando há muitos meses no período, nem todo rótulo do eixo X é exibido
  * (evita sobrepor texto) — mostra no máximo ~8 rótulos, distribuídos.
+ *
+ * `visao` ("aberto" | "historico") — AJUSTE 13 (reunião Suelen + Roberto,
+ * 08/09): até este ajuste este gráfico sempre calculava por status atual
+ * ("aberto"), mesmo quando os 3 cards do topo já estavam em "Histórico do
+ * período" (AJUSTE 6) — os dois pareciam não bater pro mesmo mês (ex.: card
+ * 51%, ponto do gráfico 18%). Agora a página busca /evolucao-mensal com o
+ * MESMO `visao` do resto da tela (ver carregarDados em
+ * app/inadimplencia/page.js) e o gráfico só usa a prop pra exibir, abaixo do
+ * título, qual critério está refletido nos pontos — mesmo texto/padrão do
+ * subtítulo do FaixasChart, pra deixar explícito que os dois usam o mesmo
+ * critério. Não há um segundo seletor aqui: a troca "Em aberto hoje" x
+ * "Histórico do período" continua sendo feita nas abas do FaixasChart
+ * (`onAlterarVisao`), que já controla o mesmo estado `visao` da página.
  */
-export default function EvolucaoMensalChart({ dados, loading, erro }) {
+export default function EvolucaoMensalChart({ dados, loading, erro, visao = "aberto" }) {
   const lista = Array.isArray(dados) ? dados : [];
 
   const passoRotulo = lista.length > 8 ? Math.ceil(lista.length / 8) : 1;
@@ -58,7 +71,11 @@ export default function EvolucaoMensalChart({ dados, loading, erro }) {
           </span>
           <div>
             <h3 className="text-sm font-semibold text-foreground">Evolução mensal</h3>
-            <p className="text-xs text-muted-foreground">Taxa de inadimplência x adimplência, mês a mês.</p>
+            <p className="text-xs text-muted-foreground">
+              {visao === "historico"
+                ? "Histórico do período: cada mês mostra a taxa que fechou historicamente — mesmo critério dos cards e do gráfico de faixas acima."
+                : "Em aberto hoje: taxa por status atual, mês a mês — mesmo critério dos cards e do gráfico de faixas acima."}
+            </p>
           </div>
         </div>
 

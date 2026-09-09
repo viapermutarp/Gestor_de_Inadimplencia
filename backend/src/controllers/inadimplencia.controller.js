@@ -705,10 +705,11 @@ function computarValorInadimplenteAdimplenteHistorico(pagamentos, hojeStr, diasT
  * associado — ver `separarExcluidos`/`buscarPagamentosValidos`. Não muda o
  * comportamento da lista manual por ID.
  *
- * ESCOPO — este ajuste ("visao" afetando os 3 cards) é só deste endpoint.
- * GET /api/inadimplencia/evolucao-mensal continua exclusivamente por
- * STATUS ATUAL (AJUSTE CRÍTICO 3), sem parâmetro "visao" — o gráfico de
- * evolução mensal não foi incluído no pedido desta unificação.
+ * ESCOPO (histórico) — quando este ajuste (AJUSTE 6) foi feito, "visao"
+ * afetava só os 3 cards deste endpoint; GET /api/inadimplencia/evolucao-
+ * mensal continuava exclusivamente por status atual, sem o parâmetro. Isso
+ * mudou no AJUSTE 13 (ver docblock de `evolucaoMensal` abaixo) — os dois
+ * endpoints aceitam "visao" com a mesma semântica hoje.
  *
  * Cacheado em memória por 4 minutos, por combinação exata de
  * (venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia,
@@ -905,7 +906,7 @@ exports.resumo = async (req, res, next) => {
 };
 
 /**
- * GET /api/inadimplencia/evolucao-mensal?venc_de=&venc_ate=&renegociacao=&em_juridico=&bloqueado=&tipo_pendencia=
+ * GET /api/inadimplencia/evolucao-mensal?venc_de=&venc_ate=&renegociacao=&em_juridico=&bloqueado=&tipo_pendencia=&visao=
  *
  * Mesma base de cálculo do /resumo — mesma exclusão combinada e mesmos
  * cross-references de renegociacao/em_juridico/bloqueado — mas agrupada por
@@ -914,41 +915,70 @@ exports.resumo = async (req, res, next) => {
  * dentro do intervalo aparece no resultado, mesmo sem nenhum pagamento
  * naquele mês (valores zerados; as duas taxas ficam 0%).
  *
- * AJUSTE CRÍTICO 3 (substitui o AJUSTE CRÍTICO 1) — "valor_inadimplente"/
- * "taxa_inadimplencia_percentual"/"taxa_adimplencia_percentual" usam o
- * mesmo critério por STATUS ATUAL do /resumo (ver docblock lá e
- * `STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA`/`STATUS_ADIMPLENTE` no topo do
- * arquivo), não mais a classificação histórica por data de pagamento.
+ * AJUSTE 13 (reunião Suelen + Roberto, 08/09) — CORRIGE um bug identificado
+ * anteriormente e não corrigido até aqui: este endpoint aceita agora o
+ * MESMO parâmetro "visao" do /resumo (AJUSTE 6), com exatamente a mesma
+ * semântica, mês a mês:
+ *   - "visao=aberto" (padrão — SEM NENHUMA REGRESSÃO): "valor_inadimplente"/
+ *     "taxa_inadimplencia_percentual"/"taxa_adimplencia_percentual" por
+ *     STATUS ATUAL de cada cobrança no Asaas (AJUSTE CRÍTICO 3, mantido tal
+ *     e qual — ver `STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA`/
+ *     `STATUS_ADIMPLENTE` no topo do arquivo), agrupado pelo mês do
+ *     `dueDate`. Continua "quem está em aberto AGORA", só que já não é mais
+ *     a única opção.
+ *   - "visao=historico": os mesmos 2 números passam a usar a MESMA
+ *     classificação por data de pagamento vs. vencimento que o /resumo já
+ *     usa em "visao=historico" (`classificarPagamento`/
+ *     `computarValorInadimplenteAdimplenteHistorico`) — reaproveitada aqui
+ *     tal e qual, SEM recalcular do zero: cada pagamento entra em
+ *     INADIMPLENTE/ADIMPLENTE/A_VENCER (mesma regra, mesmo período de
+ *     tolerância) e é somado no mês do seu `dueDate`. Uma cobrança paga com
+ *     atraso continua contando como inadimplente naquele mês PARA SEMPRE,
+ *     independente de quando a consulta for feita (a única forma de esse
+ *     número mudar depois é uma correção retroativa direto no Asaas — caso
+ *     raro, aceitável, confirmado explicitamente com o usuário; não existe
+ *     nenhum "congelamento"/registro imutável gravado no nosso banco, o
+ *     cálculo é sempre ao vivo a partir do Asaas).
+ *
+ * Motivo da correção: os 3 cards do topo da tela (consumindo /resumo) já
+ * usam "visao" desde o AJUSTE 6, mas este endpoint (o gráfico de evolução
+ * mensal, a "bolinha") continuava fixo em status atual — fazendo os dois
+ * números parecerem não bater pro mesmo período quando "Histórico do
+ * período" estava selecionado (ex.: card do topo mostrando 51% pra um mês,
+ * o gráfico mostrando 18% pro mesmo mês: o card já estava certo, o gráfico
+ * que estava respondendo a uma pergunta diferente). Com a mesma "visao" nos
+ * dois, a taxa do card do topo pra um período de 1 mês bate exatamente com
+ * o ponto do gráfico pra esse mesmo mês, nas duas visões.
+ *
+ * PERÍODO DE TOLERÂNCIA — voltou a ser lida por este endpoint (tinha
+ * deixado de ser desde o AJUSTE CRÍTICO 3, quando nenhum número aqui
+ * dependia mais de comparação de datas): necessária agora para
+ * "visao=historico", exatamente como no /resumo (mesma "data limite
+ * efetiva" = dueDate + diasTolerancia). Sem efeito em "visao=aberto"
+ * (comportamento por status atual não usa tolerância, como sempre).
+ *
  * "taxa_adimplencia_percentual" continua NÃO sendo o simples complementar
  * de "taxa_inadimplencia_percentual" (100 - taxa): tem numerador próprio
- * (soma dos valores com status RECEIVED/RECEIVED_IN_CASH) sobre
- * "valor_total_faturado". As duas taxas só somam 100% quando não há
- * nenhuma cobrança do "terceiro grupo" (nem inadimplente nem adimplente —
- * o mais comum sendo status PENDING, ainda não vencida) no mês.
+ * sobre "valor_total_faturado". As duas taxas só somam 100% quando não há
+ * nenhuma cobrança do "terceiro grupo" (PENDING/A_VENCER, conforme a
+ * visão) no mês.
  *
  * AJUSTE 4 — aceita "tipo_pendencia" (mesma semântica do /resumo): afeta
- * "valor_inadimplente"/"taxa_inadimplencia_percentual" de cada mês, nunca
- * "valor_adimplente"/"taxa_adimplencia_percentual".
- *
- * PERÍODO DE TOLERÂNCIA — não é mais lida por este endpoint: desde o
- * AJUSTE CRÍTICO 3, nenhum dos números aqui devolvidos depende de
- * comparação de datas (só de status atual). Fica só no /resumo, pra
- * "faixas"/"criticos_90_dias" (que este endpoint não tem).
+ * "valor_inadimplente"/"taxa_inadimplencia_percentual" de cada mês, MAS SÓ
+ * quando "visao=aberto" — em "visao=historico" é lido/validado normalmente
+ * mas SEM EFEITO (mesma regra do /resumo — não existe um equivalente de
+ * "só vencidas"/"só confirmadas" numa classificação por data de pagamento;
+ * o frontend já desabilita visualmente esse campo quando "Histórico do
+ * período" está selecionado, e essa mesma tela agora vale pros dois
+ * endpoints, já que compartilham o mesmo toggle).
  *
  * AJUSTE 7 — a exclusão por palavra-chave (compartilhada com /resumo via
  * `buscarPagamentosValidos`) passou a casar contra CPF/CNPJ e nome do
  * associado, além da descrição — ver docblock de `separarExcluidos`.
  *
- * ESCOPO — este endpoint NÃO recebeu o parâmetro "visao" do AJUSTE 6:
- * "valor_inadimplente"/as duas taxas aqui continuam exclusivamente por
- * STATUS ATUAL (AJUSTE CRÍTICO 3), sempre, independente de "visao" no
- * /resumo — o pedido de unificação foi só para os 3 cards do topo da
- * tela, que consomem /resumo; o gráfico de evolução mensal (que consome
- * este endpoint) não foi incluído.
- *
  * Cacheado em memória por 4 minutos, por combinação exata de
- * (venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia),
- * em um namespace de cache separado do /resumo. AJUSTE 2 — aceita
+ * (venc_de, venc_ate, renegociacao, em_juridico, bloqueado, tipo_pendencia,
+ * visao), em um namespace de cache separado do /resumo. AJUSTE 2 — aceita
  * "forcar=true" com a mesma semântica do /resumo: ignora a leitura do
  * cache, mas ainda grava o resultado novo.
  */
@@ -961,6 +991,7 @@ exports.evolucaoMensal = async (req, res, next) => {
       em_juridico: emJuridicoParam,
       bloqueado: bloqueadoParam,
       tipo_pendencia: tipoPendenciaParam,
+      visao: visaoParam,
     } = req.query;
 
     const { vencDe, vencAte, erro: erroPeriodo } = resolverPeriodo(vencDeParam, vencAteParam);
@@ -988,11 +1019,17 @@ exports.evolucaoMensal = async (req, res, next) => {
       return res.status(400).json({ error: erroTipoPendencia });
     }
 
+    // AJUSTE 13 — mesmo parâmetro/validação/default "aberto" do /resumo.
+    const visao = visaoParam === undefined ? 'aberto' : visaoParam;
+    if (!VISAO_VALIDAS.includes(visao)) {
+      return res.status(400).json({ error: '"visao" deve ser "aberto" ou "historico".' });
+    }
+
     // AJUSTE 2 — mesma semântica de "forcar=true" do /resumo (ver docblock
     // acima): ignora a leitura do cache, mas ainda grava o resultado novo.
     const forcar = req.query.forcar === 'true';
 
-    const chaveCache = `inadimplencia:evolucao-mensal:${vencDe}:${vencAte}:${renegociacao}:${emJuridico}:${bloqueado}:${tipoPendencia}`;
+    const chaveCache = `inadimplencia:evolucao-mensal:${vencDe}:${vencAte}:${renegociacao}:${emJuridico}:${bloqueado}:${tipoPendencia}:${visao}`;
     const cacheado = forcar ? undefined : cache.get(chaveCache);
     if (cacheado) {
       return res.json(cacheado);
@@ -1000,11 +1037,13 @@ exports.evolucaoMensal = async (req, res, next) => {
 
     const franquiaId = await resolverFranquiaIdOuPadrao(req);
 
-    const { validos: pagamentosValidos, resolucaoClientes: resolucaoDaExclusao } = await buscarPagamentosValidos(
-      req.prisma,
-      franquiaId,
-      { vencDe, vencAte }
-    );
+    // AJUSTE 13 — "diasTolerancia" voltou a ser necessária aqui (só usada
+    // abaixo quando "visao=historico"; buscada sempre, mesmo custo do
+    // /resumo, mesmo padrão de Promise.all).
+    const [{ validos: pagamentosValidos, resolucaoClientes: resolucaoDaExclusao }, diasTolerancia] = await Promise.all([
+      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
+      getDiasTolerancia(franquiaId),
+    ]);
 
     let conjuntoTrabalho = pagamentosValidos;
     if (renegociacao !== 'todos' || emJuridico !== 'todos' || bloqueado !== 'todos') {
@@ -1022,9 +1061,12 @@ exports.evolucaoMensal = async (req, res, next) => {
       );
     }
 
-    // AJUSTE CRÍTICO 3 — mesmo critério por status atual do /resumo (ver
-    // docblock acima e STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA/
-    // STATUS_ADIMPLENTE no topo do arquivo).
+    const hojeStr = formatarDataISO(new Date());
+    // AJUSTE 13 — "aberto": mesmo critério por status atual de sempre (ver
+    // docblock e STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA/STATUS_ADIMPLENTE no
+    // topo do arquivo). "historico": reaproveita `classificarPagamento`
+    // (mesma função usada por `computarValorInadimplenteAdimplenteHistorico`
+    // no /resumo) por pagamento, em vez de recalcular do zero.
     const statusInadimplenteValidos = STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA[tipoPendencia];
     const meses = gerarChavesMeses(vencDe, vencAte);
     const porMes = new Map(meses.map((mes) => [mes, { valorTotalFaturado: 0, valorInadimplente: 0, valorAdimplente: 0 }]));
@@ -1037,9 +1079,16 @@ exports.evolucaoMensal = async (req, res, next) => {
       const valor = Number(pagamento.value) || 0;
       acumulado.valorTotalFaturado += valor;
 
-      if (statusInadimplenteValidos.includes(pagamento.status)) acumulado.valorInadimplente += valor;
-      else if (STATUS_ADIMPLENTE.includes(pagamento.status)) acumulado.valorAdimplente += valor;
-      // Nem um nem outro (ex.: PENDING, ainda não vencida): não soma em nenhum dos dois — ver docblock.
+      if (visao === 'historico') {
+        const classificacao = classificarPagamento(pagamento, hojeStr, diasTolerancia);
+        if (classificacao === 'INADIMPLENTE') acumulado.valorInadimplente += valor;
+        else if (classificacao === 'ADIMPLENTE') acumulado.valorAdimplente += valor;
+        // A_VENCER: nem um nem outro — mesmo "terceiro grupo" do /resumo em modo histórico.
+      } else {
+        if (statusInadimplenteValidos.includes(pagamento.status)) acumulado.valorInadimplente += valor;
+        else if (STATUS_ADIMPLENTE.includes(pagamento.status)) acumulado.valorAdimplente += valor;
+        // Nem um nem outro (ex.: PENDING, ainda não vencida): não soma em nenhum dos dois — ver docblock.
+      }
     }
 
     const resultado = meses.map((mes) => {
