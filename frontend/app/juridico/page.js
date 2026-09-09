@@ -14,12 +14,41 @@ import {
   moverCardJuridico,
   removerCardJuridico,
   historicoCardJuridico,
+  listarDocumentosJuridico,
+  uploadDocumentoJuridico,
+  removerDocumentoJuridico,
+  baixarDocumentoJuridico,
   ApiError,
 } from "@/lib/api";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
 import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
-import { IconPlus, IconClose, IconUser, IconSearch, IconClock, IconScale, IconHistory } from "@/components/icons";
+import {
+  IconPlus,
+  IconClose,
+  IconUser,
+  IconSearch,
+  IconClock,
+  IconScale,
+  IconHistory,
+  IconFileText,
+} from "@/components/icons";
+
+// Tamanho máximo de upload — mesmo valor default do backend
+// (JURIDICO_UPLOAD_MAX_BYTES, ver src/config/env.js). Só usado aqui pra dar
+// feedback imediato no cliente antes de gastar uma requisição; o backend
+// sempre valida de novo (é a fonte de verdade real, inclusive se
+// JURIDICO_UPLOAD_MAX_BYTES for configurado diferente em produção).
+const TAMANHO_MAXIMO_DOCUMENTO_BYTES = 20 * 1024 * 1024;
+const EXTENSOES_DOCUMENTO_ACEITAS = ".pdf,.docx,.xlsx,.jpg,.jpeg,.png";
+
+function formatarTamanhoArquivo(bytes) {
+  const num = Number(bytes);
+  if (!Number.isFinite(num) || num < 0) return "-";
+  if (num < 1024) return `${num} B`;
+  if (num < 1024 * 1024) return `${(num / 1024).toFixed(1)} KB`;
+  return `${(num / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 // Kanban "Jurídico" (aba nova — ver escopo do pedido, item 1). Sem
 // biblioteca de drag and drop (o projeto não usa nenhuma) — implementado
@@ -569,7 +598,10 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
   const [erro, setErro] = useState("");
 
   // Aba "Histórico" só existe em edição (card novo ainda não tem eventos).
-  const [aba, setAba] = useState("dados"); // "dados" | "historico"
+  // Aba "Documentos" (AJUSTE 11) só existe pra card VINCULADO a associado
+  // ("ehVinculado") — documentos são ligados por cpfCnpj do associado, não
+  // fazem sentido pra card livre (não tem associado nenhum pra anexar a).
+  const [aba, setAba] = useState("dados"); // "dados" | "historico" | "documentos"
 
   useEffect(() => {
     if (origem !== "associado" || ehEdicao || !buscaAssociado.trim()) {
@@ -682,11 +714,23 @@ function ModalCard({ etapaId, cardExistente, onFechar, onSalvo }) {
               <IconHistory className="h-3.5 w-3.5" />
               Histórico
             </button>
+            {ehVinculado && (
+              <button
+                type="button"
+                onClick={() => setAba("documentos")}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 transition-colors ${aba === "documentos" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                <IconFileText className="h-3.5 w-3.5" />
+                Documentos
+              </button>
+            )}
           </div>
         )}
 
         {ehEdicao && aba === "historico" ? (
           <HistoricoCard cardId={cardExistente.id} />
+        ) : ehEdicao && aba === "documentos" && ehVinculado ? (
+          <DocumentosCard cpfCnpj={cardExistente.associado.cpf_cnpj} />
         ) : (
         <form onSubmit={handleSubmit} className="space-y-3">
           {origem === "associado" ? (
@@ -903,5 +947,183 @@ function HistoricoCard({ cardId }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+// Aba "Documentos" do ModalCard (AJUSTE 11 — "Documentos anexados ao
+// associado, visíveis no card Jurídico"). Ligados por "cpfCnpj" do
+// associado, não por "cardId" — por isso continuam existindo (e reaparecem
+// aqui) mesmo se o card for excluído e um novo for criado depois pro mesmo
+// associado (ver docblock do model DocumentoJuridico no backend). Só
+// aparece pra card VINCULADO (ver "ehVinculado" em ModalCard) — card livre
+// não tem associado nenhum pra anexar documento.
+function DocumentosCard({ cpfCnpj }) {
+  const [documentos, setDocumentos] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+
+  const [arquivo, setArquivo] = useState(null);
+  const [descricao, setDescricao] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [erroEnvio, setErroEnvio] = useState("");
+  const inputArquivoRef = useRef(null);
+
+  const [baixandoId, setBaixandoId] = useState(null);
+  const [excluindoId, setExcluindoId] = useState(null);
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    setErro("");
+    try {
+      const data = await listarDocumentosJuridico(cpfCnpj);
+      setDocumentos(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setErro(err instanceof ApiError ? err.message : "Erro ao carregar os documentos.");
+    } finally {
+      setCarregando(false);
+    }
+  }, [cpfCnpj]);
+
+  useEffect(() => {
+    carregar();
+  }, [carregar]);
+
+  async function handleEnviar(e) {
+    e.preventDefault();
+    setErroEnvio("");
+
+    if (!arquivo) {
+      setErroEnvio("Selecione um arquivo.");
+      return;
+    }
+    // Checagem no cliente só pra feedback imediato — o backend sempre
+    // valida de novo (é a fonte de verdade real, ver
+    // armazenamentoDocumentos.service.js).
+    if (arquivo.size > TAMANHO_MAXIMO_DOCUMENTO_BYTES) {
+      setErroEnvio(
+        `Arquivo excede o tamanho máximo permitido (${(TAMANHO_MAXIMO_DOCUMENTO_BYTES / (1024 * 1024)).toFixed(0)}MB).`
+      );
+      return;
+    }
+
+    setEnviando(true);
+    try {
+      await uploadDocumentoJuridico(cpfCnpj, { arquivo, descricao: descricao.trim() || undefined });
+      setArquivo(null);
+      setDescricao("");
+      if (inputArquivoRef.current) inputArquivoRef.current.value = "";
+      await carregar();
+    } catch (err) {
+      setErroEnvio(err instanceof ApiError ? err.message : "Erro ao enviar o documento.");
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  async function handleBaixar(doc) {
+    setBaixandoId(doc.id);
+    try {
+      await baixarDocumentoJuridico(doc.id, doc.nome_original);
+    } catch (err) {
+      setErro(err instanceof ApiError ? err.message : "Erro ao baixar o documento.");
+    } finally {
+      setBaixandoId(null);
+    }
+  }
+
+  async function handleExcluir(doc) {
+    if (!window.confirm(`Excluir o documento "${doc.nome_original}"? Esta ação não pode ser desfeita.`)) return;
+    setExcluindoId(doc.id);
+    try {
+      await removerDocumentoJuridico(doc.id);
+      await carregar();
+    } catch (err) {
+      setErro(err instanceof ApiError ? err.message : "Erro ao excluir o documento.");
+    } finally {
+      setExcluindoId(null);
+    }
+  }
+
+  return (
+    <div className="max-h-[55vh] space-y-3 overflow-y-auto">
+      <form onSubmit={handleEnviar} className="space-y-2 rounded-xl border border-border-soft bg-surface-elevated p-3">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">Novo documento</label>
+          <input
+            ref={inputArquivoRef}
+            type="file"
+            accept={EXTENSOES_DOCUMENTO_ACEITAS}
+            onChange={(e) => setArquivo(e.target.files?.[0] || null)}
+            disabled={enviando}
+            className="w-full text-xs text-foreground file:mr-3 file:rounded-lg file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-primary-foreground disabled:opacity-60"
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">PDF, DOCX, XLSX, JPG ou PNG — até 20MB.</p>
+        </div>
+        <input
+          type="text"
+          value={descricao}
+          onChange={(e) => setDescricao(e.target.value)}
+          disabled={enviando}
+          placeholder="Descrição (opcional)"
+          className="w-full rounded-lg border border-border-soft bg-surface px-3 py-2 text-xs text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
+        />
+        {erroEnvio && <ErrorBanner message={erroEnvio} />}
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={enviando || !arquivo}
+            className="flex items-center gap-2 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {enviando && <Spinner className="h-3.5 w-3.5" />}
+            Enviar
+          </button>
+        </div>
+      </form>
+
+      {erro && <ErrorBanner message={erro} />}
+
+      {carregando ? (
+        <div className="flex justify-center py-6">
+          <Spinner className="h-5 w-5" />
+        </div>
+      ) : documentos.length === 0 ? (
+        <p className="py-4 text-center text-sm text-muted-foreground">Nenhum documento anexado ainda.</p>
+      ) : (
+        <ul className="space-y-2">
+          {documentos.map((doc) => (
+            <li key={doc.id} className="rounded-xl border border-border-soft bg-surface-elevated p-3 text-sm">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-foreground">{doc.nome_original}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatarTamanhoArquivo(doc.tamanho_bytes)} · {formatDateTime(doc.criado_em)}
+                  </p>
+                  {doc.descricao && <p className="mt-1 text-xs text-muted-foreground">{doc.descricao}</p>}
+                  <p className="mt-1 text-[11px] text-muted-foreground">{doc.enviado_por_nome || "Sistema (API)"}</p>
+                </div>
+                <div className="flex shrink-0 flex-col items-end gap-1 text-xs font-medium">
+                  <button
+                    type="button"
+                    onClick={() => handleBaixar(doc)}
+                    disabled={baixandoId === doc.id}
+                    className="text-primary hover:underline disabled:opacity-50"
+                  >
+                    {baixandoId === doc.id ? "Baixando..." : "Baixar"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleExcluir(doc)}
+                    disabled={excluindoId === doc.id}
+                    className="text-status-red hover:underline disabled:opacity-50"
+                  >
+                    {excluindoId === doc.id ? "Excluindo..." : "Excluir"}
+                  </button>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

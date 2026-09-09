@@ -81,6 +81,24 @@ function loadEnv() {
     refreshTokenTtlDias: Number(process.env.REFRESH_TOKEN_TTL_DIAS) || 30,
     adminUser: process.env.ADMIN_USER,
     adminPassword: process.env.ADMIN_PASSWORD,
+    // Documentos anexados ao Jurídico (ver AJUSTE 11 — "Documentos
+    // anexados ao associado, visíveis no card Jurídico") ficam em disco,
+    // organizados por CPF/CNPJ (só dígitos) dentro deste diretório raiz.
+    // Default fica dentro do próprio projeto backend ("<raiz>/uploads/
+    // juridico") pra funcionar sem configuração extra em dev; em produção
+    // (Docker/EasyPanel) este caminho PRECISA estar montado como volume
+    // persistente (ver docker-compose.yml e a seção "## Deploy no
+    // EasyPanel" abaixo) — sem isso, os arquivos somem a cada novo deploy,
+    // já que o filesystem do container não é garantido persistente entre
+    // deploys (mesmo risco já documentado nesta seção pra outras
+    // variáveis).
+    juridicoUploadsDir: process.env.JURIDICO_UPLOADS_DIR
+      ? path.resolve(process.env.JURIDICO_UPLOADS_DIR)
+      : path.resolve(__dirname, '..', '..', 'uploads', 'juridico'),
+    // Tamanho máximo (em bytes) de um documento anexado. Default 20MB,
+    // conforme sugerido no escopo do ajuste — configurável sem precisar
+    // alterar código.
+    juridicoUploadMaxBytes: Number(process.env.JURIDICO_UPLOAD_MAX_BYTES) || 20 * 1024 * 1024,
   };
 }
 

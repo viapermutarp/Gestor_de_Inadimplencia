@@ -75,6 +75,12 @@ const ESCOPO_DIRETO = [
   // justificativa de EtapaJuridico/CardJuridico, franquiaId direto na
   // própria tabela.
   'historicoCardJuridico',
+  // Documentos anexados ao associado, visíveis no card Jurídico (ver ajuste
+  // "Documentos anexados ao associado, visíveis no card Jurídico" e
+  // docblock do model em schema.prisma) — franquiaId direto na própria
+  // tabela; vinculado ao associado por "cpfCnpj" solto (sem FK), não por
+  // "cardId", de propósito (ver docblock do model).
+  'documentoJuridico',
 ];
 const ESCOPO_RELACAO = ['cobranca', 'historicoStatusAssociado'];
 const MODELOS_TENANT = new Set([...ESCOPO_DIRETO, ...ESCOPO_RELACAO]);

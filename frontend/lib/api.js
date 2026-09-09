@@ -784,3 +784,116 @@ export function moverCardJuridico(id, { etapaId, indice }) {
 export function removerCardJuridico(id) {
   return request(`/api/juridico/cards/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
+
+/**
+ * Documentos anexados ao associado, visíveis no card Jurídico (AJUSTE 11 —
+ * "Documentos anexados ao associado, visíveis no card Jurídico"). Ligados
+ * por "cpfCnpj" (não por "cardId" — sobrevivem à exclusão do card, ver
+ * README/backend). Mesmo recurso "juridico" das funções acima, sem
+ * permissão nova.
+ *
+ * "uploadDocumentoJuridico" e "baixarDocumentoJuridico" NÃO usam `request()`
+ * (helper acima, JSON-only: sempre faz `JSON.stringify(body)` e sempre
+ * define `Content-Type: application/json`) — upload precisa mandar
+ * `FormData` (multipart, com o boundary que o próprio navegador define) e
+ * download precisa ler a resposta como `blob()`, não `json()`. Por isso
+ * "requestBinario" abaixo replica só a parte de autenticação/renovação de
+ * sessão/seleção de franquia de `request()`, sem o JSON.stringify nem o
+ * Content-Type fixo.
+ */
+async function requestBinario(path, { method = "GET", body, timeoutMs, permitirRenovacao = true } = {}) {
+  if (!API_URL) {
+    throw new ApiError(
+      "NEXT_PUBLIC_API_URL não está configurada. Defina a URL da API no .env.local.",
+      0
+    );
+  }
+
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const caminhoFinal = comFranquiaSelecionada(path);
+
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+  let res;
+  try {
+    res = await fetch(`${API_URL}${caminhoFinal}`, { method, headers, body, signal: controller?.signal });
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new ApiError("Tempo esgotado ao aguardar resposta da API.", 0);
+    }
+    throw new ApiError("Não foi possível conectar à API. Verifique sua conexão.", 0);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+
+  if (!res.ok) {
+    if (res.status === 401 && permitirRenovacao) {
+      const renovou = await renovarSessao();
+      if (renovou) {
+        return requestBinario(path, { method, body, timeoutMs, permitirRenovacao: false });
+      }
+      clearToken();
+    } else if (res.status === 401) {
+      clearToken();
+    }
+    let mensagem = `Erro na requisição (${res.status}).`;
+    try {
+      const data = await res.clone().json();
+      if (data?.error) mensagem = data.error;
+    } catch {
+      // resposta de erro não veio em JSON — mantém a mensagem genérica
+    }
+    throw new ApiError(mensagem, res.status);
+  }
+
+  return res;
+}
+
+/**
+ * POST /api/juridico/associados/:cpfCnpj/documentos — multipart/form-data.
+ * `arquivo` é um File (do `<input type="file">`); `descricao` é opcional.
+ */
+export async function uploadDocumentoJuridico(cpfCnpj, { arquivo, descricao } = {}) {
+  const formData = new FormData();
+  formData.append("arquivo", arquivo);
+  if (descricao) formData.append("descricao", descricao);
+  const res = await requestBinario(`/api/juridico/associados/${encodeURIComponent(cpfCnpj)}/documentos`, {
+    method: "POST",
+    body: formData,
+  });
+  return res.json();
+}
+
+/** GET /api/juridico/associados/:cpfCnpj/documentos */
+export function listarDocumentosJuridico(cpfCnpj) {
+  return request(`/api/juridico/associados/${encodeURIComponent(cpfCnpj)}/documentos`);
+}
+
+/** DELETE /api/juridico/documentos/:id */
+export function removerDocumentoJuridico(id) {
+  return request(`/api/juridico/documentos/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/**
+ * GET /api/juridico/documentos/:id/download — baixa o arquivo (como blob,
+ * autenticado) e dispara o "salvar como" do navegador via um link
+ * temporário. Não dá pra usar um `<a href="...">` direto: a rota exige
+ * `Authorization: Bearer`, que um link comum não envia.
+ */
+export async function baixarDocumentoJuridico(id, nomeArquivo) {
+  const res = await requestBinario(`/api/juridico/documentos/${encodeURIComponent(id)}/download`, {
+    method: "GET",
+  });
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = nomeArquivo || "documento";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}

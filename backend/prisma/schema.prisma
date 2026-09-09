@@ -46,6 +46,7 @@ model Franquia {
   etapasJuridico         EtapaJuridico[]
   cardsJuridico          CardJuridico[]
   historicosCardJuridico HistoricoCardJuridico[]
+  documentosJuridico     DocumentoJuridico[]
 
   @@map("franquias")
 }
@@ -461,4 +462,55 @@ model HistoricoCardJuridico {
   @@index([cardId])
   @@index([franquiaId])
   @@map("historico_card_juridico")
+}
+
+/// Documentos anexados a um associado, visíveis no card do Kanban Jurídico
+/// vinculado a ele (ver escopo do ajuste "Documentos anexados ao associado,
+/// visíveis no card Jurídico"). Vinculado por "cpfCnpj" (do Associado), DE
+/// PROPÓSITO NÃO por "cardId": o pedido é explícito que os documentos
+/// sobrevivam à exclusão do card (AJUSTE 10 passou a excluir de verdade —
+/// hard delete — o card quando "em_juridico" é desmarcado no Dashboard) e
+/// reapareçam sozinhos se um novo card for criado depois pro mesmo
+/// associado. Isso também significa que documentos podem existir mesmo sem
+/// nenhum card aberto no momento (ex.: associado desmarcado do Jurídico com
+/// documentos já enviados) — o card é só uma "janela" pra visualizar
+/// documentos que na verdade pertencem ao associado. Sem FK pra Associado
+/// de propósito (mesmo raciocínio de HistoricoStatusAssociado/CardJuridico
+/// não seria aplicável aqui pois Associado não é removido no fluxo normal,
+/// mas usar o cpfCnpj solto, e não o id, casa com o padrão já usado em
+/// outras tabelas que identificam associado por "chave de negócio" — ver
+/// CadastroEnviado). Arquivo em si fica em disco (ver
+/// src/services/armazenamentoDocumentos.service.js), organizado por
+/// cpfCnpj normalizado (só dígitos) — "caminhoArquivo" guarda o caminho
+/// relativo dentro do diretório raiz configurado (JURIDICO_UPLOADS_DIR, ver
+/// src/config/env.js), nunca o caminho absoluto (facilita mover o volume
+/// entre ambientes). "enviadoPor" guarda o id do Usuario que fez o upload,
+/// SEM foreign key — mesmo raciocínio de HistoricoCardJuridico.usuarioId:
+/// não deveria acoplar a integridade deste registro ao ciclo de vida de
+/// Usuario, e fica null se o upload vier de uma sessão de API key. ESCOPO_
+/// DIRETO na Prisma Client Extension de isolamento (ver
+/// prismaComEscopo.js) — mesma justificativa de EtapaJuridico/CardJuridico/
+/// HistoricoCardJuridico.
+model DocumentoJuridico {
+  id             String   @id @default(uuid())
+  franquiaId     String   @map("franquia_id")
+  franquia       Franquia @relation(fields: [franquiaId], references: [id])
+  /// CPF/CNPJ do associado (mesmo formato armazenado em Associado.cpfCnpj),
+  /// não o id do CardJuridico — ver docblock do model acima.
+  cpfCnpj        String   @map("cpf_cnpj")
+  nomeOriginal   String   @map("nome_original")
+  /// Caminho relativo ao diretório raiz de uploads (JURIDICO_UPLOADS_DIR),
+  /// nunca absoluto — ver docblock do model acima.
+  caminhoArquivo String   @map("caminho_arquivo")
+  tipoMime       String   @map("tipo_mime")
+  tamanhoBytes   Int      @map("tamanho_bytes")
+  /// Id do Usuario que enviou o documento, sem FK — ver docblock do model
+  /// acima. Null se a origem foi uma sessão de API key.
+  enviadoPor     String?  @map("enviado_por")
+  descricao      String?
+  criadoEm       DateTime @default(now()) @map("criado_em")
+
+  @@index([franquiaId])
+  @@index([cpfCnpj])
+  @@map("documentos_juridico")
 }

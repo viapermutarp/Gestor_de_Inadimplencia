@@ -32,6 +32,18 @@ services:
       - "3000:3000"
     volumes:
       - ./.env:/app/.env
+      # Documentos anexados ao Jurídico (ver AJUSTE 11 — "Documentos
+      # anexados ao associado, visíveis no card Jurídico") ficam em disco,
+      # dentro do container, no caminho padrão de JURIDICO_UPLOADS_DIR (ver
+      # src/config/env.js: "<raiz do backend>/uploads/juridico" quando a
+      # variável não é definida). Sem este volume nomeado, os arquivos
+      # seriam perdidos a cada "docker compose up --build" (o filesystem do
+      # container é recriado do zero) — mesmo risco documentado pra
+      # EasyPanel na seção "## Deploy no EasyPanel" deste README, só que lá
+      # a configuração é feita manualmente na UI (não tem docker-compose.yml
+      # de verdade em produção).
+      - juridico_uploads:/app/uploads/juridico
 
 volumes:
   db_data:
+  juridico_uploads:
