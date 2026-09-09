@@ -1,4 +1,9 @@
 const { Prisma } = require('@prisma/client');
+const {
+  criarCardAutomaticoParaAssociado,
+  buscarCardAbertoDoAssociado,
+  excluirCardsDoAssociado,
+} = require('../services/juridicoCard.service');
 
 const COBRANCAS_ABERTAS = ['pending', 'overdue'];
 const LIMITE_PADRAO = 100;
@@ -471,6 +476,43 @@ exports.atualizarBloqueio = async (req, res, next) => {
  * Atualiza o campo e grava um registro em historico_status_associado
  * (campo = "em_juridico") — diferente das versões anteriores deste endpoint,
  * que não gravavam histórico nenhum para esta mudança.
+ *
+ * AJUSTE 10 — Ligação Dashboard ↔ Jurídico (ver README, seção própria):
+ * na MESMA transação da mudança de status, também cria ou exclui
+ * automaticamente o card vinculado a este associado no Kanban Jurídico:
+ *
+ *   - "em_juridico: true": se o associado JÁ tem algum card aberto (em
+ *     qualquer etapa — não existe hoje uma coluna "arquivado" que
+ *     precisasse ficar de fora dessa checagem), não cria outro — devolve
+ *     esse card em "juridico" (evento "card_ja_existente") pro frontend
+ *     avisar o usuário, com link pra localizá-lo. Senão, cria um novo card
+ *     vinculado na primeira etapa (menor "ordem") da franquia — se a
+ *     franquia ainda não tem NENHUMA etapa cadastrada, não cria (não há
+ *     onde colocar o card) e devolve "sem_etapas" pro frontend avisar.
+ *   - "em_juridico: false": exclui (hard delete) TODOS os cards vinculados
+ *     a este associado — pode haver mais de um (só possível antes deste
+ *     ajuste existir, ou por vínculo manual duplicado), não só o mais
+ *     recente. A etapa atual de cada card não importa (mesmo já movido
+ *     manualmente pra uma etapa mais avançada) — só o vínculo com o
+ *     associado decide. O evento de exclusão é gravado em
+ *     historico_card_juridico ANTES do delete de verdade (ver
+ *     services/juridicoCard.service.js), então nada se perde mesmo com o
+ *     card já removido — devolve quantos cards foram excluídos em
+ *     "juridico" (evento "cards_excluidos").
+ *
+ * Sempre roda os dois passos (idempotente) — não só na transição
+ * false->true/true->false — pra ser auto-recuperável (ex.: associado que
+ * já estava "em_juridico: true" mas cujo card sumiu por algum motivo) e
+ * pra nunca deixar card órfão/duplicado mesmo com dois toggles rápidos em
+ * sequência: cada chamada lê o estado real do banco DENTRO da própria
+ * transação, nunca um estado em cache do frontend — a segunda chamada só
+ * começa depois que a primeira já commitou (o toggle da tela desabilita
+ * um novo clique enquanto a chamada anterior está em voo, ver
+ * `togglingJuridicoCpf`/`criarHandlerToggle` no Dashboard).
+ *
+ * Editar um card manualmente (responsável, prazo, mover de etapa, etc. —
+ * ver juridico.controller.js) nunca mexe em "emJuridico" do associado — a
+ * ligação automática é só nesta direção (Dashboard -> Jurídico).
  */
 exports.atualizarJuridico = async (req, res, next) => {
   try {
@@ -487,6 +529,8 @@ exports.atualizarJuridico = async (req, res, next) => {
       return res.status(404).json({ error: 'Associado não encontrado.' });
     }
 
+    let juridico;
+
     const atualizado = await req.prisma.$transaction(async (tx) => {
       const registro = await tx.associado.update({
         where: { cpfCnpj },
@@ -500,10 +544,37 @@ exports.atualizarJuridico = async (req, res, next) => {
           statusNovo: emJuridico,
         },
       });
+
+      if (emJuridico) {
+        const cardExistente = await buscarCardAbertoDoAssociado(tx, associado.id);
+        if (cardExistente) {
+          const etapaExistente = await tx.etapaJuridico.findUnique({ where: { id: cardExistente.etapaId } });
+          juridico = {
+            evento: 'card_ja_existente',
+            card_id: cardExistente.id,
+            etapa_id: cardExistente.etapaId,
+            etapa_nome: etapaExistente ? etapaExistente.nome : null,
+          };
+        } else {
+          const resultado = await criarCardAutomaticoParaAssociado(tx, req, associado.id);
+          juridico = resultado.criado
+            ? {
+                evento: 'card_criado',
+                card_id: resultado.card.id,
+                etapa_id: resultado.etapa.id,
+                etapa_nome: resultado.etapa.nome,
+              }
+            : { evento: 'sem_etapas' };
+        }
+      } else {
+        const quantidade = await excluirCardsDoAssociado(tx, req, associado.id);
+        juridico = { evento: 'cards_excluidos', quantidade };
+      }
+
       return registro;
     });
 
-    res.json(serializeAssociado(atualizado));
+    res.json({ ...serializeAssociado(atualizado), juridico });
   } catch (err) {
     next(err);
   }

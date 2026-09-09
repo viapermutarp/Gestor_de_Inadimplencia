@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   listarEtapasJuridico,
   criarEtapaJuridico,
@@ -28,7 +29,18 @@ import { IconPlus, IconClose, IconUser, IconSearch, IconClock, IconScale, IconHi
 // mesmo padrão já usado em Controle Geral (carregarFranquias() após cada
 // mutação), mais simples que reconciliar "ordem" no cliente.
 
+// "useSearchParams" (usado abaixo pra ler "?card=<id>") exige um limite de
+// Suspense acima dele em Server Components/App Router — o board de verdade
+// mora em "JuridicoBoard"; o export default só adiciona esse limite.
 export default function JuridicoPage() {
+  return (
+    <Suspense fallback={<div className="flex justify-center py-16"><Spinner className="h-6 w-6" /></div>}>
+      <JuridicoBoard />
+    </Suspense>
+  );
+}
+
+function JuridicoBoard() {
   const [etapas, setEtapas] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
@@ -50,6 +62,35 @@ export default function JuridicoPage() {
   useEffect(() => {
     carregar();
   }, [carregar]);
+
+  // AJUSTE 10 — Ligação Dashboard -> Jurídico: quando o Dashboard avisa que
+  // um associado já tem um card aberto, o link do aviso traz pra cá com
+  // "?card=<id>" — depois que o board carrega, rola até esse card e aplica
+  // um destaque temporário (4s), pra o usuário localizá-lo sem precisar
+  // procurar coluna por coluna. Só tenta uma vez por visita a esta página
+  // (destacarTentadoRef) — se o card não for encontrado (já foi movido pra
+  // outra franquia, excluído entre o aviso e o clique, etc.), desiste
+  // silenciosamente e limpa a URL do mesmo jeito.
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const cardAlvoId = searchParams.get("card");
+  const [cardDestacadoId, setCardDestacadoId] = useState(null);
+  const destacarTentadoRef = useRef(false);
+
+  useEffect(() => {
+    if (!cardAlvoId || destacarTentadoRef.current || carregando) return;
+    destacarTentadoRef.current = true;
+
+    const existeNoBoard = etapas.some((etapa) => etapa.cards.some((c) => c.id === cardAlvoId));
+    if (existeNoBoard) {
+      setCardDestacadoId(cardAlvoId);
+      const el = document.getElementById(`card-juridico-${cardAlvoId}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+      setTimeout(() => setCardDestacadoId(null), 4000);
+    }
+
+    router.replace("/juridico");
+  }, [cardAlvoId, etapas, carregando, router]);
 
   // --- Nova etapa (coluna) ---
   const [criandoEtapa, setCriandoEtapa] = useState(false);
@@ -291,6 +332,7 @@ export default function JuridicoPage() {
               onEditarCard={(card) => setModalCard({ etapaId: etapa.id, cardExistente: card })}
               onExcluirCard={handleExcluirCard}
               mutando={mutando}
+              cardDestacadoId={cardDestacadoId}
             />
           ))}
         </div>
@@ -337,6 +379,7 @@ function ColunaEtapa({
   onEditarCard,
   onExcluirCard,
   mutando,
+  cardDestacadoId,
 }) {
   return (
     <div
@@ -409,6 +452,7 @@ function ColunaEtapa({
             }}
             onEditar={() => onEditarCard(card)}
             onExcluir={() => onExcluirCard(card)}
+            destacado={card.id === cardDestacadoId}
           />
         ))}
 
@@ -425,14 +469,17 @@ function ColunaEtapa({
   );
 }
 
-function CardJuridico({ card, onDragStart, onDropAntes, onEditar, onExcluir }) {
+function CardJuridico({ card, onDragStart, onDropAntes, onEditar, onExcluir, destacado }) {
   return (
     <div
+      id={`card-juridico-${card.id}`}
       draggable
       onDragStart={onDragStart}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropAntes}
-      className="cursor-grab space-y-2 rounded-xl border border-border-soft bg-surface-elevated p-3 text-sm shadow-sm shadow-black/10 active:cursor-grabbing"
+      className={`cursor-grab space-y-2 rounded-xl border bg-surface-elevated p-3 text-sm shadow-sm shadow-black/10 transition-shadow active:cursor-grabbing ${
+        destacado ? "border-status-orange ring-2 ring-status-orange/60" : "border-border-soft"
+      }`}
     >
       {card.associado ? (
         <div className="space-y-1">

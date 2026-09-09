@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   getAssociados,
   getResumo,
@@ -21,7 +22,7 @@ import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
 import AssociadoDetalheModal from "@/components/AssociadoDetalheModal";
 import ResumoCards from "@/components/ResumoCards";
-import { IconSearch, IconRefresh, IconCheck, IconAlert } from "@/components/icons";
+import { IconSearch, IconRefresh, IconCheck, IconAlert, IconClose } from "@/components/icons";
 
 const LIMITE_POR_PAGINA = 100;
 const PAGINACAO_PADRAO = {
@@ -77,6 +78,12 @@ export default function DashboardPage() {
   // falha ou dá timeout — não impede a re-busca normal em seguida, só avisa
   // que os dados podem não estar 100% frescos desta vez.
   const [erroSincronizacao, setErroSincronizacao] = useState("");
+  // AJUSTE 10 — Ligação Dashboard -> Jurídico: aviso mostrado quando marcar
+  // "em_juridico" não cria um card novo porque o associado já tem um card
+  // aberto no quadro (ou porque a franquia ainda não tem nenhuma etapa
+  // cadastrada) — ver handleToggleJuridico/tratarResultadoJuridico abaixo.
+  // { tipo: "card_ja_existente" | "sem_etapas", associadoNome, etapaNome?, cardId? } | null
+  const [avisoJuridico, setAvisoJuridico] = useState(null);
 
   // Busca com debounce (evita uma chamada à API a cada tecla) — troca de
   // busca sempre volta a tabela para a página 1.
@@ -173,7 +180,7 @@ export default function DashboardPage() {
    * resumo inteiro a cada toggle, já que o efeito sobre o agregado é sempre
    * previsível (só o contador daquele campo muda, em exatamente 1).
    */
-  function criarHandlerToggle({ campo, resumoCampo, setToggling, chamarApi, mensagemErro }) {
+  function criarHandlerToggle({ campo, resumoCampo, setToggling, chamarApi, mensagemErro, aoSucesso }) {
     return async (associado, novoValor) => {
       setToggling(associado.cpf_cnpj);
       const anterior = associado[campo];
@@ -187,7 +194,12 @@ export default function DashboardPage() {
       setResumo(ajustarResumo(novoValor));
 
       try {
-        await chamarApi(associado, novoValor);
+        const resultado = await chamarApi(associado, novoValor);
+        // "aoSucesso" (opcional) recebe a resposta crua da API — usado hoje
+        // só pelo toggle de Jurídico, pra reagir a informações extras que a
+        // resposta traz além do associado atualizado (ver AJUSTE 10:
+        // "juridico" na resposta de PATCH .../juridico).
+        if (aoSucesso) aoSucesso(resultado, associado, novoValor);
       } catch (err) {
         setAssociados((prev) => prev.map(aplicarAssociados(anterior)));
         setResumo(ajustarResumo(anterior));
@@ -196,6 +208,32 @@ export default function DashboardPage() {
         setToggling(null);
       }
     };
+  }
+
+  /**
+   * AJUSTE 10 — reage ao campo "juridico" que PATCH .../juridico agora
+   * devolve (ver associados.controller.js): mostra um aviso só quando
+   * marcar "em_juridico" NÃO resultou num card novo de verdade — o
+   * associado já tinha um card aberto (evento "card_ja_existente") ou a
+   * franquia ainda não tem nenhuma etapa cadastrada no Jurídico (evento
+   * "sem_etapas"). Criação silenciosa (evento "card_criado") e exclusão
+   * automática ao desmarcar (evento "cards_excluidos") não precisam de
+   * nenhum aviso — o toggle em si já é a confirmação visual.
+   */
+  function tratarResultadoJuridico(resultado, associado) {
+    const evento = resultado?.juridico?.evento;
+    if (evento === "card_ja_existente") {
+      setAvisoJuridico({
+        tipo: "card_ja_existente",
+        associadoNome: associado.nome,
+        etapaNome: resultado.juridico.etapa_nome,
+        cardId: resultado.juridico.card_id,
+      });
+    } else if (evento === "sem_etapas") {
+      setAvisoJuridico({ tipo: "sem_etapas", associadoNome: associado.nome });
+    } else {
+      setAvisoJuridico(null);
+    }
   }
 
   const handleToggleNegociacao = criarHandlerToggle({
@@ -224,6 +262,7 @@ export default function DashboardPage() {
     setToggling: setTogglingJuridicoCpf,
     chamarApi: (associado, novoValor) => patchJuridico(associado.cpf_cnpj, { em_juridico: novoValor }),
     mensagemErro: "Não foi possível atualizar o status jurídico.",
+    aoSucesso: tratarResultadoJuridico,
   });
 
   // O modal de detalhe também pode mudar `em_negociacao` (junto com a
@@ -304,6 +343,43 @@ export default function DashboardPage() {
       </div>
 
       {error && <ErrorBanner message={error} onRetry={carregarPagina} />}
+
+      {avisoJuridico && (
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-status-orange/30 bg-status-orange/10 px-4 py-3 text-sm text-foreground">
+          <span className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-status-orange/20 text-status-orange">
+              <IconAlert className="h-4 w-4" />
+            </span>
+            {avisoJuridico.tipo === "card_ja_existente" ? (
+              <span>
+                <strong>{avisoJuridico.associadoNome}</strong> já tem um card em aberto no Jurídico
+                {avisoJuridico.etapaNome ? ` (em "${avisoJuridico.etapaNome}")` : ""} — nenhum card novo foi criado.
+              </span>
+            ) : (
+              <span>
+                <strong>{avisoJuridico.associadoNome}</strong> foi marcado como Jurídico, mas o quadro ainda não tem
+                nenhuma etapa cadastrada — crie uma coluna e vincule o card manualmente.
+              </span>
+            )}
+          </span>
+          <span className="flex shrink-0 items-center gap-3">
+            <Link
+              href={avisoJuridico.cardId ? `/juridico?card=${avisoJuridico.cardId}` : "/juridico"}
+              className="shrink-0 rounded-lg border border-status-orange/40 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-status-orange/20"
+            >
+              Ver no Jurídico
+            </Link>
+            <button
+              type="button"
+              onClick={() => setAvisoJuridico(null)}
+              className="shrink-0 text-xs font-medium text-muted-foreground hover:text-foreground"
+              aria-label="Fechar aviso"
+            >
+              <IconClose className="h-4 w-4" />
+            </button>
+          </span>
+        </div>
+      )}
 
       <div className="overflow-hidden rounded-2xl border border-border-soft bg-surface shadow-lg shadow-black/20">
         <div className="scrollbar-thin overflow-x-auto">

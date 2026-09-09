@@ -1,3 +1,5 @@
+const { registrarHistoricoCard } = require('../services/juridicoCard.service');
+
 const COBRANCAS_ABERTAS = ['pending', 'overdue'];
 const LIMITE_BUSCA_ASSOCIADOS = 20;
 
@@ -24,27 +26,10 @@ function valorParaHistorico(valor) {
   return String(valor);
 }
 
-/**
- * Registra um evento no histórico do card (ver HistoricoCardJuridico em
- * schema.prisma) — sempre chamado dentro da MESMA transação da mutação que
- * o originou (create/update/mover/delete), usando "tx" (não "req.prisma"
- * direto), pro log nunca ficar dessincronizado da mudança real caso algo
- * falhe no meio do caminho. "usuarioId" vem de "req.auth.user" — só existe
- * em sessões JWT (painel); sessões de API key não têm esse campo, e o
- * histórico aceita null nesse caso (ver docblock do model).
- */
-async function registrarHistoricoCard(tx, req, { cardId, campoAlterado, valorAnterior, valorNovo }) {
-  await tx.historicoCardJuridico.create({
-    data: {
-      cardId,
-      franquiaId: req.franquiaId,
-      campoAlterado,
-      valorAnterior: valorAnterior ?? null,
-      valorNovo: valorNovo ?? null,
-      usuarioId: req.auth.user || null,
-    },
-  });
-}
+// "registrarHistoricoCard" mudou de lugar pra services/juridicoCard.service.js
+// (AJUSTE 10) — passou a ser usada também por associados.controller.js, na
+// criação/exclusão automática de card ao marcar/desmarcar "em_juridico" no
+// Dashboard. Comportamento idêntico, só o require acima mudou.
 
 /**
  * Kanban "Jurídico" (aba nova — ver docs/plano-multi-franquia.md e
