@@ -11,6 +11,8 @@ import {
   atualizarAsaasKey,
   getWebhookCadastroUrl,
   atualizarWebhookCadastroUrl,
+  getAsaasWebhook,
+  gerarAsaasWebhookToken,
   getToleranciaDias,
   atualizarToleranciaDias,
   getDrivePastaRaiz,
@@ -19,7 +21,7 @@ import {
   atualizarGoogleServiceAccount,
   ApiError,
 } from "@/lib/api";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatDate } from "@/lib/format";
 import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
 import { IconKey, IconHistory, IconClock, IconFileText } from "@/components/icons";
@@ -43,6 +45,15 @@ export default function ConfiguracoesPage() {
   const [novoWebhookCadastro, setNovoWebhookCadastro] = useState("");
   const [salvandoWebhookCadastro, setSalvandoWebhookCadastro] = useState(false);
   const [webhookCadastroSalvo, setWebhookCadastroSalvo] = useState(false);
+
+  const [asaasWebhook, setAsaasWebhook] = useState(null);
+  const [carregandoAsaasWebhook, setCarregandoAsaasWebhook] = useState(true);
+  const [erroAsaasWebhook, setErroAsaasWebhook] = useState("");
+  const [confirmandoGerarAsaasWebhookToken, setConfirmandoGerarAsaasWebhookToken] = useState(false);
+  const [gerandoAsaasWebhookToken, setGerandoAsaasWebhookToken] = useState(false);
+  const [asaasWebhookTokenRevelado, setAsaasWebhookTokenRevelado] = useState(null);
+  const [copiadoAsaasWebhookToken, setCopiadoAsaasWebhookToken] = useState(false);
+  const [copiadoAsaasWebhookUrl, setCopiadoAsaasWebhookUrl] = useState(false);
 
   const [logs, setLogs] = useState([]);
   const [carregandoLogs, setCarregandoLogs] = useState(true);
@@ -102,6 +113,19 @@ export default function ConfiguracoesPage() {
       );
     } finally {
       setCarregandoWebhookCadastro(false);
+    }
+  }, []);
+
+  const carregarAsaasWebhook = useCallback(async () => {
+    setCarregandoAsaasWebhook(true);
+    setErroAsaasWebhook("");
+    try {
+      const data = await getAsaasWebhook();
+      setAsaasWebhook(data);
+    } catch (err) {
+      setErroAsaasWebhook(err instanceof ApiError ? err.message : "Erro ao carregar o webhook do Asaas.");
+    } finally {
+      setCarregandoAsaasWebhook(false);
     }
   }, []);
 
@@ -179,6 +203,7 @@ export default function ConfiguracoesPage() {
   useEffect(() => {
     carregarApiKeys();
     carregarWebhookCadastro();
+    carregarAsaasWebhook();
     carregarLogs();
     carregarAsaasKey();
     carregarTolerancia();
@@ -187,6 +212,7 @@ export default function ConfiguracoesPage() {
   }, [
     carregarApiKeys,
     carregarWebhookCadastro,
+    carregarAsaasWebhook,
     carregarLogs,
     carregarAsaasKey,
     carregarTolerancia,
@@ -256,6 +282,48 @@ export default function ConfiguracoesPage() {
       );
     } finally {
       setSalvandoWebhookCadastro(false);
+    }
+  }
+
+  async function handleGerarAsaasWebhookToken() {
+    setGerandoAsaasWebhookToken(true);
+    setErroAsaasWebhook("");
+    try {
+      const data = await gerarAsaasWebhookToken();
+      setAsaasWebhookTokenRevelado(data);
+      setConfirmandoGerarAsaasWebhookToken(false);
+      await carregarAsaasWebhook();
+    } catch (err) {
+      setErroAsaasWebhook(err instanceof ApiError ? err.message : "Não foi possível gerar o token do webhook.");
+    } finally {
+      setGerandoAsaasWebhookToken(false);
+    }
+  }
+
+  async function handleCopiarAsaasWebhookToken() {
+    if (!asaasWebhookTokenRevelado?.asaas_access_token) return;
+    try {
+      await navigator.clipboard.writeText(asaasWebhookTokenRevelado.asaas_access_token);
+      setCopiadoAsaasWebhookToken(true);
+      setTimeout(() => setCopiadoAsaasWebhookToken(false), 2000);
+    } catch {
+      // Sem permissão de clipboard — o usuário ainda pode selecionar o texto manualmente.
+    }
+  }
+
+  function fecharRevelacaoAsaasWebhookToken() {
+    setAsaasWebhookTokenRevelado(null);
+    setCopiadoAsaasWebhookToken(false);
+  }
+
+  async function handleCopiarAsaasWebhookUrl() {
+    if (!asaasWebhook?.webhook_url) return;
+    try {
+      await navigator.clipboard.writeText(asaasWebhook.webhook_url);
+      setCopiadoAsaasWebhookUrl(true);
+      setTimeout(() => setCopiadoAsaasWebhookUrl(false), 2000);
+    } catch {
+      // Sem permissão de clipboard — o usuário ainda pode selecionar o texto manualmente.
     }
   }
 
@@ -524,6 +592,111 @@ export default function ConfiguracoesPage() {
         {webhookCadastroSalvo && (
           <span className="mt-2 block text-xs font-medium text-status-green">Salvo com sucesso.</span>
         )}
+      </section>
+
+      {/* Webhook do Asaas */}
+      <section className="rounded-2xl border border-border-soft bg-surface p-5 shadow-lg shadow-black/20">
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+            <IconKey className="h-4.5 w-4.5" />
+          </span>
+          <h3 className="text-sm font-semibold text-foreground">Webhook do Asaas</h3>
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Recebe eventos em tempo real do Asaas (pagamento criado, pago, atrasado etc.) e mantém a
+          tabela local usada pela tela{" "}
+          <Link href="/inadimplencia" className="text-accent hover:underline">
+            Taxa de Inadimplência
+          </Link>{" "}
+          sincronizada, sem depender de consultas ao vivo na API do Asaas a cada troca de filtro.
+          Cadastre a URL abaixo no painel do Asaas, no campo <strong>URL do Webhook</strong>, e o
+          token gerado aqui no campo <strong>Token de autenticação</strong> —{" "}
+          <strong>não use o botão &ldquo;Gerar Token&rdquo; do próprio Asaas</strong>: ele gera um
+          token diferente, que não autentica com o nosso backend.
+        </p>
+
+        {erroAsaasWebhook && (
+          <div className="mt-3">
+            <ErrorBanner message={erroAsaasWebhook} onRetry={carregarAsaasWebhook} />
+          </div>
+        )}
+
+        <div className="mt-4">
+          <label className="mb-1.5 block text-xs font-medium text-muted-foreground">URL do webhook</label>
+          <div className="flex min-w-0 items-center gap-2">
+            <code className="block min-w-0 flex-1 break-all rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 font-mono text-xs text-foreground">
+              {carregandoAsaasWebhook ? <Spinner className="h-4 w-4" /> : asaasWebhook?.webhook_url || "-"}
+            </code>
+            <button
+              type="button"
+              onClick={handleCopiarAsaasWebhookUrl}
+              disabled={carregandoAsaasWebhook || !asaasWebhook?.webhook_url}
+              className="shrink-0 rounded-xl border border-border-soft px-3.5 py-2.5 text-xs font-medium text-foreground transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {copiadoAsaasWebhookUrl ? "Copiado!" : "Copiar"}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Token de autenticação</label>
+          <div className="min-w-0 rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5">
+            {carregandoAsaasWebhook ? (
+              <Spinner className="h-4 w-4" />
+            ) : asaasWebhook?.configurado ? (
+              <div className="min-w-0">
+                <code className="block break-all font-mono text-sm text-foreground">
+                  {asaasWebhook.asaas_access_token}
+                </code>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Token configurado — gerado em {formatDate(asaasWebhook.gerado_em)}
+                </p>
+              </div>
+            ) : (
+              <span className="text-sm text-muted-foreground">Nenhum token gerado ainda</span>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4">
+          {confirmandoGerarAsaasWebhookToken ? (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <p className="flex-1 text-xs text-status-yellow">
+                {asaasWebhook?.configurado
+                  ? "Isso invalida o token atual imediatamente — o Asaas passa a receber 401 até você colar o novo token lá."
+                  : "Confirma a geração do token?"}
+              </p>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmandoGerarAsaasWebhookToken(false)}
+                  disabled={gerandoAsaasWebhookToken}
+                  className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGerarAsaasWebhookToken}
+                  disabled={gerandoAsaasWebhookToken}
+                  className="flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {gerandoAsaasWebhookToken && <Spinner className="h-3 w-3" />}
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmandoGerarAsaasWebhookToken(true)}
+              disabled={carregandoAsaasWebhook}
+              className="flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {asaasWebhook?.configurado ? "Gerar novo token" : "Gerar token"}
+            </button>
+          )}
+        </div>
       </section>
 
       {/* Pasta raiz do Google Drive */}
@@ -873,6 +1046,59 @@ export default function ConfiguracoesPage() {
             <button
               type="button"
               onClick={fecharRevelacao}
+              className="mt-5 w-full rounded-xl border border-border-soft px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-hover"
+            >
+              Entendi, fechar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de revelação do token do webhook do Asaas */}
+      {asaasWebhookTokenRevelado && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          onClick={fecharRevelacaoAsaasWebhookToken}
+        >
+          <div
+            className="w-full max-w-lg rounded-3xl border border-border-soft bg-surface p-6 shadow-2xl shadow-black/50"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display text-lg font-bold text-foreground">Token do webhook do Asaas gerado</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Guarde este token agora — por segurança, ele <strong>não será exibido completo
+              novamente</strong>. Cole a URL e o token abaixo no cadastro do webhook, no painel do
+              Asaas: a URL no campo <strong>URL do Webhook</strong> e o token no campo{" "}
+              <strong>Token de autenticação</strong> — não use o botão &ldquo;Gerar Token&rdquo; do
+              próprio Asaas, ele gera um token diferente.
+            </p>
+
+            <div className="mt-4">
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">URL do webhook</label>
+              <code className="block min-w-0 break-all rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 font-mono text-xs text-foreground">
+                {asaasWebhookTokenRevelado.webhook_url}
+              </code>
+            </div>
+
+            <div className="mt-4">
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Token de autenticação</label>
+              <div className="flex min-w-0 items-center gap-2">
+                <code className="block min-w-0 flex-1 break-all rounded-xl border border-border-soft bg-surface-elevated px-3.5 py-2.5 font-mono text-xs text-foreground">
+                  {asaasWebhookTokenRevelado.asaas_access_token}
+                </code>
+                <button
+                  type="button"
+                  onClick={handleCopiarAsaasWebhookToken}
+                  className="shrink-0 rounded-xl bg-primary px-3.5 py-2.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary-hover"
+                >
+                  {copiadoAsaasWebhookToken ? "Copiado!" : "Copiar"}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={fecharRevelacaoAsaasWebhookToken}
               className="mt-5 w-full rounded-xl border border-border-soft px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-hover"
             >
               Entendi, fechar

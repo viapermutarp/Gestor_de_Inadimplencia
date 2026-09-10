@@ -322,6 +322,50 @@ async function main() {
     }
 
     // -------------------------------------------------------------
+    // TESTE 3b — Franquia que existe mas NUNCA gerou um token de webhook
+    // (nunca chamou POST /config/asaas-webhook/gerar). Caminho distinto do
+    // "token errado"/"token ausente" acima (aqueles têm um tokenEsperado
+    // configurado; este não tem NENHUM) — o controller trata isso como um
+    // 401 de configuração pendente (linha "!tokenEsperado" em
+    // asaasWebhook.controller.js), não 404/500, e nunca grava nada.
+    // -------------------------------------------------------------
+    console.log('\n== Teste: franquia sem token de webhook gerado ainda ==');
+    {
+      const franquiaSemWebhook = await db.franquia.create({ data: { nome: 'AJUSTE14 Sem Webhook' } });
+      const r = await postWebhook(
+        franquiaSemWebhook.id,
+        {
+          id: 'evt_sem_webhook',
+          event: 'PAYMENT_CREATED',
+          payment: { id: 'pay_sem_webhook', customer: 'cus_x', value: 10, dueDate: '2026-08-01', status: 'PENDING' },
+        },
+        'qualquer-token-aqui'
+      );
+      assertEqual(r.status, 401, 'franquia existe mas nunca gerou token de webhook -> 401 (não 404, não 500)');
+      assert(!(await linhaLocal('pay_sem_webhook')), 'nenhuma linha local criada quando a franquia não tem webhook configurado');
+
+      // Mesmo sem token nenhum no header (não só "token errado") — reforça
+      // que é a AUSÊNCIA de tokenEsperado que decide aqui, não o valor
+      // enviado pelo Asaas.
+      const rSemHeader = await postWebhook(
+        franquiaSemWebhook.id,
+        { id: 'evt_sem_webhook_2', event: 'PAYMENT_CREATED', payment: { id: 'pay_sem_webhook', customer: 'cus_x', value: 10, dueDate: '2026-08-01', status: 'PENDING' } },
+        undefined
+      );
+      assertEqual(rSemHeader.status, 401, 'mesma franquia sem webhook configurado, sem header nenhum -> ainda 401 (mesmo motivo)');
+
+      // Confirma que o servidor não "quebrou"/travou com isso — próxima
+      // chamada, pra uma franquia normal, continua respondendo certo.
+      const rSanidade = await postWebhook(
+        franquiaF1.id,
+        { id: 'evt_sanidade', event: 'PAYMENT_CREATED', payment: { id: 'pay_sanidade', customer: 'cus_f1_a', value: 1, dueDate: '2026-08-01', status: 'PENDING' } },
+        webhookTokenF1
+      );
+      assertEqual(rSanidade.status, 200, 'servidor continua respondendo normalmente para outras franquias depois do 401 (nada travou)');
+      await db.pagamentoAsaas.delete({ where: { id: 'pay_sanidade' } });
+    }
+
+    // -------------------------------------------------------------
     // TESTE 4 — Backfill multi-franquia: popula as 3 franquias de uma vez,
     // sem misturar dados; rodado 2x pra confirmar idempotência do backfill.
     // -------------------------------------------------------------

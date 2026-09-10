@@ -121,8 +121,43 @@ async function getAsaasWebhookToken(franquiaId) {
   return getConfigValor(CHAVE_ASAAS_WEBHOOK_TOKEN, franquiaId);
 }
 
+/**
+ * Difere de `setConfigValor` genérico: devolve também "atualizadoEm" (em
+ * vez de só o valor) — usada por `gerarAsaasWebhookToken` em
+ * config.controller.js para responder com o MESMO instante gravado no
+ * banco (coluna "atualizado_em", `@updatedAt`), em vez de um `new Date()`
+ * calculado à parte no controller, que ficaria alguns milissegundos
+ * dessincronizado do valor que um GET /api/config/asaas-webhook logo
+ * depois leria de volta.
+ */
 async function setAsaasWebhookToken(token, franquiaId) {
-  return setConfigValor(CHAVE_ASAAS_WEBHOOK_TOKEN, token, franquiaId);
+  const registro = await prisma.configuracao.upsert({
+    where: { chave_franquiaId: { chave: CHAVE_ASAAS_WEBHOOK_TOKEN, franquiaId } },
+    update: { valor: token },
+    create: { chave: CHAVE_ASAAS_WEBHOOK_TOKEN, franquiaId, valor: token },
+  });
+  return { valor: registro.valor, atualizadoEm: registro.atualizadoEm };
+}
+
+/**
+ * Mesma leitura de `getAsaasWebhookToken`, mas também devolve
+ * "atualizadoEm" (coluna "atualizado_em" de "configuracoes", `@updatedAt`
+ * automático do Prisma) — usada só pela tela de Configurações (card
+ * "Webhook do Asaas") para mostrar "Token configurado — gerado em
+ * DD/MM/AAAA" em vez de um campo vazio quando já existe um token, sem
+ * precisar de uma tabela/coluna nova só para essa data (ver
+ * `obterAsaasWebhook` em config.controller.js).
+ */
+async function getAsaasWebhookTokenInfo(franquiaId) {
+  try {
+    const registro = await prisma.configuracao.findUnique({
+      where: { chave_franquiaId: { chave: CHAVE_ASAAS_WEBHOOK_TOKEN, franquiaId } },
+    });
+    return { valor: registro?.valor ?? null, atualizadoEm: registro?.atualizadoEm ?? null };
+  } catch (err) {
+    console.error(`[config] Falha ao ler "${CHAVE_ASAAS_WEBHOOK_TOKEN}" da tabela configuracoes:`, err.message);
+    return { valor: null, atualizadoEm: null };
+  }
 }
 
 const CHAVE_PALAVRAS_EXCLUIDAS = 'inadimplencia_palavras_excluidas';
@@ -273,6 +308,7 @@ module.exports = {
   CHAVE_ASAAS_API_KEY,
   getAsaasWebhookToken,
   setAsaasWebhookToken,
+  getAsaasWebhookTokenInfo,
   CHAVE_ASAAS_WEBHOOK_TOKEN,
   getPalavrasExcluidas,
   setPalavrasExcluidas,

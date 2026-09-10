@@ -5,8 +5,8 @@ const {
   setWebhookCadastroUrl,
   getAsaasApiKey,
   setAsaasApiKey,
-  getAsaasWebhookToken,
   setAsaasWebhookToken,
+  getAsaasWebhookTokenInfo,
   getPalavrasExcluidas,
   setPalavrasExcluidas,
   getDiasTolerancia,
@@ -194,15 +194,23 @@ function montarUrlWebhookAsaas(franquiaId) {
  * `asaas_access_token: null` e `configurado: false` quando esta franquia
  * ainda não gerou nenhum token — nesse estado, o próprio webhook (ver
  * asaasWebhook.controller.js) rejeita qualquer evento recebido.
+ *
+ * `gerado_em` (ISO, `null` quando `configurado: false`) — data/hora do
+ * `atualizado_em` da linha em "configuracoes" (`@updatedAt`, sem coluna
+ * nova) — usada pela tela de Configurações (card "Webhook do Asaas") para
+ * mostrar "Token configurado — gerado em DD/MM/AAAA" em vez de deixar
+ * parecendo que nada foi configurado ainda (ver
+ * `getAsaasWebhookTokenInfo` em config.service.js).
  */
 exports.obterAsaasWebhook = async (req, res, next) => {
   try {
     const franquiaId = await resolverFranquiaIdOuPadrao(req);
-    const token = await getAsaasWebhookToken(franquiaId);
+    const { valor: token, atualizadoEm } = await getAsaasWebhookTokenInfo(franquiaId);
     res.json({
       webhook_url: montarUrlWebhookAsaas(franquiaId),
       asaas_access_token: mascararChave(token),
       configurado: Boolean(token),
+      gerado_em: token ? atualizadoEm : null,
     });
   } catch (err) {
     next(err);
@@ -220,18 +228,26 @@ exports.obterAsaasWebhook = async (req, res, next) => {
  * configurado lá, passa a ser rejeitado com 401 — reconfigure o campo
  * "Token de acesso" no cadastro do webhook no painel do Asaas com o novo
  * valor).
+ *
+ * `gerado_em` = o "atualizado_em" gravado por esta chamada (devolvido por
+ * `setAsaasWebhookToken`, não um `new Date()` calculado à parte) —
+ * devolvido aqui só para a UI não precisar de uma segunda chamada a
+ * GET /api/config/asaas-webhook logo em seguida para atualizar a data
+ * mostrada, já garantido idêntico ao que esse GET leria de volta.
  */
 exports.gerarAsaasWebhookToken = async (req, res, next) => {
   try {
     const franquiaId = await resolverFranquiaIdOuPadrao(req);
     const novoToken = crypto.randomBytes(32).toString('hex');
-    await setAsaasWebhookToken(novoToken, franquiaId);
+    const { atualizadoEm } = await setAsaasWebhookToken(novoToken, franquiaId);
     res.json({
       webhook_url: montarUrlWebhookAsaas(franquiaId),
       asaas_access_token: novoToken,
+      gerado_em: atualizadoEm,
       aviso:
         'Guarde este token agora — ele não será exibido completo novamente. ' +
-        'Cole a URL e o token no cadastro do webhook, no painel do Asaas (campo "Token de acesso").',
+        'Cole a URL e o token no cadastro do webhook, no painel do Asaas (campo "Token de acesso"). ' +
+        'Não use o botão "Gerar Token" do próprio Asaas — aquele token é outro e não vai autenticar com o nosso backend.',
     });
   } catch (err) {
     next(err);

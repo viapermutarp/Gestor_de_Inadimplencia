@@ -442,6 +442,30 @@ export function atualizarWebhookCadastroUrl(url) {
 }
 
 /**
+ * GET /api/config/asaas-webhook — AJUSTE 14. Retorna
+ * { webhook_url, asaas_access_token (mascarado ou null), configurado, gerado_em }
+ * para o webhook do Asaas (POST /api/asaas/webhook/:franquiaId) que
+ * mantém a tabela local de pagamentos sincronizada. `webhook_url` sempre
+ * vem preenchida (não é segredo); o token só aparece mascarado aqui — em
+ * texto puro só na resposta de `gerarAsaasWebhookToken`, uma única vez.
+ */
+export function getAsaasWebhook() {
+  return request("/api/config/asaas-webhook");
+}
+
+/**
+ * POST /api/config/asaas-webhook/gerar — gera (ou regenera) o token de
+ * acesso do webhook do Asaas desta franquia. Retorna
+ * { webhook_url, asaas_access_token, gerado_em, aviso } — "asaas_access_token"
+ * só aparece completo nesta resposta. Regenerar invalida imediatamente o
+ * token anterior (é preciso colar o novo no cadastro do webhook, no painel
+ * do Asaas).
+ */
+export function gerarAsaasWebhookToken() {
+  return request("/api/config/asaas-webhook/gerar", { method: "POST" });
+}
+
+/**
  * GET /api/config/palavras-excluidas — { palavras: string[] } usadas para
  * excluir automaticamente cobranças do cálculo de Taxa de Inadimplência.
  * Cada palavra casa (contains, case-insensitive) contra a descrição da
