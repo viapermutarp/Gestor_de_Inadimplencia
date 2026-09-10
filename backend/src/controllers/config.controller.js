@@ -1,9 +1,12 @@
+const crypto = require('crypto');
 const cache = require('../services/cache.service');
 const {
   getWebhookCadastroUrl,
   setWebhookCadastroUrl,
   getAsaasApiKey,
   setAsaasApiKey,
+  getAsaasWebhookToken,
+  setAsaasWebhookToken,
   getPalavrasExcluidas,
   setPalavrasExcluidas,
   getDiasTolerancia,
@@ -162,6 +165,74 @@ exports.atualizarAsaasKey = async (req, res, next) => {
     const franquiaId = await resolverFranquiaIdOuPadrao(req);
     await setAsaasApiKey(chave.trim(), franquiaId);
     res.json({ asaas_api_key: mascararChave(chave.trim()) });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Monta a URL completa do webhook desta franquia, a partir de
+ * PUBLIC_BASE_URL (variável de ambiente, ver .env.example — o domínio
+ * público da API em produção; sem valor confiável possível de derivar de
+ * dentro do próprio processo, já que o backend normalmente roda atrás de
+ * proxy/túnel). Sem PUBLIC_BASE_URL configurada, devolve só o caminho
+ * relativo (`/api/asaas/webhook/<id>`) — ainda útil pra copiar/colar
+ * completando o domínio manualmente, mas o valor exibido deixa isso
+ * explícito (ver `obterAsaasWebhook`/`gerarAsaasWebhookToken` abaixo).
+ */
+function montarUrlWebhookAsaas(franquiaId) {
+  const base = (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  const caminho = `/api/asaas/webhook/${franquiaId}`;
+  return base ? `${base}${caminho}` : caminho;
+}
+
+/**
+ * GET /api/config/asaas-webhook
+ * AJUSTE 14 — retorna a URL do webhook desta franquia e o token de acesso
+ * vigente MASCARADO (mesmo tratamento de GET /api/config/asaas-key), pra
+ * conferir o que já está configurado sem expor o token completo de novo.
+ * `asaas_access_token: null` e `configurado: false` quando esta franquia
+ * ainda não gerou nenhum token — nesse estado, o próprio webhook (ver
+ * asaasWebhook.controller.js) rejeita qualquer evento recebido.
+ */
+exports.obterAsaasWebhook = async (req, res, next) => {
+  try {
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const token = await getAsaasWebhookToken(franquiaId);
+    res.json({
+      webhook_url: montarUrlWebhookAsaas(franquiaId),
+      asaas_access_token: mascararChave(token),
+      configurado: Boolean(token),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/config/asaas-webhook/gerar
+ * AJUSTE 14 — gera (ou REGENERA, se já existir um) um token de acesso novo,
+ * forte e aleatório (`crypto.randomBytes(32)`, mesmo padrão de
+ * `criarApiKey`) para o webhook desta franquia, e devolve a URL completa +
+ * o token em texto puro — única vez que ele aparece por inteiro em
+ * qualquer resposta. Regenerar invalida imediatamente o token anterior
+ * (qualquer evento que o Asaas mandar depois, ainda com o token antigo
+ * configurado lá, passa a ser rejeitado com 401 — reconfigure o campo
+ * "Token de acesso" no cadastro do webhook no painel do Asaas com o novo
+ * valor).
+ */
+exports.gerarAsaasWebhookToken = async (req, res, next) => {
+  try {
+    const franquiaId = await resolverFranquiaIdOuPadrao(req);
+    const novoToken = crypto.randomBytes(32).toString('hex');
+    await setAsaasWebhookToken(novoToken, franquiaId);
+    res.json({
+      webhook_url: montarUrlWebhookAsaas(franquiaId),
+      asaas_access_token: novoToken,
+      aviso:
+        'Guarde este token agora — ele não será exibido completo novamente. ' +
+        'Cole a URL e o token no cadastro do webhook, no painel do Asaas (campo "Token de acesso").',
+    });
   } catch (err) {
     next(err);
   }

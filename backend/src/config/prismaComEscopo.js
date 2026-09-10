@@ -81,6 +81,15 @@ const ESCOPO_DIRETO = [
   // tabela; vinculado ao associado por "cpfCnpj" solto (sem FK), não por
   // "cardId", de propósito (ver docblock do model).
   'documentoJuridico',
+  // AJUSTE 14 — espelho local dos pagamentos do Asaas (ver docblock do model
+  // em schema.prisma e src/services/pagamentosAsaas.service.js) —
+  // franquiaId direto na própria tabela, mesmo padrão dos demais. O upsert
+  // (webhook, backfill, reconciliação) sempre informa "franquiaId"
+  // explicitamente nos dados, então o "create" desta extension só VALIDA
+  // (nunca precisa injetar). "id" aqui é globalmente único (o "pay_..." do
+  // Asaas) — mesma lógica de "upsert" desta extension já usada por
+  // Associado (cpfCnpj, também globalmente único).
+  'pagamentoAsaas',
 ];
 const ESCOPO_RELACAO = ['cobranca', 'historicoStatusAssociado'];
 const MODELOS_TENANT = new Set([...ESCOPO_DIRETO, ...ESCOPO_RELACAO]);

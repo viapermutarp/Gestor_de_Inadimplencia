@@ -103,6 +103,28 @@ async function setAsaasApiKey(chave, franquiaId) {
   return setConfigValor(CHAVE_ASAAS_API_KEY, chave, franquiaId);
 }
 
+const CHAVE_ASAAS_WEBHOOK_TOKEN = 'asaas_webhook_token';
+
+/**
+ * Token secreto usado para validar o webhook do Asaas (AJUSTE 14 — "Tabela
+ * local sincronizada via webhook do Asaas para Taxa de Inadimplência"),
+ * enviado pelo Asaas de volta em todo evento no header "asaas-access-token"
+ * (campo "Token de acesso" no cadastro do webhook, no painel do Asaas — ver
+ * src/controllers/asaasWebhook.controller.js). Gerado automaticamente
+ * (`crypto.randomBytes`, ver `gerarAsaasWebhookToken` em
+ * config.controller.js) — nunca digitado manualmente, mesmo padrão das
+ * API keys internas. `null` = franquia ainda sem token gerado; nesse
+ * estado, o webhook desta franquia rejeita QUALQUER evento (ver docblock
+ * do controller) — nunca fica aberto/sem autenticação por omissão.
+ */
+async function getAsaasWebhookToken(franquiaId) {
+  return getConfigValor(CHAVE_ASAAS_WEBHOOK_TOKEN, franquiaId);
+}
+
+async function setAsaasWebhookToken(token, franquiaId) {
+  return setConfigValor(CHAVE_ASAAS_WEBHOOK_TOKEN, token, franquiaId);
+}
+
 const CHAVE_PALAVRAS_EXCLUIDAS = 'inadimplencia_palavras_excluidas';
 
 /**
@@ -249,6 +271,9 @@ module.exports = {
   getAsaasApiKey,
   setAsaasApiKey,
   CHAVE_ASAAS_API_KEY,
+  getAsaasWebhookToken,
+  setAsaasWebhookToken,
+  CHAVE_ASAAS_WEBHOOK_TOKEN,
   getPalavrasExcluidas,
   setPalavrasExcluidas,
   CHAVE_PALAVRAS_EXCLUIDAS,

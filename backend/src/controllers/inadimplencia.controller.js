@@ -1,7 +1,15 @@
 const cache = require('../services/cache.service');
 const { getPalavrasExcluidas, getDiasTolerancia } = require('../services/config.service');
-const { listarPagamentos, obterClientesPorId, AsaasApiError } = require('../services/asaas.service');
+// AJUSTE 14 — "AsaasApiError" continua importado (só ela — "listarPagamentos"/
+// "obterClientesPorId" saíram deste arquivo) porque `reconciliarPagamentos`
+// (abaixo) ainda pode propagar esse erro: `sincronizarJanela`, que ele chama,
+// consulta a API do Asaas ao vivo de propósito (é uma reconciliação — precisa
+// comparar contra a fonte de verdade). "/resumo" e "/evolucao-mensal" NÃO
+// consultam mais o Asaas (ver docblock de `buscarPagamentosValidos`), então
+// não podem mais lançar esse erro.
+const { AsaasApiError } = require('../services/asaas.service');
 const { resolverFranquiaIdOuPadrao } = require('../services/franquiaPadrao.service');
+const { sincronizarJanela, calcularJanelaReconciliacao } = require('../services/pagamentosAsaas.service');
 
 const FILTRO_TRI_ESTADO_VALIDAS = ['todos', 'sim', 'nao'];
 const VISAO_VALIDAS = ['aberto', 'historico']; // AJUSTE 6 — renomeado de "visao_faixas"
@@ -226,22 +234,29 @@ function classificarPagamento(pagamento, hojeStr, diasTolerancia = 0) {
 }
 
 /**
- * Para cada pagamento, resolve { cpfCnpj, nome, emNegociacao, emJuridico,
- * bloqueado } cruzando o cliente do Asaas (mapaClientes: customerId ->
- * {cpfCnpj, nome}) com a nossa tabela "associados" (associadoPorCpfCnpj:
- * cpfCnpj -> associado). Pagamentos cujo cliente não tem cpfCnpj resolvido,
- * ou cujo cpfCnpj não bate com nenhum associado nosso, são tratados como
- * "não" nos três campos booleanos (regra explícita do pedido, igual para
- * os três).
+ * AJUSTE 14 — "cpfCnpj"/"nome" do cliente Asaas não são mais resolvidos ao
+ * vivo (GET /v3/customers/{id}) a cada leitura: já vêm CACHEADOS direto no
+ * pagamento (colunas "cpf_cnpj"/"nome" da tabela local "pagamentos_asaas",
+ * populadas pelo webhook/backfill/reconciliação — ver
+ * pagamentosAsaas.service.js), então `resolverPagamento` já recebe
+ * `pagamento.cpfCnpj`/`pagamento.nome` prontos em vez de precisar de um
+ * `mapaClientes` (customerId -> {cpfCnpj, nome}) resolvido via Asaas
+ * separadamente. O resto da função é idêntico a antes: cruza esse cpfCnpj
+ * com a nossa tabela "associados" (associadoPorCpfCnpj: cpfCnpj ->
+ * associado) para { cpfCnpj, nome, emNegociacao, emJuridico, bloqueado }.
+ * Pagamentos sem cpfCnpj cacheado ainda (ex.: webhook recebido há poucos
+ * segundos, resolução em segundo plano ainda não terminou — ver
+ * `resolverClienteEmSegundoPlano`), ou cujo cpfCnpj não bate com nenhum
+ * associado nosso, são tratados como "não" nos três campos booleanos (regra
+ * explícita do pedido, igual para os três — comportamento inalterado).
  */
-function resolverPagamento(pagamento, mapaClientes, associadoPorCpfCnpj) {
-  const cliente = mapaClientes.get(pagamento.customer);
-  const cpfCnpj = cliente?.cpfCnpj || null;
+function resolverPagamento(pagamento, associadoPorCpfCnpj) {
+  const cpfCnpj = pagamento.cpfCnpj || null;
   const associado = cpfCnpj ? associadoPorCpfCnpj.get(cpfCnpj) : undefined;
 
   return {
     cpfCnpj,
-    nome: associado?.nome || cliente?.nome || null,
+    nome: associado?.nome || pagamento.nome || null,
     emNegociacao: associado ? associado.emNegociacao === true : false,
     emJuridico: associado ? associado.emJuridico === true : false,
     bloqueado: associado ? associado.bloqueado === true : false,
@@ -286,22 +301,25 @@ function normalizarDocumento(valor) {
  *     comparar, substring — ver `normalizarDocumento`);
  *   - nome/razão social do associado (case-insensitive, substring; mesmo
  *     fallback de `resolverPagamento` — nome local do associado se existir,
- *     senão o nome do cliente no Asaas).
+ *     senão o nome cacheado do cliente no Asaas).
  * Os mecanismos são combinados com OU — como cada pagamento passa por essa
  * checagem uma única vez, um pagamento pego por mais de um ao mesmo tempo é
  * contado só uma vez em `excluidos` (nunca duplicado).
  *
- * `resolucaoClientes` ({ mapaClientes, associadoPorCpfCnpj }, ver
- * `resolverClientesEAssociados`) só é necessário pra checar CPF/CNPJ e nome
- * — quando `null` (nenhuma palavra configurada, ver `buscarPagamentosValidos`,
- * que evita o custo de resolver clientes à toa), a checagem cai de volta pra
- * só descrição, e como não há palavras mesmo, nem chega a fazer diferença.
+ * AJUSTE 14 — `associadoPorCpfCnpj` (ver `resolverAssociadosPorCpfCnpj`)
+ * passou a ser SEMPRE informado (nunca mais `null`): antes, resolver o
+ * cliente de cada pagamento custava uma chamada à API do Asaas, então
+ * `buscarPagamentosValidos` só pagava esse custo quando havia pelo menos uma
+ * palavra-chave configurada (senão a checagem caía pra só descrição). Agora
+ * que cpfCnpj/nome já vêm cacheados no próprio pagamento (tabela local) e
+ * "associados" é uma consulta local barata, resolver sempre é grátis o
+ * bastante pra não precisar mais dessa otimização condicional — resolver a
+ * mais nunca muda nenhum resultado, só deixava de ser feito antes por causa
+ * do custo, que não existe mais.
  */
-function separarExcluidos(pagamentos, idsExcluidos, palavras, resolucaoClientes) {
+function separarExcluidos(pagamentos, idsExcluidos, palavras, associadoPorCpfCnpj) {
   const palavrasMinusculas = palavras.filter(Boolean).map((p) => p.toLowerCase());
   const palavrasComoDocumento = palavras.filter(Boolean).map(normalizarDocumento).filter(Boolean);
-  const mapaClientes = resolucaoClientes?.mapaClientes;
-  const associadoPorCpfCnpj = resolucaoClientes?.associadoPorCpfCnpj;
   const validos = [];
   const excluidos = [];
 
@@ -313,8 +331,8 @@ function separarExcluidos(pagamentos, idsExcluidos, palavras, resolucaoClientes)
       const descricao = (pagamento.description || '').toLowerCase();
       excluidoPorPalavra = palavrasMinusculas.some((palavra) => descricao.includes(palavra));
 
-      if (!excluidoPorPalavra && mapaClientes) {
-        const { cpfCnpj, nome } = resolverPagamento(pagamento, mapaClientes, associadoPorCpfCnpj);
+      if (!excluidoPorPalavra) {
+        const { cpfCnpj, nome } = resolverPagamento(pagamento, associadoPorCpfCnpj);
         const cpfCnpjDocumento = normalizarDocumento(cpfCnpj);
         const nomeMinusculo = (nome || '').toLowerCase();
 
@@ -343,59 +361,98 @@ function separarExcluidos(pagamentos, idsExcluidos, palavras, resolucaoClientes)
 }
 
 /**
- * Busca os pagamentos do Asaas no período informado e já separa os
- * excluídos pelos mecanismos configurados (lista manual por ID + palavras-
- * chave, ver `separarExcluidos`) — usado tanto por `resumo` quanto por
- * `evolucaoMensal`.
- *
- * AJUSTE 7 — quando há pelo menos uma palavra-chave configurada, o critério
- * de match por palavra passou a cobrir também CPF/CNPJ e nome/razão social
- * do associado, não só a descrição da cobrança. Isso exige saber quem é o
- * cliente (via Asaas) de CADA pagamento do período ANTES de decidir quem é
- * excluído — não só dos pagamentos que sobrarem depois, nem só do
- * subconjunto (ex.: só OVERDUE) que outros filtros precisariam. Por isso,
- * SÓ quando `palavras.length > 0`, resolvemos aqui a lista COMPLETA de
- * clientes do período inteiro (via `resolverClientesEAssociados`) — e
- * devolvemos essa resolução (`resolucaoClientes`) pra quem chamou reusar,
- * em vez de resolver os mesmos clientes de novo mais adiante (ver `resumo`/
- * `evolucaoMensal`). Franquias sem nenhuma palavra-chave configurada
- * (`palavras.length === 0`) continuam com o comportamento e o custo de
- * antes: nenhuma resolução extra de cliente aqui, exclusão só por ID/
- * descrição, e `resolucaoClientes` sai `null` (cada endpoint resolve só o
- * que precisar, como já fazia).
+ * Adapta uma linha da tabela local "pagamentos_asaas" (colunas em
+ * português/camelCase Prisma — ver model em schema.prisma) para o mesmo
+ * formato "cru" do Asaas que todo o resto deste arquivo já espera
+ * (id/customer/value/dueDate/paymentDate/status/description — os mesmos
+ * nomes de campo que `listarPagamentos`, antes desta versão, devolvia direto
+ * da API). Só 2 diferenças de nome (`customerId` -> `customer`) e de tipo
+ * (`value`, `Decimal` do Postgres via Prisma -> `Number` plano — todo o
+ * resto do arquivo já soma/arredonda com `Number(pagamento.value)`, então
+ * convertido aqui de uma vez evita carregar um objeto Decimal adiante à toa).
+ * `cpfCnpj`/`nome`, cacheados na própria linha (ver docblock do model),
+ * seguem direto — é o que permite `resolverPagamento` não precisar mais de
+ * um `mapaClientes` resolvido via Asaas (ver docblock lá).
  */
-async function buscarPagamentosValidos(reqPrisma, franquiaId, { vencDe, vencAte }) {
-  const [pagamentos, { idsExcluidos, palavras }] = await Promise.all([
-    listarPagamentos({ dueDateGe: vencDe, dueDateLe: vencAte }, franquiaId),
-    buscarExclusoesConfiguradas(reqPrisma, franquiaId),
-  ]);
-
-  const resolucaoClientes =
-    palavras.filter(Boolean).length > 0
-      ? await resolverClientesEAssociados(reqPrisma, franquiaId, pagamentos.map((p) => p.customer))
-      : null;
-
-  const resultado = separarExcluidos(pagamentos, idsExcluidos, palavras, resolucaoClientes);
-  return { ...resultado, resolucaoClientes };
+function adaptarPagamentoLocal(pagamentoLocal) {
+  return {
+    id: pagamentoLocal.id,
+    customer: pagamentoLocal.customerId,
+    value: Number(pagamentoLocal.value),
+    dueDate: pagamentoLocal.dueDate,
+    paymentDate: pagamentoLocal.paymentDate || null,
+    status: pagamentoLocal.status,
+    description: pagamentoLocal.description || null,
+    cpfCnpj: pagamentoLocal.cpfCnpj || null,
+    nome: pagamentoLocal.nome || null,
+  };
 }
 
 /**
- * Resolve, para uma lista de IDs de cliente do Asaas, o mapa
- * (customerId -> {cpfCnpj, nome}) via API do Asaas e o mapa
- * (cpfCnpj -> associado local) via nossa tabela "associados" — reaproveitado
- * por `resumo` e `evolucaoMensal`.
+ * AJUSTE 14 — "Tabela local sincronizada via webhook do Asaas para Taxa de
+ * Inadimplência" (ver README, seção "AJUSTE 14"). Busca os pagamentos no
+ * período informado da tabela LOCAL "pagamentos_asaas" (`req.prisma`, já
+ * escopado por franquia pela extension — ver prismaComEscopo.js) em vez de
+ * paginar a API do Asaas a cada leitura (`listarPagamentos`, usada até a
+ * versão anterior), e já separa os excluídos pelos mecanismos configurados
+ * (lista manual por ID + palavras-chave, ver `separarExcluidos`) — usado
+ * tanto por `resumo` quanto por `evolucaoMensal`.
+ *
+ * A tabela local é mantida em dia por 3 caminhos independentes — webhook em
+ * tempo real, backfill inicial, reconciliação periódica (ver docblock de
+ * pagamentosAsaas.service.js) — e é sempre ela quem decide o que existe/o
+ * status atual de cada pagamento; este endpoint NUNCA mais consulta o Asaas
+ * ao vivo. Resultado esperado (confirmado no brief): os NÚMEROS não mudam
+ * em relação à versão anterior (mesma lógica de classificação, só a fonte
+ * dos dados trocou) — só a velocidade.
+ *
+ * AJUSTE 7 (contexto histórico, ainda válido) — o critério de exclusão por
+ * palavra-chave cobre descrição, CPF/CNPJ e nome/razão social do associado.
+ * Antes desta versão, resolver CPF/CNPJ de cada pagamento custava uma
+ * chamada à API do Asaas, então isso só era feito quando havia pelo menos
+ * uma palavra-chave configurada (ver histórico no controle de versão).
+ * Agora que cpfCnpj/nome já vêm CACHEADOS em cada linha da tabela local, e
+ * cruzar com "associados" é uma consulta local barata, resolvemos sempre —
+ * ver `resolverAssociadosPorCpfCnpj` logo abaixo — sem essa condicional:
+ * resolver a mais nunca muda nenhum resultado (só adicionava entradas de
+ * mapa não usadas), só deixava de valer a pena antes por causa do custo via
+ * Asaas, que não existe mais.
  */
-async function resolverClientesEAssociados(reqPrisma, franquiaId, idsClientes) {
-  const mapaClientes = await obterClientesPorId(idsClientes, franquiaId);
-  const cpfCnpjsResolvidos = [...new Set([...mapaClientes.values()].map((c) => c.cpfCnpj).filter(Boolean))];
-  const associadosLocais = cpfCnpjsResolvidos.length
+async function buscarPagamentosValidos(reqPrisma, franquiaId, { vencDe, vencAte }) {
+  const [pagamentosLocais, { idsExcluidos, palavras }] = await Promise.all([
+    reqPrisma.pagamentoAsaas.findMany({ where: { dueDate: { gte: vencDe, lte: vencAte } } }),
+    buscarExclusoesConfiguradas(reqPrisma, franquiaId),
+  ]);
+  const pagamentos = pagamentosLocais.map(adaptarPagamentoLocal);
+
+  const associadoPorCpfCnpj = await resolverAssociadosPorCpfCnpj(reqPrisma, pagamentos);
+
+  const resultado = separarExcluidos(pagamentos, idsExcluidos, palavras, associadoPorCpfCnpj);
+  return { ...resultado, associadoPorCpfCnpj };
+}
+
+/**
+ * Resolve o mapa (cpfCnpj -> associado local) via nossa tabela "associados",
+ * a partir dos CPF/CNPJs JÁ CACHEADOS nos próprios pagamentos informados
+ * (`pagamento.cpfCnpj`, ver `adaptarPagamentoLocal`) — reaproveitado por
+ * `resumo` e `evolucaoMensal`, sempre via `buscarPagamentosValidos`.
+ *
+ * AJUSTE 14 — substitui `resolverClientesEAssociados` (removida): não existe
+ * mais um "mapaClientes" pra resolver via Asaas primeiro — o cpfCnpj de cada
+ * pagamento já está na tabela local, então esta função é SÓ a segunda metade
+ * de antes (cpfCnpj -> associado), sem nenhuma chamada de rede. Isso também
+ * elimina o motivo original de resolver só um subconjunto (ex.: só OVERDUE)
+ * pra economizar chamadas Asaas — ver docblock de `buscarPagamentosValidos`.
+ */
+async function resolverAssociadosPorCpfCnpj(reqPrisma, pagamentos) {
+  const cpfCnpjsDistintos = [...new Set(pagamentos.map((p) => p.cpfCnpj).filter(Boolean))];
+  const associadosLocais = cpfCnpjsDistintos.length
     ? await reqPrisma.associado.findMany({
-        where: { cpfCnpj: { in: cpfCnpjsResolvidos } },
+        where: { cpfCnpj: { in: cpfCnpjsDistintos } },
         select: { cpfCnpj: true, nome: true, emNegociacao: true, emJuridico: true, bloqueado: true },
       })
     : [];
-  const associadoPorCpfCnpj = new Map(associadosLocais.map((a) => [a.cpfCnpj, a]));
-  return { mapaClientes, associadoPorCpfCnpj };
+  return new Map(associadosLocais.map((a) => [a.cpfCnpj, a]));
 }
 
 /**
@@ -413,8 +470,12 @@ async function resolverClientesEAssociados(reqPrisma, franquiaId, idsClientes) {
  * (AJUSTE 3) passou a olhar a descrição da cobrança no próprio Asaas. São
  * dois conceitos independentes que só compartilham o nome por coincidência
  * de domínio — ver README.
+ *
+ * AJUSTE 14 — perdeu o parâmetro `mapaClientes` (não existe mais — ver
+ * docblock de `resolverPagamento`): cpfCnpj já vem cacheado em cada
+ * pagamento, então só `associadoPorCpfCnpj` é necessário agora.
  */
-function aplicarFiltrosCrossReference(pagamentos, { renegociacao, emJuridico, bloqueado }, mapaClientes, associadoPorCpfCnpj) {
+function aplicarFiltrosCrossReference(pagamentos, { renegociacao, emJuridico, bloqueado }, associadoPorCpfCnpj) {
   if (renegociacao === 'todos' && emJuridico === 'todos' && bloqueado === 'todos') return pagamentos;
 
   return pagamentos.filter((pagamento) => {
@@ -422,7 +483,7 @@ function aplicarFiltrosCrossReference(pagamentos, { renegociacao, emJuridico, bl
       emNegociacao,
       emJuridico: pagamentoEmJuridico,
       bloqueado: pagamentoBloqueado,
-    } = resolverPagamento(pagamento, mapaClientes, associadoPorCpfCnpj);
+    } = resolverPagamento(pagamento, associadoPorCpfCnpj);
 
     if (renegociacao !== 'todos') {
       const bateRenegociacao = renegociacao === 'sim' ? emNegociacao : !emNegociacao;
@@ -587,10 +648,23 @@ function computarValorInadimplenteAdimplenteHistorico(pagamentos, hojeStr, diasT
  *   &tipo_pendencia=todos|vencidas|confirmadas
  *   &visao=aberto|historico&forcar=true
  *
- * Calcula, a partir dos pagamentos do Asaas com vencimento no período
- * informado (padrão: últimos 12 meses), os números da tela de "Taxa de
- * Inadimplência". Ver README para o detalhamento de cada campo e das
- * decisões de design.
+ * Calcula, a partir dos pagamentos com vencimento no período informado
+ * (padrão: últimos 12 meses), os números da tela de "Taxa de Inadimplência".
+ * Ver README para o detalhamento de cada campo e das decisões de design.
+ *
+ * AJUSTE 14 — "Tabela local sincronizada via webhook do Asaas". Os
+ * pagamentos vêm da tabela LOCAL "pagamentos_asaas" (Postgres), não mais de
+ * uma consulta ao vivo à API do Asaas — ver docblock de
+ * `buscarPagamentosValidos`. TODA a lógica de classificação abaixo (faixas,
+ * críticos, visao=aberto/historico, tipo_pendencia, exclusões, cross-
+ * references) é EXATAMENTE a mesma de antes, sem nenhuma mudança de
+ * comportamento — só a fonte dos dados trocou, para eliminar a lentidão de
+ * paginar/resolver clientes no Asaas a cada troca de filtro.
+ *
+ * "cliente do Asaas" abaixo (renegociação/em_juridico/bloqueado, top
+ * devedores etc.) passou a significar "cpfCnpj/nome cacheados na própria
+ * linha local", não mais "resolvidos ao vivo via GET /v3/customers/{id}" —
+ * ver docblock de `resolverPagamento`.
  *
  * Antes de qualquer cálculo, os pagamentos passam pela exclusão combinada
  * (lista manual por ID OU palavra-chave — descrição, CPF/CNPJ ou nome do
@@ -776,31 +850,20 @@ exports.resumo = async (req, res, next) => {
 
     const franquiaId = await resolverFranquiaIdOuPadrao(req);
 
-    const [{ validos: pagamentosValidos, excluidos, resolucaoClientes: resolucaoDaExclusao }, diasTolerancia] =
-      await Promise.all([
-        buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
-        getDiasTolerancia(franquiaId),
-      ]);
-
-    // Só precisamos resolver cpfCnpj de TODOS os pagamentos válidos quando
-    // algum filtro de cross-reference está ativo (ele filtra o conjunto
-    // inteiro, não só os OVERDUE). Sem filtro ativo, basta resolver os
-    // OVERDUE — é tudo que "associados_inadimplentes"/"top_devedores"
-    // precisam. AJUSTE 7 — se `buscarPagamentosValidos` já resolveu TODOS os
-    // clientes do período (porque há palavra-chave de exclusão configurada),
-    // reaproveitamos essa resolução em vez de chamar a API do Asaas de novo
-    // pros mesmos clientes.
-    const precisaResolverTodos = renegociacao !== 'todos' || emJuridico !== 'todos' || bloqueado !== 'todos';
-    const idsOverdue = pagamentosValidos.filter((p) => p.status === 'OVERDUE').map((p) => p.customer);
-    const idsParaResolver = precisaResolverTodos ? pagamentosValidos.map((p) => p.customer) : idsOverdue;
-
-    const { mapaClientes, associadoPorCpfCnpj } =
-      resolucaoDaExclusao || (await resolverClientesEAssociados(req.prisma, franquiaId, idsParaResolver));
+    // AJUSTE 14 — `buscarPagamentosValidos` já devolve `associadoPorCpfCnpj`
+    // resolvido para TODOS os pagamentos válidos do período (consulta local
+    // barata, ver docblock lá) — não há mais nenhuma resolução condicional
+    // aqui (o "precisaResolverTodos"/"idsOverdue"/"idsParaResolver" de antes
+    // existia só para minimizar chamadas à API do Asaas, que não existem
+    // mais nesta rota).
+    const [{ validos: pagamentosValidos, excluidos, associadoPorCpfCnpj }, diasTolerancia] = await Promise.all([
+      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
+      getDiasTolerancia(franquiaId),
+    ]);
 
     const conjuntoTrabalho = aplicarFiltrosCrossReference(
       pagamentosValidos,
       { renegociacao, emJuridico, bloqueado },
-      mapaClientes,
       associadoPorCpfCnpj
     );
 
@@ -849,7 +912,7 @@ exports.resumo = async (req, res, next) => {
     const porDevedor = new Map();
     for (const pagamento of pagamentosOverdue) {
       const valor = Number(pagamento.value) || 0;
-      const { cpfCnpj, nome } = resolverPagamento(pagamento, mapaClientes, associadoPorCpfCnpj);
+      const { cpfCnpj, nome } = resolverPagamento(pagamento, associadoPorCpfCnpj);
       const identificador = cpfCnpj || pagamento.customer;
 
       identificadoresInadimplentes.add(identificador);
@@ -898,9 +961,11 @@ exports.resumo = async (req, res, next) => {
     cache.set(chaveCache, resultado, CACHE_TTL_MS);
     res.json(resultado);
   } catch (err) {
-    if (err instanceof AsaasApiError) {
-      return res.status(err.status || 502).json({ error: err.message });
-    }
+    // AJUSTE 14 — sem catch específico de AsaasApiError aqui: esta rota não
+    // consulta mais o Asaas ao vivo (ver docblock de `buscarPagamentosValidos`),
+    // então esse erro nunca é lançado por este handler — qualquer falha cai
+    // no tratamento genérico de erro, como qualquer outra rota apoiada só em
+    // Postgres.
     next(err);
   }
 };
@@ -910,10 +975,14 @@ exports.resumo = async (req, res, next) => {
  *
  * Mesma base de cálculo do /resumo — mesma exclusão combinada e mesmos
  * cross-references de renegociacao/em_juridico/bloqueado — mas agrupada por
- * mês de vencimento ("YYYY-MM", derivado direto da string "dueDate" do
- * Asaas, sem passar por Date, para não sofrer problema de fuso). Todo mês
- * dentro do intervalo aparece no resultado, mesmo sem nenhum pagamento
- * naquele mês (valores zerados; as duas taxas ficam 0%).
+ * mês de vencimento ("YYYY-MM", derivado direto da string "dueDate", sem
+ * passar por Date, para não sofrer problema de fuso). Todo mês dentro do
+ * intervalo aparece no resultado, mesmo sem nenhum pagamento naquele mês
+ * (valores zerados; as duas taxas ficam 0%).
+ *
+ * AJUSTE 14 — mesma troca de fonte de dados do /resumo (Postgres local em
+ * vez de Asaas ao vivo, ver docblock lá e de `buscarPagamentosValidos`) —
+ * sem nenhuma mudança de comportamento, só velocidade.
  *
  * AJUSTE 13 (reunião Suelen + Roberto, 08/09) — CORRIGE um bug identificado
  * anteriormente e não corrigido até aqui: este endpoint aceita agora o
@@ -1040,23 +1109,20 @@ exports.evolucaoMensal = async (req, res, next) => {
     // AJUSTE 13 — "diasTolerancia" voltou a ser necessária aqui (só usada
     // abaixo quando "visao=historico"; buscada sempre, mesmo custo do
     // /resumo, mesmo padrão de Promise.all).
-    const [{ validos: pagamentosValidos, resolucaoClientes: resolucaoDaExclusao }, diasTolerancia] = await Promise.all([
+    // AJUSTE 14 — `buscarPagamentosValidos` já devolve `associadoPorCpfCnpj`
+    // resolvido para todos os pagamentos válidos do período (consulta local
+    // barata) — nenhuma resolução extra de cliente é feita aqui (ver
+    // docblock de `buscarPagamentosValidos`/`resolverAssociadosPorCpfCnpj`).
+    const [{ validos: pagamentosValidos, associadoPorCpfCnpj }, diasTolerancia] = await Promise.all([
       buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
       getDiasTolerancia(franquiaId),
     ]);
 
     let conjuntoTrabalho = pagamentosValidos;
     if (renegociacao !== 'todos' || emJuridico !== 'todos' || bloqueado !== 'todos') {
-      // AJUSTE 7 — reaproveita a resolução de clientes já feita pra exclusão
-      // (quando existir) em vez de chamar a API do Asaas de novo pros mesmos
-      // clientes.
-      const idsParaResolver = pagamentosValidos.map((p) => p.customer);
-      const { mapaClientes, associadoPorCpfCnpj } =
-        resolucaoDaExclusao || (await resolverClientesEAssociados(req.prisma, franquiaId, idsParaResolver));
       conjuntoTrabalho = aplicarFiltrosCrossReference(
         pagamentosValidos,
         { renegociacao, emJuridico, bloqueado },
-        mapaClientes,
         associadoPorCpfCnpj
       );
     }
@@ -1105,9 +1171,9 @@ exports.evolucaoMensal = async (req, res, next) => {
     cache.set(chaveCache, resultado, CACHE_TTL_MS);
     res.json(resultado);
   } catch (err) {
-    if (err instanceof AsaasApiError) {
-      return res.status(err.status || 502).json({ error: err.message });
-    }
+    // AJUSTE 14 — mesmo motivo do /resumo (ver docblock lá): esta rota não
+    // consulta mais o Asaas ao vivo, então não há mais catch específico de
+    // AsaasApiError aqui.
     next(err);
   }
 };
@@ -1184,6 +1250,59 @@ exports.removerExclusao = async (req, res, next) => {
   } catch (err) {
     if (err.code === 'P2025') {
       return res.status(404).json({ error: 'Exclusão não encontrada.' });
+    }
+    next(err);
+  }
+};
+
+/**
+ * POST /api/inadimplencia/reconciliar-pagamentos
+ * AJUSTE 14 — mesma reconciliação de scripts/reconciliar-pagamentos-asaas.js
+ * (ver docblock lá para o "porquê" — webhook entrega "at least once", isto é
+ * a rede de segurança contra entregas perdidas), exposta como endpoint HTTP
+ * para quem preferir disparar via um agendador externo estilo n8n em vez de
+ * rodar o script diretamente no host (mesma lógica de sync do Dashboard,
+ * POST /api/sync, que também é disparada de fora). Os dois caminhos
+ * convergem em `sincronizarJanela`/`calcularJanelaReconciliacao`
+ * (pagamentosAsaas.service.js) — nenhuma lógica duplicada.
+ *
+ * Diferenças em relação ao script:
+ *   - Escopado a UMA franquia por chamada (a do usuário autenticado, via
+ *     "auth" + "escopoFranquia" — mesmo padrão do resto da API multi-
+ *     franquia), nunca "todas" — um agendador externo que precise
+ *     reconciliar várias franquias chama este endpoint uma vez por franquia
+ *     (mesmo padrão de POST /api/sync).
+ *   - Sem modo dry-run — sempre aplica (o script é o lugar pra "só
+ *     mostrar"; um endpoint HTTP chamado por um agendador automatizado não
+ *     tem quem leia um relatório de dry-run).
+ *   - Janela sempre a padrão (`calcularJanelaReconciliacao`, sem flags) —
+ *     não expõe "--dias-atras/--dias-frente" como parâmetro de query, pra
+ *     manter o endpoint simples e previsível (ajustar a janela, se um dia
+ *     for preciso, é editar a constante compartilhada, refletindo em ambos
+ *     os caminhos).
+ *
+ * Limpa o cache de /resumo e /evolucao-mensal ao final — divergências
+ * corrigidas aqui (ex.: um pagamento removido) devem valer imediatamente na
+ * próxima consulta, mesmo caching de 4min de exclusoes/criarExclusao.
+ */
+exports.reconciliarPagamentos = async (req, res, next) => {
+  try {
+    const { vencDe, vencAte } = calcularJanelaReconciliacao();
+    const resultado = await sincronizarJanela(req.franquiaId, { vencDe, vencAte, dryRun: false });
+
+    cache.clear();
+
+    res.json({
+      janela: { venc_de: vencDe, venc_ate: vencAte },
+      total_asaas: resultado.totalAsaas,
+      criados: resultado.criados,
+      atualizados: resultado.atualizados,
+      removidos: resultado.removidos,
+      clientes_resolvidos: resultado.clientesResolvidos,
+    });
+  } catch (err) {
+    if (err instanceof AsaasApiError) {
+      return res.status(502).json({ error: `Erro ao consultar a API do Asaas: ${err.message}` });
     }
     next(err);
   }

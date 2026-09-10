@@ -9,6 +9,7 @@ const contratosRoutes = require('./contratos.routes');
 const franquiasRoutes = require('./franquias.routes');
 const usuariosRoutes = require('./usuarios.routes');
 const juridicoRoutes = require('./juridico.routes');
+const asaasRoutes = require('./asaas.routes');
 
 const router = Router();
 
@@ -22,5 +23,6 @@ router.use('/api', contratosRoutes);
 router.use('/api', franquiasRoutes);
 router.use('/api', usuariosRoutes);
 router.use('/api', juridicoRoutes);
+router.use('/api', asaasRoutes);
 
 module.exports = router;

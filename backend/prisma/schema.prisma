@@ -47,6 +47,7 @@ model Franquia {
   cardsJuridico          CardJuridico[]
   historicosCardJuridico HistoricoCardJuridico[]
   documentosJuridico     DocumentoJuridico[]
+  pagamentosAsaas        PagamentoAsaas[]
 
   @@map("franquias")
 }
@@ -513,4 +514,69 @@ model DocumentoJuridico {
   @@index([franquiaId])
   @@index([cpfCnpj])
   @@map("documentos_juridico")
+}
+
+/// AJUSTE 14 — "Tabela local sincronizada via webhook do Asaas para Taxa de
+/// Inadimplência". Espelho local dos pagamentos do Asaas, populado por 3
+/// caminhos (ver README, seção "AJUSTE 14", para a arquitetura completa):
+/// webhook em tempo real (POST /api/asaas/webhook/:franquiaId — cada evento
+/// vira um upsert aqui), backfill inicial (scripts/backfill-pagamentos-
+/// asaas.js — histórico completo, uma vez só, por franquia) e reconciliação
+/// periódica (scripts/reconciliar-pagamentos-asaas.js /
+/// POST /api/inadimplencia/reconciliar-pagamentos — rede de segurança pra
+/// quando o webhook falha/atrasa). GET /api/inadimplencia/resumo e
+/// /evolucao-mensal passaram a consultar esta tabela em vez de chamar a API
+/// do Asaas ao vivo a cada request — toda a lógica de classificação
+/// (classificarPagamento, faixas, filtros, exclusões, visão aberto/
+/// histórico) continua exatamente a mesma, só a origem do dado mudou.
+///
+/// "id" é o próprio "pay_..." do Asaas (não auto-gerado) — upsert por esse
+/// id é o que torna o processamento do webhook naturalmente idempotente:
+/// aplicar o mesmo evento 2x só upserta a mesma linha pro mesmo estado
+/// final, nunca duplica nem corrompe (ver pagamentosAsaas.service.js).
+///
+/// "cpfCnpj"/"nome" são resolvidos (GET /v3/customers/{id} do Asaas) e
+/// CACHEADOS aqui no momento do upsert — nunca re-resolvidos a cada leitura
+/// da tela, o que elimina exatamente o custo (1 chamada à API do Asaas por
+/// cliente distinto, a cada troca de filtro) que tornava /resumo e
+/// /evolucao-mensal lentos. Nullable: no caminho do webhook, o upsert do
+/// pagamento em si nunca espera essa resolução (ver docblock do
+/// controller do webhook) — fica null até o enriquecimento em segundo
+/// plano completar (ou pra sempre, se a resolução falhar — degrada
+/// graciosamente pro mesmo comportamento de "sem associado correspondente"
+/// que já existia antes deste ajuste).
+///
+/// "dueDate"/"paymentDate" são STRING "YYYY-MM-DD" (não DateTime) DE
+/// PROPÓSITO — mesma convenção já usada por toda a lógica de cálculo em
+/// inadimplencia.controller.js (classificarPagamento, gerarChavesMeses
+/// etc. trabalham só com strings, nunca com objetos Date, justamente para
+/// nunca sofrer problema de fuso horário — comparação lexicográfica de
+/// "YYYY-MM-DD" já é cronológica). Guardar como texto aqui mantém os dois
+/// lados (Postgres e a lógica de cálculo) falando exatamente o mesmo
+/// formato que o próprio Asaas usa, sem nenhuma conversão de fuso em
+/// nenhuma ponta (escrita no webhook/backfill, leitura no /resumo).
+model PagamentoAsaas {
+  id           String   @id
+  franquiaId   String   @map("franquia_id")
+  franquia     Franquia @relation(fields: [franquiaId], references: [id])
+  /// Id do cliente no Asaas (campo "customer" do pagamento) — referência
+  /// pra resolver/re-resolver cpfCnpj/nome quando necessário; não único
+  /// (um cliente pode ter N pagamentos).
+  customerId   String   @map("customer_id")
+  cpfCnpj      String?  @map("cpf_cnpj")
+  nome         String?
+  value        Decimal  @db.Decimal(12, 2)
+  dueDate      String   @map("due_date")
+  paymentDate  String?  @map("payment_date")
+  status       String
+  description  String?
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  // Mesmos padrões de consulta que /resumo e /evolucao-mensal já usavam
+  // contra a API do Asaas (filtro por período de vencimento) e contra
+  // status (várias contagens/filtros por status atual) — ver docblock do
+  // model acima.
+  @@index([franquiaId, dueDate])
+  @@index([franquiaId, status])
+  @@map("pagamentos_asaas")
 }

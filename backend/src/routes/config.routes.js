@@ -15,6 +15,8 @@ router.get('/config/webhook-cadastro', auth, configuracoes, escopoFranquia, ctrl
 router.patch('/config/webhook-cadastro', auth, configuracoes, escopoFranquia, ctrl.atualizarWebhookCadastro);
 router.get('/config/asaas-key', auth, configuracoes, escopoFranquia, ctrl.obterAsaasKey);
 router.patch('/config/asaas-key', auth, configuracoes, escopoFranquia, ctrl.atualizarAsaasKey);
+router.get('/config/asaas-webhook', auth, configuracoes, escopoFranquia, ctrl.obterAsaasWebhook);
+router.post('/config/asaas-webhook/gerar', auth, configuracoes, escopoFranquia, ctrl.gerarAsaasWebhookToken);
 router.get('/config/palavras-excluidas', auth, configuracoes, escopoFranquia, ctrl.obterPalavrasExcluidas);
 router.patch('/config/palavras-excluidas', auth, configuracoes, escopoFranquia, ctrl.atualizarPalavrasExcluidas);
 router.get('/config/tolerancia-dias', auth, configuracoes, escopoFranquia, ctrl.obterToleranciaDias);

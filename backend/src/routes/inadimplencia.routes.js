@@ -13,5 +13,6 @@ router.get('/inadimplencia/evolucao-mensal', auth, inadimplencia, escopoFranquia
 router.get('/inadimplencia/exclusoes', auth, inadimplencia, escopoFranquia, ctrl.listarExclusoes);
 router.post('/inadimplencia/exclusoes', auth, inadimplencia, escopoFranquia, ctrl.criarExclusao);
 router.delete('/inadimplencia/exclusoes/:id', auth, inadimplencia, escopoFranquia, ctrl.removerExclusao);
+router.post('/inadimplencia/reconciliar-pagamentos', auth, inadimplencia, escopoFranquia, ctrl.reconciliarPagamentos);
 
 module.exports = router;
