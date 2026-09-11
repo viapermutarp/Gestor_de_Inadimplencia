@@ -566,6 +566,17 @@ model PagamentoAsaas {
   cpfCnpj      String?  @map("cpf_cnpj")
   nome         String?
   value        Decimal  @db.Decimal(12, 2)
+  /// Data de emissão da cobrança no Asaas ("dateCreated" no payload — já
+  /// vinha no webhook/backfill/reconciliação, só não era persistida). Usada
+  /// pelo filtro "Filtrar período por: Data de emissão" da tela de Taxa de
+  /// Inadimplência — mesma convenção de string "YYYY-MM-DD" de
+  /// dueDate/paymentDate, sem passar por Date em nenhuma ponta. `String?`
+  /// (não `dueDate: String`, sem `?`) porque linhas gravadas ANTES deste
+  /// ajuste não têm esse valor até a próxima sincronização (webhook/
+  /// backfill/reconciliação) trazê-lo — nulo aqui simplesmente nunca casa
+  /// com um filtro de período por emissão, o mesmo tratamento que
+  /// paymentDate nulo já recebe pro filtro por data de pagamento.
+  dateCreated  String?  @map("date_created")
   dueDate      String   @map("due_date")
   paymentDate  String?  @map("payment_date")
   status       String
@@ -575,8 +586,14 @@ model PagamentoAsaas {
   // Mesmos padrões de consulta que /resumo e /evolucao-mensal já usavam
   // contra a API do Asaas (filtro por período de vencimento) e contra
   // status (várias contagens/filtros por status atual) — ver docblock do
-  // model acima.
+  // model acima. "dateCreated"/"paymentDate" ganharam índice próprio junto
+  // com o filtro "Filtrar período por" novo (ver inadimplencia.controller.js)
+  // — deixaram de ser só campos de exibição/classificação pra virar,
+  // também, a condição principal do WHERE quando esses dois modos estão
+  // selecionados (mesmo padrão de "dueDate" já indexado).
   @@index([franquiaId, dueDate])
+  @@index([franquiaId, dateCreated])
+  @@index([franquiaId, paymentDate])
   @@index([franquiaId, status])
   @@map("pagamentos_asaas")
 }

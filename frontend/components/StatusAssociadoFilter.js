@@ -8,35 +8,40 @@ const OPCOES_CHECKBOX = [
   { chave: "bloqueado", label: "Bloqueado" },
 ];
 
-// "Jurídico" (reunião Suelen + Roberto, 08/09) — deixou de ser um checkbox
-// simples (só "todos"/"sim") e virou 3 opções mutuamente exclusivas, pra
-// separar "Inadimplente Ativo" (associado ainda com a equipe, não foi pro
-// Jurídico — recuperável com esforço ativo) de "Inadimplente Jurídico" (já
-// "escapou" pra lá, mais difícil de reaver). O backend já tinha o parâmetro
-// tri-estado completo desde sempre (`em_juridico=todos|sim|nao`, ver
-// `validarFiltroTriEstado`/`aplicarFiltrosCrossReference` em
-// inadimplencia.controller.js — usado sem mudança nenhuma aqui); só a UI
-// que não expunha a opção "nao" ("Só ativos"). Combina com o período e com
-// o toggle "Em aberto hoje"/"Histórico do período" do mesmo jeito que
-// "Em negociação"/"Bloqueado" já combinam.
-const OPCOES_JURIDICO = [
-  { valor: "todos", label: "Todos" },
-  { valor: "ativos", label: "Só ativos (fora do Jurídico)" },
-  { valor: "juridico", label: "Só Jurídico" },
+// "Tipo de inadimplente" (AJUSTE 15 — Repaginar filtros da Taxa de
+// Inadimplência, item 6 do brief) — expande o antigo tri-state exclusivo
+// de "Jurídico" (reunião Suelen + Roberto, 08/09: "todos"|"ativos"|
+// "juridico") pra 3 categorias COMBINÁVEIS por checkbox, mapeadas pro
+// parâmetro `tipo_inadimplente` do backend (array -> string separada por
+// vírgula, ver lib/api.js): "ativo" (em_juridico=false), "juridico"
+// (em_juridico=true) e "critico" (associado com pelo menos 1 cobrança com
+// 90+ dias de atraso, respeitando a "visao" selecionada — mesmo critério
+// de `criticos_90_dias`). Diferente do tri-state anterior, um associado
+// jurídico com dívida de 100 dias aparece em "Jurídico" E "Crítico" ao
+// mesmo tempo quando os dois estão marcados — o backend garante que isso
+// não duplica o valor dele na soma (união por CPF/CNPJ, não soma por
+// combinação — ver README do backend, seção "AJUSTE 15").
+const OPCOES_TIPO_INADIMPLENTE = [
+  { valor: "ativo", label: "Ativo/Recuperável" },
+  { valor: "juridico", label: "Jurídico" },
+  { valor: "critico", label: "Crítico (90+ dias)" },
 ];
 
 /**
  * Filtro consolidado "Status do associado". `value` é um objeto
- * `{ emNegociacao, bloqueado, emJuridico }` — "emNegociacao"/"bloqueado"
- * continuam booleanos (checkbox; marcado vira "sim" na chamada à API,
- * desmarcado vira "todos" — ver app/inadimplencia/page.js); "emJuridico"
- * passou a ser uma string `"todos" | "ativos" | "juridico"` (mapeada pra
- * "todos"|"nao"|"sim" na chamada à API). Os três se combinam com E quando
- * mais de um está ativo (checkbox marcado e/ou jurídico != "todos").
+ * `{ emNegociacao, bloqueado, tipoInadimplente }` — "emNegociacao"/
+ * "bloqueado" continuam booleanos (checkbox; marcado vira "sim" na
+ * chamada à API, desmarcado vira "todos" — ver app/inadimplencia/page.js);
+ * "tipoInadimplente" é um array de "ativo"|"juridico"|"critico" (vazio =
+ * sem filtro = "Todos"), mapeado pro parâmetro `tipo_inadimplente` da API
+ * (ver lib/api.js). Os filtros se combinam com E entre si (negociação E/OU
+ * bloqueado E/OU tipo de inadimplente), mas os valores DENTRO de
+ * "tipoInadimplente" se combinam por OU (união) — ver docblock de
+ * OPCOES_TIPO_INADIMPLENTE acima.
  *
- * Mesmo padrão visual do DatePicker (botão com borda + painel flutuante em
- * `surface-elevated`, fecha ao clicar fora) para não introduzir um novo
- * estilo de dropdown na tela.
+ * Mesmo padrão visual do DatePicker/MultiCheckboxFilter (botão com borda +
+ * painel flutuante em `surface-elevated`, fecha ao clicar fora) para não
+ * introduzir um novo estilo de dropdown na tela.
  */
 export default function StatusAssociadoFilter({ value, onChange }) {
   const [aberto, setAberto] = useState(false);
@@ -52,15 +57,21 @@ export default function StatusAssociadoFilter({ value, onChange }) {
     return () => document.removeEventListener("mousedown", handleClickFora);
   }, []);
 
-  const emJuridicoAtivo = value?.emJuridico && value.emJuridico !== "todos";
-  const quantidadeAtiva = OPCOES_CHECKBOX.filter((o) => value?.[o.chave]).length + (emJuridicoAtivo ? 1 : 0);
+  const tipoInadimplente = Array.isArray(value?.tipoInadimplente) ? value.tipoInadimplente : [];
+  const quantidadeAtiva = OPCOES_CHECKBOX.filter((o) => value?.[o.chave]).length + tipoInadimplente.length;
 
   function alternarCheckbox(chave) {
     onChange({ ...value, [chave]: !value?.[chave] });
   }
 
-  function selecionarJuridico(valor) {
-    onChange({ ...value, emJuridico: valor });
+  function selecionarTodosTipos() {
+    onChange({ ...value, tipoInadimplente: [] });
+  }
+
+  function alternarTipoInadimplente(valor) {
+    const atual = Array.isArray(value?.tipoInadimplente) ? value.tipoInadimplente : [];
+    const novo = atual.includes(valor) ? atual.filter((v) => v !== valor) : [...atual, valor];
+    onChange({ ...value, tipoInadimplente: novo });
   }
 
   return (
@@ -107,23 +118,39 @@ export default function StatusAssociadoFilter({ value, onChange }) {
 
           <div className="my-1.5 border-t border-border-soft" />
           <p className="px-2.5 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Jurídico
+            Tipo de inadimplente
           </p>
-          {OPCOES_JURIDICO.map((o) => {
-            const selecionado = (value?.emJuridico || "todos") === o.valor;
+
+          <button
+            type="button"
+            onClick={selecionarTodosTipos}
+            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-colors hover:bg-surface-hover"
+          >
+            <span
+              className={`flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                tipoInadimplente.length === 0 ? "border-primary bg-primary text-primary-foreground" : "border-border-soft"
+              }`}
+            >
+              {tipoInadimplente.length === 0 && <IconCheck className="h-3 w-3" />}
+            </span>
+            Todos
+          </button>
+
+          {OPCOES_TIPO_INADIMPLENTE.map((o) => {
+            const checked = tipoInadimplente.includes(o.valor);
             return (
               <button
                 key={o.valor}
                 type="button"
-                onClick={() => selecionarJuridico(o.valor)}
+                onClick={() => alternarTipoInadimplente(o.valor)}
                 className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-colors hover:bg-surface-hover"
               >
                 <span
-                  className={`flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full border transition-colors ${
-                    selecionado ? "border-primary bg-primary text-primary-foreground" : "border-border-soft"
+                  className={`flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                    checked ? "border-primary bg-primary text-primary-foreground" : "border-border-soft"
                   }`}
                 >
-                  {selecionado && <IconCheck className="h-3 w-3" />}
+                  {checked && <IconCheck className="h-3 w-3" />}
                 </span>
                 {o.label}
               </button>

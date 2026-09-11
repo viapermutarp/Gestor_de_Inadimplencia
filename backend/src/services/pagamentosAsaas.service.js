@@ -43,6 +43,12 @@ const EVENTO_WEBHOOK_DELETE = 'PAYMENT_DELETED';
  * reprocessar o mesmo pagamento no backfill/reconciliação) 2x só upserta a
  * mesma linha pro mesmo estado final, nunca duplica.
  *
+ * "dateCreated" (data de emissão) grava direto de `payment.dateCreated`,
+ * sem nenhum tratamento especial — vem no payload do webhook e na resposta
+ * de `listarPagamentos` (usada por backfill/reconciliação) do mesmo jeito
+ * que "dueDate"/"paymentDate" já vinham; `null` só em pagamentos muito
+ * antigos que o Asaas eventualmente não preencha esse campo.
+ *
  * "clienteResolvido" ({cpfCnpj, nome} ou null): quando informado (backfill/
  * reconciliação, que já resolveram o cliente ANTES de chamar isto, em lote
  * — ver `sincronizarJanela` abaixo), grava cpfCnpj/nome junto. Quando
@@ -62,6 +68,7 @@ async function upsertPagamento(prismaCliente, franquiaId, payment, clienteResolv
     franquiaId,
     customerId: payment.customer,
     value: payment.value,
+    dateCreated: payment.dateCreated || null,
     dueDate: payment.dueDate,
     paymentDate: payment.paymentDate || null,
     status: payment.status,

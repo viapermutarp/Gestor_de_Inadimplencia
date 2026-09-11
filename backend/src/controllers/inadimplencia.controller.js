@@ -21,6 +21,55 @@ const CACHE_TTL_MS = 4 * 60 * 1000; // 4 minutos — dentro da faixa de 3-5min p
 const MESES_PADRAO = 12;
 const UM_DIA_MS = 24 * 60 * 60 * 1000;
 const PALAVRA_RENEGOCIACAO = 'renegociação';
+const LIMIAR_DIAS_CRITICO = 90; // mesmo limiar de "criticos_90_dias", ver computarFaixasECriticos/computarCpfCnpjCriticos.
+
+/**
+ * Repaginação dos filtros da tela "Taxa de Inadimplência" (item 2 do brief
+ * "Repaginar filtros") — "Filtrar período por": qual campo de data o par
+ * "venc_de"/"venc_ate" (nomes de parâmetro mantidos por compatibilidade —
+ * ver `resolverPeriodo`, inalterada) passa a restringir. Default
+ * "vencimento" preserva o comportamento de sempre (nenhuma regressão pra
+ * quem não manda o parâmetro novo). Ver `buscarPagamentosValidos`.
+ */
+const FILTRO_PERIODO_VALIDAS = ['vencimento', 'emissao', 'pagamento'];
+const CAMPO_DATA_POR_FILTRO_PERIODO = {
+  vencimento: 'dueDate',
+  emissao: 'dateCreated',
+  pagamento: 'paymentDate',
+};
+
+/**
+ * Item 3 do brief — "Situação da cobrança": filtro de população (some ao
+ * grupo renegociacao/em_juridico/bloqueado, ver `aplicarFiltrosCrossReference`)
+ * que restringe TODO o conjunto de trabalho pelo status atual, ANTES de
+ * qualquer cálculo — diferente do "tipo_pendencia" (AJUSTE 4), que só
+ * afeta a composição de "valor_inadimplente" sem tirar nada de
+ * "valor_total_faturado"/faixas/etc. Combinável (`situacao=em_aberto,pagas`,
+ * lista separada por vírgula — ver `validarListaMultipla`): vazio/ausente =
+ * "Todas" (sem restrição, comportamento de sempre). Substitui "tipo_pendencia"
+ * na UI (removido do novo layout de filtros — ver README); o parâmetro
+ * "tipo_pendencia" continua aceito no backend por compatibilidade, só não é
+ * mais enviado pela tela.
+ */
+const SITUACAO_VALIDAS = ['em_aberto', 'pagas'];
+const STATUS_POR_SITUACAO = {
+  em_aberto: ['OVERDUE', 'CONFIRMED', 'PENDING'],
+  pagas: ['RECEIVED', 'RECEIVED_IN_CASH'],
+};
+
+/**
+ * Item 6 do brief — "Tipo de inadimplente": expande o antigo filtro
+ * exclusivo `em_juridico` (todos|sim|nao) para 3 opções COMBINÁVEIS por OU
+ * entre si (`tipo_inadimplente=juridico,critico`, mesma lista separada por
+ * vírgula de "situacao") — um associado Jurídico com 100 dias de atraso
+ * aparece com "juridico" e "critico" marcados ao mesmo tempo, sem exclusão
+ * mútua. Vazio/ausente = "Todos" (sem restrição). Continua combinando por E
+ * com "renegociacao"/"bloqueado" (inalterados) — só o antigo `em_juridico`
+ * exclusivo foi substituído por este grupo na tela nova; o parâmetro
+ * "em_juridico" continua aceito no backend por compatibilidade. Ver
+ * `computarCpfCnpjCriticos`/`aplicarFiltroTipoInadimplente`.
+ */
+const TIPO_INADIMPLENTE_VALIDAS = ['ativo', 'juridico', 'critico'];
 
 /**
  * AJUSTE CRÍTICO 3 — critério de "valor_inadimplente"/"valor_adimplente"
@@ -168,6 +217,38 @@ function validarTipoPendencia(valorParam) {
     return { erro: '"tipo_pendencia" deve ser "todos", "vencidas" ou "confirmadas".' };
   }
   return { valor, erro: null };
+}
+
+/**
+ * Valida o filtro "filtro_periodo" ("vencimento"|"emissao"|"pagamento",
+ * padrão "vencimento" — ver docblock de FILTRO_PERIODO_VALIDAS).
+ */
+function validarFiltroPeriodo(valorParam) {
+  const valor = valorParam === undefined ? 'vencimento' : valorParam;
+  if (!FILTRO_PERIODO_VALIDAS.includes(valor)) {
+    return { erro: '"filtro_periodo" deve ser "vencimento", "emissao" ou "pagamento".' };
+  }
+  return { valor, erro: null };
+}
+
+/**
+ * Parser/validador compartilhado pelos dois filtros novos combináveis
+ * ("situacao"/"tipo_inadimplente") — mesmo formato: lista separada por
+ * vírgula, sem espaços obrigatórios (`.trim()` por item), duplicatas
+ * removidas, vazio/ausente = `[]` (nenhuma restrição — "Todas"/"Todos").
+ * Qualquer item fora de `valoresValidos` é erro 400 explícito, não
+ * silenciosamente ignorado.
+ */
+function validarListaMultipla(valorParam, valoresValidos, nomeParam) {
+  if (valorParam === undefined || valorParam === '') {
+    return { valores: [], erro: null };
+  }
+  const itens = [...new Set(valorParam.split(',').map((item) => item.trim()).filter(Boolean))];
+  const invalido = itens.find((item) => !valoresValidos.includes(item));
+  if (invalido) {
+    return { erro: `"${nomeParam}" contém um valor inválido: "${invalido}" (válidos: ${valoresValidos.join(', ')}).` };
+  }
+  return { valores: itens, erro: null };
 }
 
 /**
@@ -379,6 +460,7 @@ function adaptarPagamentoLocal(pagamentoLocal) {
     id: pagamentoLocal.id,
     customer: pagamentoLocal.customerId,
     value: Number(pagamentoLocal.value),
+    dateCreated: pagamentoLocal.dateCreated || null,
     dueDate: pagamentoLocal.dueDate,
     paymentDate: pagamentoLocal.paymentDate || null,
     status: pagamentoLocal.status,
@@ -418,9 +500,20 @@ function adaptarPagamentoLocal(pagamentoLocal) {
  * mapa não usadas), só deixava de valer a pena antes por causa do custo via
  * Asaas, que não existe mais.
  */
-async function buscarPagamentosValidos(reqPrisma, franquiaId, { vencDe, vencAte }) {
+async function buscarPagamentosValidos(reqPrisma, franquiaId, { vencDe, vencAte, filtroPeriodo = 'vencimento' }) {
+  // Repaginação de filtros — "filtro_periodo" decide qual campo de data o
+  // par vencDe/vencAte restringe: "vencimento" (padrão, dueDate, sem
+  // mudança de comportamento), "emissao" (dateCreated) ou "pagamento"
+  // (paymentDate). Nos três casos é uma comparação de STRING "YYYY-MM-DD"
+  // (mesma convenção do resto do arquivo, sem passar por Date). Em
+  // "pagamento", uma linha com paymentDate `null` (ainda não paga) nunca
+  // casa com `{ gte, lte }` no Postgres (comparação contra NULL é sempre
+  // desconhecida) — fica de fora do conjunto automaticamente, exatamente o
+  // comportamento pedido ("não faz sentido incluir 'não pago' filtrando por
+  // data de pagamento"), sem precisar de um `NOT NULL` explícito.
+  const campoData = CAMPO_DATA_POR_FILTRO_PERIODO[filtroPeriodo] || 'dueDate';
   const [pagamentosLocais, { idsExcluidos, palavras }] = await Promise.all([
-    reqPrisma.pagamentoAsaas.findMany({ where: { dueDate: { gte: vencDe, lte: vencAte } } }),
+    reqPrisma.pagamentoAsaas.findMany({ where: { [campoData]: { gte: vencDe, lte: vencAte } } }),
     buscarExclusoesConfiguradas(reqPrisma, franquiaId),
   ]);
   const pagamentos = pagamentosLocais.map(adaptarPagamentoLocal);
@@ -578,6 +671,20 @@ function gerarChavesMeses(vencDe, vencAte) {
  * da janela de tolerância — nesse caso `diasAtraso <= 0` e o pagamento cai
  * em "ate_vencimento", não em nenhuma outra faixa nem em `criticos90Dias`.
  */
+/**
+ * Extraída de `computarFaixasECriticos` (era inline lá) para ser
+ * compartilhada com `computarCpfCnpjCriticos` (item 6 do brief — filtro
+ * "Tipo de inadimplente" -> "Crítico") — mesma fórmula de "dias de atraso
+ * efetivos" nos dois lugares, nenhuma duplicação que pudesse divergir.
+ * "modo" é "aberto"|"historico" (mesmo parâmetro `visao`, ver docblocks).
+ */
+function calcularDiasAtraso(pagamento, modo, hojeStr, diasTolerancia) {
+  const dataLimiteEfetiva = somarDias(pagamento.dueDate, diasTolerancia);
+  return modo === 'historico' && pagamento.paymentDate
+    ? diferencaDias(pagamento.paymentDate, dataLimiteEfetiva)
+    : diferencaDias(hojeStr, dataLimiteEfetiva);
+}
+
 function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
   const faixas = {
     ate_vencimento: 0,
@@ -592,11 +699,7 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
 
   for (const pagamento of pagamentos) {
     const valor = Number(pagamento.value) || 0;
-    const dataLimiteEfetiva = somarDias(pagamento.dueDate, diasTolerancia);
-    const diasAtraso =
-      modo === 'historico' && pagamento.paymentDate
-        ? diferencaDias(pagamento.paymentDate, dataLimiteEfetiva)
-        : diferencaDias(hojeStr, dataLimiteEfetiva);
+    const diasAtraso = calcularDiasAtraso(pagamento, modo, hojeStr, diasTolerancia);
 
     if (diasAtraso <= 0) faixas.ate_vencimento += valor;
     else if (diasAtraso <= 20) faixas['1_20'] += valor;
@@ -606,10 +709,93 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
     else if (diasAtraso <= 100) faixas['51_100'] += valor;
     else faixas.acima_100 += valor; // 100+ dias (sem teto)
 
-    if (diasAtraso >= 90) criticos90Dias += valor;
+    if (diasAtraso >= LIMIAR_DIAS_CRITICO) criticos90Dias += valor;
   }
 
   return { faixas, criticos90Dias };
+}
+
+/**
+ * Item 6 do brief — subconjunto de "pagamentos" (mesmo formato "modo"/
+ * "aberto"|"historico" de `computarFaixasECriticos`) que decide QUEM entra
+ * no cálculo de dias de atraso: "aberto" = só status OVERDUE (snapshot de
+ * hoje); "historico" = quem já teve desfecho decidido por
+ * `classificarPagamento` (exclui só A_VENCER) — EXATAMENTE o mesmo
+ * subconjunto que alimenta "faixas"/"criticos_90_dias" hoje (`pagamentosParaFaixas`
+ * em `resumo`/`evolucaoMensal`, ver docblocks lá), reproduzido aqui porque
+ * o filtro "Crítico" precisa decidir QUEM é crítico ANTES da filtragem
+ * final por "Tipo de inadimplente" (senão seria circular — filtrar por
+ * "é crítico" exigiria já saber quem sobrou depois de filtrar por "é
+ * crítico"). Ver `aplicarFiltroTipoInadimplente`.
+ */
+function pagamentosParaCalculoDeAtraso(pagamentos, modo, hojeStr, diasTolerancia) {
+  return modo === 'aberto'
+    ? pagamentos.filter((p) => p.status === 'OVERDUE')
+    : pagamentos.filter((p) => classificarPagamento(p, hojeStr, diasTolerancia) !== 'A_VENCER');
+}
+
+/**
+ * Item 6 do brief — "Crítico" = associado com PELO MENOS 1 cobrança com
+ * `diasAtraso >= 90` ("mesmo critério do card 'Críticos 90+'", respeitando
+ * "visao" — ver `pagamentosParaCalculoDeAtraso`/`calcularDiasAtraso`).
+ * Devolve um Set de identificadores (cpfCnpj, ou o próprio "customer" do
+ * Asaas quando não há associado local correspondente — mesmo fallback de
+ * identidade já usado em "top_devedores", ver `resolverPagamento`), para
+ * casar contra cada pagamento em `aplicarFiltroTipoInadimplente`.
+ */
+function computarCpfCnpjCriticos(pagamentos, modo, hojeStr, diasTolerancia, associadoPorCpfCnpj) {
+  const criticos = new Set();
+  const paraAtraso = pagamentosParaCalculoDeAtraso(pagamentos, modo, hojeStr, diasTolerancia);
+  for (const pagamento of paraAtraso) {
+    if (calcularDiasAtraso(pagamento, modo, hojeStr, diasTolerancia) >= LIMIAR_DIAS_CRITICO) {
+      const { cpfCnpj } = resolverPagamento(pagamento, associadoPorCpfCnpj);
+      criticos.add(cpfCnpj || pagamento.customer);
+    }
+  }
+  return criticos;
+}
+
+/**
+ * Item 3 do brief — "Situação da cobrança": filtro de POPULAÇÃO (afeta
+ * `valor_total_faturado`, não só `valor_inadimplente` — ver docblock de
+ * SITUACAO_VALIDAS/STATUS_POR_SITUACAO). `situacaoSelecionada` vazio =
+ * sem restrição (mesmo formato de retorno de `validarListaMultipla`).
+ * Combinação entre buckets selecionados é por OU — cada pagamento entra se
+ * o status bater em QUALQUER um dos buckets marcados (ex.: "em_aberto" +
+ * "pagas" marcados juntos = união dos dois conjuntos de status, o que NÃO
+ * é exatamente "Todas": status fora dos dois grupos, ex. REFUNDED, continua
+ * de fora — comportamento deliberado, mais previsível que tratar "os dois
+ * marcados" como um sinônimo mágico de "nenhum filtro").
+ */
+function aplicarFiltroSituacao(pagamentos, situacaoSelecionada) {
+  if (!situacaoSelecionada || situacaoSelecionada.length === 0) return pagamentos;
+  const statusPermitidos = new Set(situacaoSelecionada.flatMap((s) => STATUS_POR_SITUACAO[s] || []));
+  return pagamentos.filter((p) => statusPermitidos.has(p.status));
+}
+
+/**
+ * Item 6 do brief — "Tipo de inadimplente": filtro de população combinável
+ * por OU entre "ativo" (`!emJuridico`), "juridico" (`emJuridico`) e
+ * "critico" (`cpfCnpj` presente em `criticoSet`, ver
+ * `computarCpfCnpjCriticos`) — um pagamento passa se bater em QUALQUER um
+ * dos tipos marcados. `tipoSelecionado` vazio = sem restrição ("Todos").
+ * Continua combinando por E com "renegociacao"/"bloqueado", aplicados
+ * separadamente em `aplicarFiltrosCrossReference` — este filtro não lida
+ * com os dois (só com a parte que substituiu o antigo `em_juridico`
+ * exclusivo).
+ */
+function aplicarFiltroTipoInadimplente(pagamentos, tipoSelecionado, criticoSet, associadoPorCpfCnpj) {
+  if (!tipoSelecionado || tipoSelecionado.length === 0) return pagamentos;
+
+  return pagamentos.filter((pagamento) => {
+    const { cpfCnpj, emJuridico } = resolverPagamento(pagamento, associadoPorCpfCnpj);
+    const identificador = cpfCnpj || pagamento.customer;
+
+    if (tipoSelecionado.includes('ativo') && !emJuridico) return true;
+    if (tipoSelecionado.includes('juridico') && emJuridico) return true;
+    if (tipoSelecionado.includes('critico') && criticoSet.has(identificador)) return true;
+    return false;
+  });
 }
 
 /**
@@ -798,9 +984,12 @@ exports.resumo = async (req, res, next) => {
     const {
       venc_de: vencDeParam,
       venc_ate: vencAteParam,
+      filtro_periodo: filtroPeriodoParam,
       renegociacao: renegociacaoParam,
       em_juridico: emJuridicoParam,
       bloqueado: bloqueadoParam,
+      situacao: situacaoParam,
+      tipo_inadimplente: tipoInadimplenteParam,
       tipo_pendencia: tipoPendenciaParam,
       visao: visaoParam,
     } = req.query;
@@ -808,6 +997,11 @@ exports.resumo = async (req, res, next) => {
     const { vencDe, vencAte, erro: erroPeriodo } = resolverPeriodo(vencDeParam, vencAteParam);
     if (erroPeriodo) {
       return res.status(400).json({ error: erroPeriodo });
+    }
+
+    const { valor: filtroPeriodo, erro: erroFiltroPeriodo } = validarFiltroPeriodo(filtroPeriodoParam);
+    if (erroFiltroPeriodo) {
+      return res.status(400).json({ error: erroFiltroPeriodo });
     }
 
     const { valor: renegociacao, erro: erroRenegociacao } = validarFiltroTriEstado(renegociacaoParam, 'renegociacao');
@@ -823,6 +1017,20 @@ exports.resumo = async (req, res, next) => {
     const { valor: bloqueado, erro: erroBloqueado } = validarFiltroTriEstado(bloqueadoParam, 'bloqueado');
     if (erroBloqueado) {
       return res.status(400).json({ error: erroBloqueado });
+    }
+
+    const { valores: situacao, erro: erroSituacao } = validarListaMultipla(situacaoParam, SITUACAO_VALIDAS, 'situacao');
+    if (erroSituacao) {
+      return res.status(400).json({ error: erroSituacao });
+    }
+
+    const { valores: tipoInadimplente, erro: erroTipoInadimplente } = validarListaMultipla(
+      tipoInadimplenteParam,
+      TIPO_INADIMPLENTE_VALIDAS,
+      'tipo_inadimplente'
+    );
+    if (erroTipoInadimplente) {
+      return res.status(400).json({ error: erroTipoInadimplente });
     }
 
     const { valor: tipoPendencia, erro: erroTipoPendencia } = validarTipoPendencia(tipoPendenciaParam);
@@ -842,7 +1050,7 @@ exports.resumo = async (req, res, next) => {
     // a se beneficiar dele normalmente.
     const forcar = req.query.forcar === 'true';
 
-    const chaveCache = `inadimplencia:resumo:${vencDe}:${vencAte}:${renegociacao}:${emJuridico}:${bloqueado}:${tipoPendencia}:${visao}`;
+    const chaveCache = `inadimplencia:resumo:${vencDe}:${vencAte}:${filtroPeriodo}:${renegociacao}:${emJuridico}:${bloqueado}:${situacao.join('+')}:${tipoInadimplente.join('+')}:${tipoPendencia}:${visao}`;
     const cacheado = forcar ? undefined : cache.get(chaveCache);
     if (cacheado) {
       return res.json(cacheado);
@@ -857,17 +1065,38 @@ exports.resumo = async (req, res, next) => {
     // existia só para minimizar chamadas à API do Asaas, que não existem
     // mais nesta rota).
     const [{ validos: pagamentosValidos, excluidos, associadoPorCpfCnpj }, diasTolerancia] = await Promise.all([
-      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
+      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte, filtroPeriodo }),
       getDiasTolerancia(franquiaId),
     ]);
 
-    const conjuntoTrabalho = aplicarFiltrosCrossReference(
-      pagamentosValidos,
+    const hojeStr = formatarDataISO(new Date());
+
+    // Repaginação de filtros — pipeline de população, nesta ordem:
+    //   1. "situacao" (item 3, status bucket — ver aplicarFiltroSituacao)
+    //   2. cross-reference de sempre (renegociacao/em_juridico legado/bloqueado)
+    //   3. "tipo_inadimplente" (item 6 — ativo/juridico/critico, combinável por
+    //      OU), cujo "critico" precisa ser calculado ANTES deste último passo,
+    //      sobre a população que já passou pelos 2 primeiros (mesma base que
+    //      "criticos_90_dias" usaria pra essa combinação de filtros) — ver
+    //      docblock de `computarCpfCnpjCriticos` para o porquê da ordem.
+    const populacaoAntesDoTipoInadimplente = aplicarFiltrosCrossReference(
+      aplicarFiltroSituacao(pagamentosValidos, situacao),
       { renegociacao, emJuridico, bloqueado },
       associadoPorCpfCnpj
     );
-
-    const hojeStr = formatarDataISO(new Date());
+    const criticoSet = computarCpfCnpjCriticos(
+      populacaoAntesDoTipoInadimplente,
+      visao,
+      hojeStr,
+      diasTolerancia,
+      associadoPorCpfCnpj
+    );
+    const conjuntoTrabalho = aplicarFiltroTipoInadimplente(
+      populacaoAntesDoTipoInadimplente,
+      tipoInadimplente,
+      criticoSet,
+      associadoPorCpfCnpj
+    );
 
     const valorTotalFaturado = conjuntoTrabalho.reduce((soma, p) => soma + (Number(p.value) || 0), 0);
 
@@ -1056,9 +1285,12 @@ exports.evolucaoMensal = async (req, res, next) => {
     const {
       venc_de: vencDeParam,
       venc_ate: vencAteParam,
+      filtro_periodo: filtroPeriodoParam,
       renegociacao: renegociacaoParam,
       em_juridico: emJuridicoParam,
       bloqueado: bloqueadoParam,
+      situacao: situacaoParam,
+      tipo_inadimplente: tipoInadimplenteParam,
       tipo_pendencia: tipoPendenciaParam,
       visao: visaoParam,
     } = req.query;
@@ -1066,6 +1298,11 @@ exports.evolucaoMensal = async (req, res, next) => {
     const { vencDe, vencAte, erro: erroPeriodo } = resolverPeriodo(vencDeParam, vencAteParam);
     if (erroPeriodo) {
       return res.status(400).json({ error: erroPeriodo });
+    }
+
+    const { valor: filtroPeriodo, erro: erroFiltroPeriodo } = validarFiltroPeriodo(filtroPeriodoParam);
+    if (erroFiltroPeriodo) {
+      return res.status(400).json({ error: erroFiltroPeriodo });
     }
 
     const { valor: renegociacao, erro: erroRenegociacao } = validarFiltroTriEstado(renegociacaoParam, 'renegociacao');
@@ -1083,6 +1320,20 @@ exports.evolucaoMensal = async (req, res, next) => {
       return res.status(400).json({ error: erroBloqueado });
     }
 
+    const { valores: situacao, erro: erroSituacao } = validarListaMultipla(situacaoParam, SITUACAO_VALIDAS, 'situacao');
+    if (erroSituacao) {
+      return res.status(400).json({ error: erroSituacao });
+    }
+
+    const { valores: tipoInadimplente, erro: erroTipoInadimplente } = validarListaMultipla(
+      tipoInadimplenteParam,
+      TIPO_INADIMPLENTE_VALIDAS,
+      'tipo_inadimplente'
+    );
+    if (erroTipoInadimplente) {
+      return res.status(400).json({ error: erroTipoInadimplente });
+    }
+
     const { valor: tipoPendencia, erro: erroTipoPendencia } = validarTipoPendencia(tipoPendenciaParam);
     if (erroTipoPendencia) {
       return res.status(400).json({ error: erroTipoPendencia });
@@ -1098,7 +1349,7 @@ exports.evolucaoMensal = async (req, res, next) => {
     // acima): ignora a leitura do cache, mas ainda grava o resultado novo.
     const forcar = req.query.forcar === 'true';
 
-    const chaveCache = `inadimplencia:evolucao-mensal:${vencDe}:${vencAte}:${renegociacao}:${emJuridico}:${bloqueado}:${tipoPendencia}:${visao}`;
+    const chaveCache = `inadimplencia:evolucao-mensal:${vencDe}:${vencAte}:${filtroPeriodo}:${renegociacao}:${emJuridico}:${bloqueado}:${situacao.join('+')}:${tipoInadimplente.join('+')}:${tipoPendencia}:${visao}`;
     const cacheado = forcar ? undefined : cache.get(chaveCache);
     if (cacheado) {
       return res.json(cacheado);
@@ -1114,20 +1365,34 @@ exports.evolucaoMensal = async (req, res, next) => {
     // barata) — nenhuma resolução extra de cliente é feita aqui (ver
     // docblock de `buscarPagamentosValidos`/`resolverAssociadosPorCpfCnpj`).
     const [{ validos: pagamentosValidos, associadoPorCpfCnpj }, diasTolerancia] = await Promise.all([
-      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte }),
+      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte, filtroPeriodo }),
       getDiasTolerancia(franquiaId),
     ]);
 
-    let conjuntoTrabalho = pagamentosValidos;
-    if (renegociacao !== 'todos' || emJuridico !== 'todos' || bloqueado !== 'todos') {
-      conjuntoTrabalho = aplicarFiltrosCrossReference(
-        pagamentosValidos,
-        { renegociacao, emJuridico, bloqueado },
-        associadoPorCpfCnpj
-      );
-    }
-
     const hojeStr = formatarDataISO(new Date());
+
+    // Repaginação de filtros — mesmo pipeline de 3 passos do /resumo (ver
+    // docblock lá): situacao -> cross-reference de sempre -> tipo_inadimplente
+    // (com o "critico" calculado sobre a população intermediária).
+    const populacaoAntesDoTipoInadimplente = aplicarFiltrosCrossReference(
+      aplicarFiltroSituacao(pagamentosValidos, situacao),
+      { renegociacao, emJuridico, bloqueado },
+      associadoPorCpfCnpj
+    );
+    const criticoSet = computarCpfCnpjCriticos(
+      populacaoAntesDoTipoInadimplente,
+      visao,
+      hojeStr,
+      diasTolerancia,
+      associadoPorCpfCnpj
+    );
+    const conjuntoTrabalho = aplicarFiltroTipoInadimplente(
+      populacaoAntesDoTipoInadimplente,
+      tipoInadimplente,
+      criticoSet,
+      associadoPorCpfCnpj
+    );
+
     // AJUSTE 13 — "aberto": mesmo critério por status atual de sempre (ver
     // docblock e STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA/STATUS_ADIMPLENTE no
     // topo do arquivo). "historico": reaproveita `classificarPagamento`
@@ -1137,10 +1402,21 @@ exports.evolucaoMensal = async (req, res, next) => {
     const meses = gerarChavesMeses(vencDe, vencAte);
     const porMes = new Map(meses.map((mes) => [mes, { valorTotalFaturado: 0, valorInadimplente: 0, valorAdimplente: 0 }]));
 
+    // Repaginação de filtros — o mês de cada ponto do gráfico passa a vir do
+    // MESMO campo de data usado pra filtrar o período ("filtro_periodo"),
+    // não mais sempre "dueDate": em "vencimento" (padrão) é idêntico a
+    // antes; em "emissao"/"pagamento", agrupar por "dueDate" poderia jogar
+    // um pagamento pago/emitido dentro da janela [vencDe, vencAte] só que
+    // com VENCIMENTO fora dela — caindo fora de `meses` (o `continue`
+    // abaixo) e sumindo silenciosamente do gráfico, mesmo tendo sido
+    // corretamente incluído pelo filtro. Como `buscarPagamentosValidos` já
+    // restringiu a busca a linhas com esse mesmo campo dentro do período,
+    // ele nunca vem nulo aqui.
+    const campoMes = CAMPO_DATA_POR_FILTRO_PERIODO[filtroPeriodo] || 'dueDate';
     for (const pagamento of conjuntoTrabalho) {
-      const mes = pagamento.dueDate.slice(0, 7);
+      const mes = pagamento[campoMes].slice(0, 7);
       const acumulado = porMes.get(mes);
-      if (!acumulado) continue; // fora do intervalo pedido (não deveria acontecer, já filtrado pelo Asaas via dueDate[ge]/[le])
+      if (!acumulado) continue; // fora do intervalo pedido (não deveria acontecer — já filtrado no Postgres por [campoMes] gte/lte, ver buscarPagamentosValidos)
 
       const valor = Number(pagamento.value) || 0;
       acumulado.valorTotalFaturado += valor;

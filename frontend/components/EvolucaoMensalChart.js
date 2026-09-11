@@ -53,9 +53,12 @@ function construirPath(dados, campo) {
  * app/inadimplencia/page.js) e o gráfico só usa a prop pra exibir, abaixo do
  * título, qual critério está refletido nos pontos — mesmo texto/padrão do
  * subtítulo do FaixasChart, pra deixar explícito que os dois usam o mesmo
- * critério. Não há um segundo seletor aqui: a troca "Em aberto hoje" x
- * "Histórico do período" continua sendo feita nas abas do FaixasChart
- * (`onAlterarVisao`), que já controla o mesmo estado `visao` da página.
+ * critério. Não há um segundo seletor aqui: a troca "Situação atual" x
+ * "Fechamento histórico do mês" (renomeado — AJUSTE 15) é feita no bloco
+ * "Análise" da barra de filtros (`app/inadimplencia/page.js`), que
+ * controla o mesmo estado `visao` da página — antes do AJUSTE 15 esse
+ * toggle morava no cabeçalho do FaixasChart, com os nomes antigos "Em
+ * aberto hoje"/"Histórico do período".
  */
 export default function EvolucaoMensalChart({ dados, loading, erro, visao = "aberto" }) {
   const lista = Array.isArray(dados) ? dados : [];

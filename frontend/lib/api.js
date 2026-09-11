@@ -360,6 +360,30 @@ export function criarCadastro(payload) {
  * numa classificação por data); o frontend desabilita visualmente o campo
  * nesse caso (ver app/inadimplencia/page.js) — ver README, seção "Taxa de
  * Inadimplência".
+ *
+ * Filtros novos (AJUSTE 15 — ver README do backend, seção "AJUSTE 15"):
+ *   - `filtroPeriodo` ("vencimento" (padrão, sem regressão) | "emissao" |
+ *     "pagamento") — troca QUAL campo de data `vencDe`/`vencAte` filtra
+ *     (`dueDate`/`dateCreated`/`paymentDate`). Em "pagamento", cobranças
+ *     ainda não pagas (sem `paymentDate`) ficam de fora, mesmo dentro da
+ *     janela — não faz sentido incluir "não pago" filtrando por data de
+ *     pagamento.
+ *   - `situacao` (array de "em_aberto"|"pagas", ou string já separada por
+ *     vírgula; vazio/omitido = sem filtro) — filtro de POPULAÇÃO (afeta até
+ *     `valor_total_faturado`, diferente do `tipoPendencia` acima, que só
+ *     reclassifica dentro de `valor_inadimplente`). Os dois valores juntos
+ *     ("em_aberto,pagas") é a UNIÃO dos dois grupos de status, o que é
+ *     DIFERENTE de não enviar `situacao` — status fora dos dois grupos
+ *     (ex.: REFUNDED) continua de fora nos dois casos.
+ *   - `tipoInadimplente` (array de "ativo"|"juridico"|"critico", ou string
+ *     já separada por vírgula; vazio/omitido = sem filtro) — substitui,
+ *     na UI, o antigo tri-state exclusivo de `emJuridico` (que o backend
+ *     continua aceitando, só não é mais usado por esta tela) por até 3
+ *     categorias COMBINÁVEIS por união: "critico" = associado com pelo
+ *     menos 1 cobrança com 90+ dias de atraso, respeitando `visao`
+ *     (mesmo critério de `criticos_90_dias`) — um associado jurídico com
+ *     dívida de 100 dias aparece em "juridico" E "critico" ao mesmo tempo,
+ *     sem duplicar valor quando os dois são enviados juntos.
  */
 export function getResumoInadimplencia({
   vencDe,
@@ -369,6 +393,9 @@ export function getResumoInadimplencia({
   bloqueado,
   tipoPendencia,
   visao,
+  filtroPeriodo,
+  situacao,
+  tipoInadimplente,
   forcar,
 } = {}) {
   const params = new URLSearchParams();
@@ -379,6 +406,11 @@ export function getResumoInadimplencia({
   if (bloqueado) params.set("bloqueado", bloqueado);
   if (tipoPendencia) params.set("tipo_pendencia", tipoPendencia);
   if (visao) params.set("visao", visao);
+  if (filtroPeriodo) params.set("filtro_periodo", filtroPeriodo);
+  const situacaoStr = Array.isArray(situacao) ? situacao.join(",") : situacao;
+  if (situacaoStr) params.set("situacao", situacaoStr);
+  const tipoInadimplenteStr = Array.isArray(tipoInadimplente) ? tipoInadimplente.join(",") : tipoInadimplente;
+  if (tipoInadimplenteStr) params.set("tipo_inadimplente", tipoInadimplenteStr);
   if (forcar) params.set("forcar", "true");
 
   const query = params.toString();
@@ -399,8 +431,27 @@ export function getResumoInadimplencia({
  * Corrigido: agora aceita o mesmo "visao" do /resumo e reflete o mesmo
  * critério mês a mês — ver README do backend, seção "AJUSTE 13"). Continua
  * sem devolver faixas (isso é exclusivo do /resumo).
+ *
+ * Aceita também `filtroPeriodo`/`situacao`/`tipoInadimplente` (AJUSTE 15 —
+ * ver docblock de getResumoInadimplencia acima). `filtroPeriodo` também
+ * muda o campo de data usado pra AGRUPAR por mês (não só pra filtrar o
+ * período): em "pagamento", os buckets mensais são pelo mês do
+ * `paymentDate`, não do `dueDate` — importante pra cobranças que vencem
+ * num mês e são pagas no mês seguinte não sumirem do gráfico.
  */
-export function getEvolucaoMensal({ vencDe, vencAte, renegociacao, emJuridico, bloqueado, tipoPendencia, visao, forcar } = {}) {
+export function getEvolucaoMensal({
+  vencDe,
+  vencAte,
+  renegociacao,
+  emJuridico,
+  bloqueado,
+  tipoPendencia,
+  visao,
+  filtroPeriodo,
+  situacao,
+  tipoInadimplente,
+  forcar,
+} = {}) {
   const params = new URLSearchParams();
   if (vencDe) params.set("venc_de", vencDe);
   if (vencAte) params.set("venc_ate", vencAte);
@@ -409,6 +460,11 @@ export function getEvolucaoMensal({ vencDe, vencAte, renegociacao, emJuridico, b
   if (bloqueado) params.set("bloqueado", bloqueado);
   if (tipoPendencia) params.set("tipo_pendencia", tipoPendencia);
   if (visao) params.set("visao", visao);
+  if (filtroPeriodo) params.set("filtro_periodo", filtroPeriodo);
+  const situacaoStr = Array.isArray(situacao) ? situacao.join(",") : situacao;
+  if (situacaoStr) params.set("situacao", situacaoStr);
+  const tipoInadimplenteStr = Array.isArray(tipoInadimplente) ? tipoInadimplente.join(",") : tipoInadimplente;
+  if (tipoInadimplenteStr) params.set("tipo_inadimplente", tipoInadimplenteStr);
   if (forcar) params.set("forcar", "true");
 
   const query = params.toString();

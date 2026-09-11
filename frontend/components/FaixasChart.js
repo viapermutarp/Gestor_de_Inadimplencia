@@ -21,14 +21,20 @@ const compactCurrencyFormatter = new Intl.NumberFormat("pt-BR", {
  * vencimento" é a mais fria/neutra (nem chegou a atrasar); faixa mais
  * crítica = mais quente/vermelha.
  */
+// Rótulos alinhados com o filtro "Faixa de atraso" (AJUSTE 15, correção
+// pós-entrega: "Até o vencimento"/"100d+" (só deste gráfico) e "Em
+// dia"/"Acima de 100" (só do filtro) eram o mesmo conceito com textos
+// diferentes em dois lugares da mesma tela — unificados aqui pro texto do
+// filtro, por ser mais claro. Chaves (`chave`, usadas pra ler `faixas` da
+// API e combinar com `faixasSelecionadas`) continuam as mesmas de sempre.
 const FAIXAS = [
-  { chave: "ate_vencimento", label: "Até o vencimento", cor: "#38bdf8" },
+  { chave: "ate_vencimento", label: "Em dia", cor: "#38bdf8" },
   { chave: "1_20", label: "1-20d", cor: "#22c55e" },
   { chave: "21_30", label: "21-30d", cor: "#a1ba26" },
   { chave: "31_40", label: "31-40d", cor: "#f6a808" },
   { chave: "41_50", label: "41-50d", cor: "#fa851d" },
   { chave: "51_100", label: "51-100d", cor: "#f76534" },
-  { chave: "acima_100", label: "100d+", cor: "#f2454b" },
+  { chave: "acima_100", label: "Acima de 100", cor: "#f2454b" },
 ];
 
 const ALTURA_MAXIMA_PX = 160;
@@ -50,21 +56,25 @@ function formatPercentual(valor, total) {
  * denominador correto é `valor_total_faturado`, o mesmo usado por
  * `taxa_inadimplencia_percentual` no backend — ver prop `totalFaturado`
  * abaixo, antes chamada `totalInadimplente`).
- * `faixaSelecionada` (chave da faixa, ou "todas") controla o destaque: a
- * faixa escolhida no filtro fica em opacidade cheia, as demais ficam
- * esmaecidas — dá uma resposta visual imediata ao filtro "Faixa de atraso",
- * já que a API não filtra o próprio cálculo por faixa (ela sempre retorna
- * as 7 somas do período inteiro).
+ * `faixasSelecionadas` (array de chaves de faixa, vazio = "Todas") controla
+ * o destaque: as faixas escolhidas no filtro "Faixa de atraso" ficam em
+ * opacidade cheia, as demais ficam esmaecidas — dá uma resposta visual
+ * imediata ao filtro (agora múltiplo — AJUSTE 15), já que a API não filtra
+ * o próprio cálculo por faixa (ela sempre retorna as 7 somas do período
+ * inteiro). Clicar numa barra tem o mesmo efeito de marcar/desmarcar essa
+ * faixa no filtro (toggle de inclusão no array, via `onSelecionarFaixa`).
  *
  * `visao` ("aberto" | "historico") reflete o parâmetro `visao` do backend
- * (renomeado de `visao_faixas` — AJUSTE 6: agora controla, além destas
- * faixas, também os 3 cards do topo da tela — ver ResumoInadimplenciaCards),
- * escolhido pelas abas no cabeçalho deste card — trocar a aba chama
- * `onAlterarVisao`, que a página usa para refazer a chamada a
- * GET /api/inadimplencia/resumo com o novo valor. "aberto" (padrão) é o
- * snapshot de hoje (só quem ainda não pagou); "historico" inclui quem
- * pagou com atraso no período, mesmo já com status atual de pago — ver
- * README do backend, seção "Faixas de atraso: modo aberto x histórico".
+ * (renomeado de `visao_faixas` — AJUSTE 6: controla, além destas faixas,
+ * também os 3 cards do topo da tela — ver ResumoInadimplenciaCards). Desde
+ * o AJUSTE 15, o toggle "Situação atual"/"Fechamento histórico do mês" que
+ * escolhe esse modo saiu deste card e foi pra o bloco "Análise" da barra
+ * de filtros (`app/inadimplencia/page.js`) — este componente só recebe
+ * `visao` já decidido, pra ajustar o texto de apoio abaixo do título;
+ * não renderiza mais o toggle em si. "aberto" (padrão) é o snapshot de
+ * hoje (só quem ainda não pagou); "historico" inclui quem pagou com
+ * atraso no período, mesmo já com status atual de pago — ver README do
+ * backend, seção "Faixas de atraso: modo aberto x histórico".
  *
  * Estrutura: o rótulo (valor + %) e o texto da faixa ficam em linhas
  * PRÓPRIAS, fora da área de barra (`ALTURA_MAXIMA_PX`, altura fixa) — antes,
@@ -77,12 +87,11 @@ function formatPercentual(valor, total) {
  */
 export default function FaixasChart({
   faixas,
-  faixaSelecionada = "todas",
+  faixasSelecionadas = [],
   onSelecionarFaixa,
   loading,
   totalFaturado,
   visao = "aberto",
-  onAlterarVisao,
 }) {
   const valores = FAIXAS.map((f) => Number(faixas?.[f.chave] ?? 0));
   const valorMaximo = Math.max(...valores, 0);
@@ -106,27 +115,6 @@ export default function FaixasChart({
               : "Em aberto hoje: só dívida ainda não paga neste momento — mesmo critério usado nos cards acima."}
           </p>
         </div>
-
-        <div className="flex shrink-0 rounded-xl border border-border-soft bg-surface-elevated p-1 text-xs font-medium">
-          <button
-            type="button"
-            onClick={() => onAlterarVisao?.("aberto")}
-            className={`rounded-lg px-3 py-1.5 transition-colors ${
-              visao === "aberto" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            Em aberto hoje
-          </button>
-          <button
-            type="button"
-            onClick={() => onAlterarVisao?.("historico")}
-            className={`rounded-lg px-3 py-1.5 transition-colors ${
-              visao === "historico" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            Histórico do período
-          </button>
-        </div>
       </div>
 
       {loading ? (
@@ -141,13 +129,19 @@ export default function FaixasChart({
             const valor = valores[i];
             const alturaPx =
               valorMaximo > 0 ? Math.max((valor / valorMaximo) * ALTURA_MAXIMA_PX, ALTURA_MINIMA_PX) : ALTURA_MINIMA_PX;
-            const destacada = faixaSelecionada === "todas" || faixaSelecionada === f.chave;
+            const destacada = faixasSelecionadas.length === 0 || faixasSelecionadas.includes(f.chave);
 
             return (
               <button
                 key={f.chave}
                 type="button"
-                onClick={() => onSelecionarFaixa?.(faixaSelecionada === f.chave ? "todas" : f.chave)}
+                onClick={() =>
+                  onSelecionarFaixa?.(
+                    faixasSelecionadas.includes(f.chave)
+                      ? faixasSelecionadas.filter((v) => v !== f.chave)
+                      : [...faixasSelecionadas, f.chave]
+                  )
+                }
                 className="flex flex-1 flex-col items-center rounded-lg transition-opacity"
                 style={{ opacity: destacada ? 1 : 0.35 }}
                 title={`${formatCurrency(valor)} (${formatPercentual(valor, total)} do total faturado)`}
