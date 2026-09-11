@@ -3,11 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { IconCheck, IconChevronDown } from "@/components/icons";
 
-const OPCOES_CHECKBOX = [
-  { chave: "emNegociacao", label: "Em negociação" },
-  { chave: "bloqueado", label: "Bloqueado" },
-];
-
 // "Tipo de inadimplente" (AJUSTE 15 — Repaginar filtros da Taxa de
 // Inadimplência, item 6 do brief) — expande o antigo tri-state exclusivo
 // de "Jurídico" (reunião Suelen + Roberto, 08/09: "todos"|"ativos"|
@@ -28,16 +23,24 @@ const OPCOES_TIPO_INADIMPLENTE = [
 ];
 
 /**
- * Filtro consolidado "Status do associado". `value` é um objeto
- * `{ emNegociacao, bloqueado, tipoInadimplente }` — "emNegociacao"/
- * "bloqueado" continuam booleanos (checkbox; marcado vira "sim" na
- * chamada à API, desmarcado vira "todos" — ver app/inadimplencia/page.js);
- * "tipoInadimplente" é um array de "ativo"|"juridico"|"critico" (vazio =
- * sem filtro = "Todos"), mapeado pro parâmetro `tipo_inadimplente` da API
- * (ver lib/api.js). Os filtros se combinam com E entre si (negociação E/OU
- * bloqueado E/OU tipo de inadimplente), mas os valores DENTRO de
- * "tipoInadimplente" se combinam por OU (união) — ver docblock de
- * OPCOES_TIPO_INADIMPLENTE acima.
+ * Filtro "Tipo de inadimplente". `value` é um objeto
+ * `{ emNegociacao, bloqueado, tipoInadimplente }` — "tipoInadimplente" é
+ * um array de "ativo"|"juridico"|"critico" (vazio = sem filtro = "Todos"),
+ * mapeado pro parâmetro `tipo_inadimplente` da API (ver lib/api.js),
+ * combinado por OU (união) — ver docblock de OPCOES_TIPO_INADIMPLENTE
+ * acima.
+ *
+ * **"emNegociacao"/"bloqueado" saíram da UI** (correção pós-entrega do
+ * AJUSTE 15, mesmo padrão já usado antes com "Tipo de pendência" — ver
+ * README do frontend): os 2 checkboxes "Em negociação"/"Bloqueado" que
+ * ficavam aqui em cima do "Tipo de inadimplente" foram removidos da tela.
+ * O parâmetro do backend (`renegociacao`/`bloqueado` em
+ * `getResumoInadimplencia`/`getEvolucaoMensal`) continua intacto — este
+ * componente só parou de oferecer uma forma de marcá-los como "sim"; o
+ * objeto `value` ainda carrega `emNegociacao`/`bloqueado` (sempre `false`
+ * agora, já que não há mais UI pra ligá-los) só pra não quebrar o shape
+ * que `app/inadimplencia/page.js` já espera — se algum dia isso precisar
+ * voltar, é só reintroduzir os 2 botões removidos aqui.
  *
  * Mesmo padrão visual do DatePicker/MultiCheckboxFilter (botão com borda +
  * painel flutuante em `surface-elevated`, fecha ao clicar fora) para não
@@ -58,11 +61,7 @@ export default function StatusAssociadoFilter({ value, onChange }) {
   }, []);
 
   const tipoInadimplente = Array.isArray(value?.tipoInadimplente) ? value.tipoInadimplente : [];
-  const quantidadeAtiva = OPCOES_CHECKBOX.filter((o) => value?.[o.chave]).length + tipoInadimplente.length;
-
-  function alternarCheckbox(chave) {
-    onChange({ ...value, [chave]: !value?.[chave] });
-  }
+  const quantidadeAtiva = tipoInadimplente.length;
 
   function selecionarTodosTipos() {
     onChange({ ...value, tipoInadimplente: [] });
@@ -95,32 +94,6 @@ export default function StatusAssociadoFilter({ value, onChange }) {
 
       {aberto && (
         <div className="absolute z-40 mt-2 w-64 rounded-2xl border border-border-soft bg-surface-elevated p-2 shadow-2xl shadow-black/50">
-          {OPCOES_CHECKBOX.map((o) => {
-            const checked = Boolean(value?.[o.chave]);
-            return (
-              <button
-                key={o.chave}
-                type="button"
-                onClick={() => alternarCheckbox(o.chave)}
-                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-colors hover:bg-surface-hover"
-              >
-                <span
-                  className={`flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-md border transition-colors ${
-                    checked ? "border-primary bg-primary text-primary-foreground" : "border-border-soft"
-                  }`}
-                >
-                  {checked && <IconCheck className="h-3 w-3" />}
-                </span>
-                {o.label}
-              </button>
-            );
-          })}
-
-          <div className="my-1.5 border-t border-border-soft" />
-          <p className="px-2.5 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Tipo de inadimplente
-          </p>
-
           <button
             type="button"
             onClick={selecionarTodosTipos}

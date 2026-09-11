@@ -63,9 +63,13 @@ const OPCOES_FILTRO_PERIODO = [
   { valor: "pagamento", label: "Data de pagamento/recebimento" },
 ];
 
-// "status" consolida "Em negociação"/"Bloqueado" e o novo "Tipo de
-// inadimplente" (Ativo/Jurídico/Crítico, combinável) num único
-// multi-select — ver StatusAssociadoFilter.js.
+// "status" — `tipoInadimplente` (Ativo/Jurídico/Crítico, combinável) é o
+// único campo com UI hoje (ver StatusAssociadoFilter.js). `emNegociacao`/
+// `bloqueado` saíram da tela (correção pós-entrega do AJUSTE 15, mesmo
+// padrão já usado com "Tipo de pendência") mas continuam no objeto —
+// sempre `false`, já que não há mais como marcá-los — só pra não quebrar
+// os parâmetros `renegociacao`/`bloqueado` que `carregarDados` já monta a
+// partir daqui (o backend continua aceitando os dois normalmente).
 const STATUS_ASSOCIADO_VAZIO = { emNegociacao: false, bloqueado: false, tipoInadimplente: [] };
 
 const INPUT =
@@ -389,14 +393,19 @@ export default function InadimplenciaPage() {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
               <BlocoFiltro titulo="Período">
                 <div className="space-y-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    <Campo label="De">
-                      <DatePicker value={vencDeInput} onChange={setVencDeInput} placeholder="Últimos 12 meses" />
-                    </Campo>
-                    <Campo label="Até">
-                      <DatePicker value={vencAteInput} onChange={setVencAteInput} placeholder="Hoje" />
-                    </Campo>
-                  </div>
+                  {/* "De"/"Até" empilhados (não lado a lado) — correção de
+                      bug visual: os dois campos dividindo a largura do
+                      card num `grid-cols-2` deixavam o DatePicker estreito
+                      demais, e o ícone de calendário do input ficava
+                      sobrepondo o texto da data (ex.: "01/08/2026" cortado
+                      pelo ícone). Cada campo agora ocupa a largura total do
+                      card, um embaixo do outro. */}
+                  <Campo label="De">
+                    <DatePicker value={vencDeInput} onChange={setVencDeInput} placeholder="Últimos 12 meses" />
+                  </Campo>
+                  <Campo label="Até">
+                    <DatePicker value={vencAteInput} onChange={setVencAteInput} placeholder="Hoje" />
+                  </Campo>
                   <Campo label="Filtrar período por">
                     <select
                       className={INPUT}
@@ -455,7 +464,7 @@ export default function InadimplenciaPage() {
               </BlocoFiltro>
 
               <BlocoFiltro titulo="Tipo de inadimplente" className="sm:col-span-2 xl:col-span-1">
-                <Campo label="Status do associado">
+                <Campo label="Tipo de inadimplente">
                   <StatusAssociadoFilter value={statusInput} onChange={setStatusInput} />
                 </Campo>
               </BlocoFiltro>
