@@ -1100,6 +1100,31 @@ exports.resumo = async (req, res, next) => {
 
     const valorTotalFaturado = conjuntoTrabalho.reduce((soma, p) => soma + (Number(p.value) || 0), 0);
 
+    // AJUSTE 16 — "Total em Aberto": soma de tudo que ainda não entrou no
+    // caixa (OVERDUE+CONFIRMED+PENDING), SEM toggle e SEM depender de
+    // vencimento — reaproveita a mesma lista de status que
+    // `STATUS_POR_SITUACAO.em_aberto` já usa pro filtro "Situação da
+    // cobrança" (mesmo conceito, ver docblock ali em cima), só que somada
+    // sempre sobre TODO o `conjuntoTrabalho` (já passou pelas populações de
+    // "situacao"/cross-reference/"tipo_inadimplente", igual
+    // `valorTotalFaturado`), não sobre um subconjunto por "visao"/
+    // "tipo_pendencia". Diferente de "valor_inadimplente": este último (a)
+    // respeita "tipo_pendencia" (só entra o que o usuário escolheu:
+    // vencidas/confirmadas/ambas — nem sempre as 3), (b) troca de critério
+    // inteiro conforme "visao=historico" (passa a ser por data de
+    // pagamento, não por status), e (c) HOJE nem inclui PENDING (ver
+    // `STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA.todos`, só OVERDUE+CONFIRMED)
+    // — "valor_total_aberto" é deliberadamente mais simples/bruto que os
+    // dois: sempre os 3 status, sempre snapshot atual, disponível junto de
+    // "valor_total_faturado"/"valor_adimplente" pros cards "em destaque" da
+    // tela (ver frontend, ResumoInadimplenciaCards).
+    let valorTotalAberto = 0;
+    for (const pagamento of conjuntoTrabalho) {
+      if (STATUS_POR_SITUACAO.em_aberto.includes(pagamento.status)) {
+        valorTotalAberto += Number(pagamento.value) || 0;
+      }
+    }
+
     // AJUSTE CRÍTICO 2 — "aberto" (snapshot OVERDUE de hoje) x "historico"
     // (pagas em dia ou não, pelo período inteiro — ver CORREÇÃO no docblock
     // acima). Os dois já levam o período de tolerância em conta (ver
@@ -1175,6 +1200,7 @@ exports.resumo = async (req, res, next) => {
 
     const resultado = {
       valor_total_faturado: arredondar2(valorTotalFaturado),
+      valor_total_aberto: arredondar2(valorTotalAberto),
       valor_inadimplente: arredondar2(valorInadimplente),
       taxa_inadimplencia_percentual: taxaInadimplencia,
       valor_adimplente: arredondar2(valorAdimplente),

@@ -84,6 +84,21 @@ function formatPercentual(valor, total) {
  * gráfico. Com o rótulo em fluxo normal acima de uma área de barra de
  * altura fixa (nunca comprimida pelo próprio rótulo), a barra nunca invade
  * o espaço do texto, em nenhuma largura de tela.
+ *
+ * AJUSTE 16 — correção do desalinhamento da última coluna ("Acima de 100",
+ * o rótulo mais comprido das 7 faixas): a linha de barras usava flexbox
+ * (`flex` + `flex-1` em cada botão). Item de flex tem `min-width: auto` por
+ * padrão — o navegador nunca encolhe um item abaixo da largura mínima do
+ * seu PRÓPRIO conteúdo, mesmo com `flex-1`/`flex-shrink`. Num card estreito
+ * (ex. ao lado de "Principais devedores", `lg:grid-cols-2`), a soma das
+ * larguras mínimas dos 7 rótulos (o texto "Acima de 100" é o mais largo)
+ * podia superar a largura disponível — o navegador então força esse botão
+ * pra além da largura "justa" das outras 6 colunas, deslocando rótulo e
+ * barra pra fora do alinhamento comum. Troca de `flex` para CSS Grid com
+ * `repeat(7, minmax(0, 1fr))`: o `minmax(0, ...)` zera explicitamente esse
+ * mínimo automático (o mesmo papel que `min-w-0` teria em flexbox), então
+ * as 7 colunas ficam SEMPRE do mesmo tamanho, texto e barra presos à mesma
+ * grade, não importa o comprimento do rótulo ou o valor de cada faixa.
  */
 export default function FaixasChart({
   faixas,
@@ -118,13 +133,13 @@ export default function FaixasChart({
       </div>
 
       {loading ? (
-        <div className="mt-6 flex items-end gap-3">
+        <div className="mt-6 grid items-end gap-2 sm:gap-3" style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}>
           {FAIXAS.map((f) => (
-            <div key={f.chave} className="flex-1 animate-pulse rounded-t-lg bg-surface-elevated" style={{ height: `${ALTURA_MAXIMA_PX * 0.6}px` }} />
+            <div key={f.chave} className="min-w-0 animate-pulse rounded-t-lg bg-surface-elevated" style={{ height: `${ALTURA_MAXIMA_PX * 0.6}px` }} />
           ))}
         </div>
       ) : (
-        <div className="mt-6 flex items-end gap-2 sm:gap-3">
+        <div className="mt-6 grid items-end gap-2 sm:gap-3" style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}>
           {FAIXAS.map((f, i) => {
             const valor = valores[i];
             const alturaPx =
@@ -142,12 +157,12 @@ export default function FaixasChart({
                       : [...faixasSelecionadas, f.chave]
                   )
                 }
-                className="flex flex-1 flex-col items-center rounded-lg transition-opacity"
+                className="flex min-w-0 flex-col items-center rounded-lg transition-opacity"
                 style={{ opacity: destacada ? 1 : 0.35 }}
                 title={`${formatCurrency(valor)} (${formatPercentual(valor, total)} do total faturado)`}
               >
                 {/* Rótulo — em fluxo normal, nunca disputa espaço com a barra */}
-                <span className="flex flex-col items-center leading-tight">
+                <span className="flex w-full flex-col items-center break-words text-center leading-tight">
                   <span className="font-mono text-[11px] text-foreground">
                     {compactCurrencyFormatter.format(valor)}
                   </span>
@@ -162,7 +177,7 @@ export default function FaixasChart({
                   />
                 </span>
 
-                <span className="mt-1.5 text-[11px] text-muted-foreground">{f.label}</span>
+                <span className="mt-1.5 w-full break-words text-center text-[11px] text-muted-foreground">{f.label}</span>
               </button>
             );
           })}

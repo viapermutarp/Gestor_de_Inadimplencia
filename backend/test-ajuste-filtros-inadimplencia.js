@@ -24,6 +24,11 @@
  *   6. Regressão — sem nenhum parâmetro novo, os números continuam
  *      exatamente os de antes (filtro_periodo=vencimento e situacao/
  *      tipo_inadimplente vazios são o default = comportamento antigo).
+ *   7. AJUSTE 16 — "valor_total_aberto" (novo campo de /resumo, brief
+ *      "Reorganizar cards da Taxa de Inadimplência"): soma de
+ *      OVERDUE+CONFIRMED+PENDING sem toggle e sem depender de "visao"/
+ *      "tipo_pendencia", reaproveitando o mesmo dataset deste arquivo (sem
+ *      precisar de um mock/servidor novo).
  */
 const { execSync, spawn } = require('child_process');
 const crypto = require('crypto');
@@ -448,6 +453,44 @@ async function main() {
       // passa dos 90 dias — mesmo resultado do filtro tipo_inadimplente=critico
       // acima, confirmando que a função de cálculo em si não mudou.
       assertEqual(r.corpo.criticos_90_dias, 2000, 'criticos_90_dias (card, sem filtro) continua 2000 — mesma lógica de sempre');
+    }
+
+    // -------------------------------------------------------------
+    // TESTE 7 — AJUSTE 16: valor_total_aberto (OVERDUE+CONFIRMED+PENDING,
+    // sem toggle, sem depender de "visao"/"tipo_pendencia").
+    // -------------------------------------------------------------
+    console.log('\n== Teste: valor_total_aberto (AJUSTE 16) ==');
+    {
+      // Sem filtro de população: os únicos pagamentos do dataset com status
+      // OVERDUE/CONFIRMED/PENDING são p_venc_atual(1000) + p_sem_pagamento_antigo(2000)
+      // + p_confirmed(300) + p_pending_recent(400) = 3700 — mesmos 4 que
+      // "situacao=em_aberto" isola no TESTE 3 (mesma lista de status, ver
+      // STATUS_POR_SITUACAO.em_aberto no controller), confirmando que
+      // "valor_total_aberto" bate com essa soma mesmo sem o filtro aplicado.
+      const rSemFiltro = await get(`/inadimplencia/resumo?${janelaAmpla}`, chaveApi);
+      assertEqual(rSemFiltro.corpo.valor_total_aberto, 3700, 'valor_total_aberto (sem filtro) = OVERDUE+CONFIRMED+PENDING = 3700');
+
+      // situacao=pagas restringe a população a RECEIVED/RECEIVED_IN_CASH —
+      // nenhum desses status entra na soma de "em aberto", então
+      // valor_total_aberto cai a 0 (prova que ainda respeita a população
+      // filtrada, e não soma sobre o dataset inteiro ignorando os filtros).
+      const rPagas = await get(`/inadimplencia/resumo?${janelaAmpla}&situacao=pagas`, chaveApi);
+      assertEqual(rPagas.corpo.valor_total_aberto, 0, 'valor_total_aberto (situacao=pagas) = 0 — população não tem nenhum status em_aberto');
+
+      // "tipo_pendencia" e "visao" NÃO afetam valor_total_aberto (diferente
+      // de valor_inadimplente) — mesmo com tipo_pendencia=vencidas (que
+      // reduziria valor_inadimplente a só OVERDUE) e visao=historico (que
+      // troca o critério de valor_inadimplente/valor_adimplente por data),
+      // valor_total_aberto continua 3700.
+      const rDesacoplado = await get(
+        `/inadimplencia/resumo?${janelaAmpla}&tipo_pendencia=vencidas&visao=historico`,
+        chaveApi
+      );
+      assertEqual(
+        rDesacoplado.corpo.valor_total_aberto,
+        3700,
+        'valor_total_aberto ignora tipo_pendencia/visao — continua 3700 mesmo com tipo_pendencia=vencidas&visao=historico'
+      );
     }
 
     console.log(`\n== Resultado: ${total - falhas}/${total} ==`);

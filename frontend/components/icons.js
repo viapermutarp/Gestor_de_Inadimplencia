@@ -270,6 +270,19 @@ export function IconShield({ className = "h-5 w-5" }) {
   );
 }
 
+// Símbolo de porcentagem — usado no card "Taxa de Adimplência" (AJUSTE 16,
+// ver ResumoInadimplenciaCards) pra não reaproveitar o mesmo IconTrendingUp
+// já usado por "Taxa de Inadimplência" nos dois cards de taxa lado a lado.
+export function IconPercent({ className = "h-5 w-5" }) {
+  return (
+    <svg {...base} className={className}>
+      <path d="M18.5 5.5 5.5 18.5" />
+      <circle cx="7.25" cy="7.25" r="2.25" />
+      <circle cx="16.75" cy="16.75" r="2.25" />
+    </svg>
+  );
+}
+
 // Setas nos 4 cantos ("expandir") — usado no botão "Abrir em tela cheia" do
 // preview de documentos do Jurídico (ver DocumentosCard em app/juridico/page.js).
 export function IconExpand({ className = "h-5 w-5" }) {
