@@ -29,6 +29,15 @@
  *      OVERDUE+CONFIRMED+PENDING sem toggle e sem depender de "visao"/
  *      "tipo_pendencia", reaproveitando o mesmo dataset deste arquivo (sem
  *      precisar de um mock/servidor novo).
+ *
+ * AJUSTE 17 — "tipo_inadimplente=juridico"/"=critico" tocam este arquivo
+ * (não ganharam TESTE numerado próprio — cobertura dedicada e mais completa
+ * está em test-ajuste17-juridico-critico.js): o setup ganhou uma
+ * etapa/card real do Jurídico pra cus_c (senão o TESTE 4 de "juridico"
+ * pararia de fazer sentido, ver comentário no setup), e os valores
+ * esperados de "critico"/"visao=historico" no TESTE 4 foram recalculados
+ * pro limiar novo de 50 dias (era 90) — ver comentários inline nesses dois
+ * pontos.
  */
 const { execSync, spawn } = require('child_process');
 const crypto = require('crypto');
@@ -227,8 +236,9 @@ async function main() {
     });
     assertEqual(rChave.status, 200, 'PATCH /config/asaas-key -> 200');
 
+    let associadoCusC;
     for (const [customerId, cliente] of Object.entries(CLIENTES)) {
-      await db.associado.create({
+      const associado = await db.associado.create({
         data: {
           franquiaId: franquia.id,
           cpfCnpj: cliente.cpfCnpj,
@@ -237,7 +247,22 @@ async function main() {
           emJuridico: customerId === 'cus_c',
         },
       });
+      if (customerId === 'cus_c') associadoCusC = associado;
     }
+
+    // AJUSTE 17 — "tipo_inadimplente=juridico" passou a exigir um card REAL
+    // em cards_juridico (não só o campo em_juridico=true, ver
+    // buscarCpfCnpjComCardJuridico no controller) — sem isso, o TESTE 4
+    // abaixo ("juridico" isolando cus_c) pararia de fazer sentido (cus_c
+    // ficaria de fora de "juridico" por falta de card, não por causa do
+    // filtro em si). Etapa/card mínimos criados só pra manter esse teste
+    // válido sob a nova regra.
+    const etapaJuridicoTeste = await db.etapaJuridico.create({
+      data: { franquiaId: franquia.id, nome: 'Em andamento', ordem: 0 },
+    });
+    await db.cardJuridico.create({
+      data: { franquiaId: franquia.id, etapaId: etapaJuridicoTeste.id, ordem: 0, associadoId: associadoCusC.id },
+    });
 
     // -------------------------------------------------------------
     // TESTE 1 — dateCreated persistido via webhook e via backfill.
@@ -354,7 +379,9 @@ async function main() {
 
       // "Crítico" em visao=aberto (padrão): só considera pagamentos OVERDUE
       // — entre os OVERDUE, só p_sem_pagamento_antigo (C, ~200 dias) tem
-      // diasAtraso >= 90; p_venc_atual (A, ~10 dias) não conta.
+      // diasAtraso >= 50 (AJUSTE 17 — limiar era 90, baixou pra 50; C já
+      // passava dos dois); p_venc_atual (A, ~10 dias) não conta em nenhum
+      // dos dois limiares.
       const rCriticoAberto = await get(`/inadimplencia/resumo?${janelaAmpla}&tipo_inadimplente=critico`, chaveApi);
       assertEqual(rCriticoAberto.corpo.valor_total_faturado, 2000, 'tipo_inadimplente=critico (visao=aberto): só C (2000) — E não conta (não está OVERDUE)');
 
@@ -362,14 +389,22 @@ async function main() {
       const rJuridicoCritico = await get(`/inadimplencia/resumo?${janelaAmpla}&tipo_inadimplente=juridico,critico`, chaveApi);
       assertEqual(rJuridicoCritico.corpo.valor_total_faturado, 2000, 'juridico+critico (mesmo associado C nos dois) não duplica o valor');
 
-      // "Crítico" em visao=historico: E entra (RECEIVED com paymentDate 110
-      // dias depois do vencimento) e C se mantém (ainda INADIMPLENTE em
-      // historico, nunca foi pago).
+      // "Crítico" em visao=historico, limiar de 50 dias (AJUSTE 17 — era 90):
+      // C (2000, nunca pago, ~200 dias) e E (700, pago 110 dias depois do
+      // vencimento) já qualificavam com o limiar antigo de 90. Com o limiar
+      // em 50, B (cus_b) TAMBÉM passa a qualificar: p_pago_recente (500,
+      // pago 55 dias depois do vencimento — dueDate há 60 dias, paymentDate
+      // há 5 dias, 60-5=55 >= 50) marca o CPF/CNPJ de B inteiro como
+      // crítico — e como "crítico" é por ASSOCIADO (não por cobrança
+      // isolada), a OUTRA cobrança de B no dataset, p_refunded (150, só 5
+      // dias de atraso, sozinha NÃO qualificaria), entra junto na soma só
+      // por pertencer ao mesmo CPF/CNPJ já marcado crítico. Total:
+      // C(2000) + E(700) + B(500+150) = 3350.
       const rCriticoHistorico = await get(`/inadimplencia/resumo?${janelaAmpla}&tipo_inadimplente=critico&visao=historico`, chaveApi);
       assertEqual(
         rCriticoHistorico.corpo.valor_total_faturado,
-        2700,
-        'tipo_inadimplente=critico (visao=historico): C(2000) + E(700, pago com 110 dias de atraso) = 2700'
+        3350,
+        'tipo_inadimplente=critico (visao=historico, limiar 50 — AJUSTE 17): C(2000) + E(700, 110d) + B inteiro (500+150, 55d) = 3350'
       );
 
       const rInvalido = await get(`/inadimplencia/resumo?${janelaAmpla}&tipo_inadimplente=inexistente`, chaveApi);
@@ -448,11 +483,11 @@ async function main() {
       const r = await get(`/inadimplencia/resumo?${janelaAmpla}`, chaveApi);
       const somaTotal = montarPagamentos().reduce((s, p) => s + p.value, 0);
       assertEqual(r.corpo.valor_total_faturado, somaTotal, `sem filtros novos: soma de todos os ${montarPagamentos().length} pagamentos (${somaTotal})`);
-      // criticos_90_dias (visao=aberto, padrão) — lógica INALTERADA de
+      // valor_criticos (visao=aberto, padrão) — lógica INALTERADA de
       // computarFaixasECriticos: só considera OVERDUE, e só C (~200 dias)
       // passa dos 90 dias — mesmo resultado do filtro tipo_inadimplente=critico
       // acima, confirmando que a função de cálculo em si não mudou.
-      assertEqual(r.corpo.criticos_90_dias, 2000, 'criticos_90_dias (card, sem filtro) continua 2000 — mesma lógica de sempre');
+      assertEqual(r.corpo.valor_criticos, 2000, 'valor_criticos (card, sem filtro) continua 2000 — mesma lógica de sempre');
     }
 
     // -------------------------------------------------------------

@@ -117,7 +117,7 @@ const ASSOCIADOS_LOCAIS = [
 // pay_mock_025 a 029 cobrem o período de tolerância
 // (GET/PATCH /api/config/tolerancia-dias) — atrasos de 1-2 dias (pagos ou
 // ainda em aberto) desenhados para migrar de classificação (ou de faixa,
-// no caso de pay_mock_025, ou de criticos_90_dias, no caso de pay_mock_029)
+// no caso de pay_mock_025, ou de valor_criticos, no caso de pay_mock_029)
 // só quando a tolerância configurada é grande o bastante para absorvê-los
 // — ver comentário ao lado de cada um.
 const PAGAMENTOS = [
@@ -208,11 +208,11 @@ const PAGAMENTOS = [
   // tolerância de 2 dias não entra em nenhuma faixa, é adimplente").
   { id: 'pay_mock_027', customer: 'cus_mock_iota', value: 450.0, dueDate: diasAtras(15), status: 'RECEIVED', description: 'Mensalidade associativa - Iota (paga 2 dias em atraso, caso de tolerância)', paymentDate: diasAtras(13) },
 
-  // Ainda não paga, 91 dias em atraso (OVERDUE) -> cai em criticos_90_dias
-  // com tolerância 0 (91 >= 90) mas SAI de criticos_90_dias com tolerância
+  // Ainda não paga, 91 dias em atraso (OVERDUE) -> cai em valor_criticos
+  // com tolerância 0 (91 >= 90) mas SAI de valor_criticos com tolerância
   // 2 (atraso efetivo de 89 dias, < 90) — SEM trocar de faixa (89 continua
   // na faixa 50_100, assim como 91): isola o efeito da tolerância sobre
-  // criticos_90_dias do efeito sobre a escolha de faixa.
+  // valor_criticos do efeito sobre a escolha de faixa.
   { id: 'pay_mock_029', customer: 'cus_mock_kappa', value: 900.0, dueDate: diasAtras(91), status: 'OVERDUE', description: 'Mensalidade associativa - Kappa (91 dias de atraso, caso de críticos + tolerância)', paymentDate: null },
 ];
 

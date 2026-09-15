@@ -11,7 +11,7 @@ import { IconCheck, IconChevronDown } from "@/components/icons";
 // vírgula, ver lib/api.js): "ativo" (em_juridico=false), "juridico"
 // (em_juridico=true) e "critico" (associado com pelo menos 1 cobrança com
 // 90+ dias de atraso, respeitando a "visao" selecionada — mesmo critério
-// de `criticos_90_dias`). Diferente do tri-state anterior, um associado
+// de `valor_criticos`). Diferente do tri-state anterior, um associado
 // jurídico com dívida de 100 dias aparece em "Jurídico" E "Crítico" ao
 // mesmo tempo quando os dois estão marcados — o backend garante que isso
 // não duplica o valor dele na soma (união por CPF/CNPJ, não soma por

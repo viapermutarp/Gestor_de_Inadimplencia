@@ -74,7 +74,7 @@ function CardDestaque({ label, valor, badge, Icon, tom = "neutro", loading }) {
 /**
  * Card secundário (menor) — usado nas 2 linhas de baixo (3 + 2 cards, AJUSTE
  * 16): Taxa de Inadimplência / Taxa de Adimplência / Associados
- * Inadimplentes, depois Renegociações Abertas / Críticos 90+ dias. `corTexto`
+ * Inadimplentes, depois Renegociações Abertas / Críticos 50+ dias. `corTexto`
  * (opcional) colore o número em destaque — usado pelas 2 taxas, que antes
  * tinham essa cor só na versão "hero" gigante e mantêm o mesmo significado
  * semântico agora em tamanho menor.
@@ -181,8 +181,14 @@ export default function ResumoInadimplenciaCards({ resumo, loading, visao = "abe
       Icon: IconChatBubble,
     },
     {
-      label: "Críticos 90+ dias",
-      valor: formatCurrency(resumo?.criticos_90_dias ?? 0),
+      // AJUSTE 17 — rótulo atualizado pra "Críticos 50+ dias" (o limiar
+      // caiu de 90 pra 50 dias no backend — ver LIMIAR_DIAS_CRITICO em
+      // inadimplencia.controller.js). Correção pós-entrega: o campo da API
+      // foi renomeado de `criticos_90_dias` pra `valor_criticos` a pedido
+      // do usuário (nome antigo não faz mais sentido com o limiar em 50,
+      // e o projeto ainda não estava em produção) — ver README do backend.
+      label: "Críticos 50+ dias",
+      valor: formatCurrency(resumo?.valor_criticos ?? 0),
       Icon: IconAlert,
     },
   ];

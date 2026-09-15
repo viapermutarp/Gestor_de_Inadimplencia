@@ -330,7 +330,7 @@ export function criarCadastro(payload) {
  *
  * `visao` (renomeado de `visaoFaixas`/"visao_faixas" — AJUSTE 6) aceita
  * "aberto" (padrão, sem regressão) | "historico", e agora controla AO MESMO
- * TEMPO `faixas`/`criticos_90_dias` E `valor_inadimplente`/
+ * TEMPO `faixas`/`valor_criticos` E `valor_inadimplente`/
  * `valor_adimplente`/as duas taxas (antes, só as faixas):
  *   - "aberto": os 3 cards por STATUS ATUAL de cada cobrança no Asaas
  *     (snapshot de hoje).
@@ -381,7 +381,7 @@ export function criarCadastro(payload) {
  *     continua aceitando, só não é mais usado por esta tela) por até 3
  *     categorias COMBINÁVEIS por união: "critico" = associado com pelo
  *     menos 1 cobrança com 90+ dias de atraso, respeitando `visao`
- *     (mesmo critério de `criticos_90_dias`) — um associado jurídico com
+ *     (mesmo critério de `valor_criticos`) — um associado jurídico com
  *     dívida de 100 dias aparece em "juridico" E "critico" ao mesmo tempo,
  *     sem duplicar valor quando os dois são enviados juntos.
  */

@@ -205,7 +205,7 @@ async function main() {
       assertEqual(r.corpo.faixas['21_30'], 0, 'aberto: 21_30 = 0 (nenhum OVERDUE nessa faixa)');
       assertEqual(r.corpo.faixas['51_100'], 333, 'aberto: 51_100 = b_51_100 (333)');
       assertEqual(r.corpo.faixas.acima_100, 444, 'aberto: acima_100 = b_acima100 (444, 101 dias)');
-      assertEqual(r.corpo.criticos_90_dias, 444, 'aberto: criticos_90_dias = b_acima100 (444, 101 dias >= 90)');
+      assertEqual(r.corpo.valor_criticos, 444, 'aberto: valor_criticos = b_acima100 (444, 101 dias >= 90)');
     }
 
     console.log('\n== Teste: AJUSTE 5 — faixas "historico" (tolerancia=0) ==');
@@ -224,7 +224,7 @@ async function main() {
       assertEqual(r.corpo.faixas['41_50'], 707, 'historico: 41_50 = b_pago_41_50 (707, pago com 46d de atraso)');
       assertEqual(r.corpo.faixas['51_100'], 333, 'historico: 51_100 = b_51_100 (333)');
       assertEqual(r.corpo.faixas.acima_100, 444, 'historico: acima_100 = b_acima100 (444, 101 dias)');
-      assertEqual(r.corpo.criticos_90_dias, 444, 'historico: criticos_90_dias = b_acima100 (444)');
+      assertEqual(r.corpo.valor_criticos, 444, 'historico: valor_criticos = b_acima100 (444)');
     }
 
     console.log('\n== Teste: AJUSTE 6 — valor_inadimplente/valor_adimplente/taxa seguem "visao" ==');
@@ -267,12 +267,12 @@ async function main() {
       // b_atevenc (dueOffset 0-3=-3, efetivo <=0 igual) e b_tolerancia
       // (dueOffset 2-3=-1<=0) migram/ficam em ate_vencimento; b_acima100
       // (101-3=98) sai de acima_100 e entra em 51_100, mas continua em
-      // criticos_90_dias (98>=90).
+      // valor_criticos (98>=90).
       assertEqual(r.corpo.faixas.ate_vencimento, 111 + 777, 'tolerancia=3: ate_vencimento = b_atevenc + b_tolerancia (888)');
       assertEqual(r.corpo.faixas['1_20'], 222, 'tolerancia=3: 1_20 = só b_1_20 (222, b_tolerancia saiu)');
       assertEqual(r.corpo.faixas['51_100'], 333 + 444, 'tolerancia=3: 51_100 = b_51_100 + b_acima100 deslocado (777)');
       assertEqual(r.corpo.faixas.acima_100, 0, 'tolerancia=3: acima_100 = 0 (b_acima100 deslocado pra 51_100)');
-      assertEqual(r.corpo.criticos_90_dias, 444, 'tolerancia=3: criticos_90_dias ainda inclui b_acima100 (98 dias efetivos >= 90)');
+      assertEqual(r.corpo.valor_criticos, 444, 'tolerancia=3: valor_criticos ainda inclui b_acima100 (98 dias efetivos >= 90)');
 
       // devolve a tolerância a 0 para não vazar estado para outros testes.
       const rTolReset = await patch('/config/tolerancia-dias', { dias: 0 });

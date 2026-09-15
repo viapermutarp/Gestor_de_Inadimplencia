@@ -499,7 +499,15 @@ async function main() {
       assertEqual(r.corpo.faixas.ate_vencimento, 111, '[regressão] aberto: faixas.ate_vencimento = 111');
       assertEqual(r.corpo.faixas['1_20'], 999, '[regressão] aberto: faixas.1_20 = 999');
       assertEqual(r.corpo.faixas.acima_100, 444, '[regressão] aberto: faixas.acima_100 = 444');
-      assertEqual(r.corpo.criticos_90_dias, 444, '[regressão] aberto: criticos_90_dias = 444');
+      // AJUSTE 17 — LIMIAR_DIAS_CRITICO baixou de 90 pra 50 dias (brief
+      // "Críticos: threshold de 90 para 50 dias"). Antes deste ajuste só
+      // "acima_100" (444) tinha diasAtraso >= 90; com o limiar em 50, mais
+      // uma cobrança do fixture do Grupo B (diasAtraso entre 50 e 100, faixa
+      // "51_100" ou exatamente 50 em "41_50") também passa a contar — 333 a
+      // mais, 777 no total. Número atualizado deliberadamente (mudança de
+      // regra de negócio pedida pelo brief, não uma regressão de verdade —
+      // ver README do backend, seção "AJUSTE 17").
+      assertEqual(r.corpo.valor_criticos, 777, '[regressão] aberto: valor_criticos = 777 (limiar novo de 50 dias, AJUSTE 17 — era 444 com o limiar antigo de 90)');
     }
     {
       const r = await get(`/inadimplencia/resumo?${periodoB}&visao=historico`, bearerRegressao);

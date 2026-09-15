@@ -21,7 +21,27 @@ const CACHE_TTL_MS = 4 * 60 * 1000; // 4 minutos — dentro da faixa de 3-5min p
 const MESES_PADRAO = 12;
 const UM_DIA_MS = 24 * 60 * 60 * 1000;
 const PALAVRA_RENEGOCIACAO = 'renegociação';
-const LIMIAR_DIAS_CRITICO = 90; // mesmo limiar de "criticos_90_dias", ver computarFaixasECriticos/computarCpfCnpjCriticos.
+// AJUSTE 17 — item 2 do brief ("Críticos: threshold de 90 para 50 dias"):
+// baixado de 90 pra 50. Único ponto de mudança — `computarFaixasECriticos`/
+// `computarCpfCnpjCriticos` (e por tabela, o filtro "Tipo de inadimplente"
+// -> "Crítico") leem só esta constante, nenhum "90" solto em outro lugar.
+// O campo de resposta era "criticos_90_dias" e foi renomeado pra
+// "valor_criticos" a pedido explícito do usuário (correção pós-AJUSTE 17,
+// antes de ir pra produção — sem preocupação de retrocompatibilidade,
+// então o nome antigo não foi mantido em lugar nenhum). Escolhido
+// "valor_criticos" em vez de "criticos_50_dias" pra não hardcodar de novo
+// um número que pode mudar no futuro, seguindo o padrão já usado pelos
+// campos irmãos "valor_total_faturado"/"valor_inadimplente"/
+// "valor_adimplente"/"valor_total_aberto". O CARD no frontend também foi
+// renomeado pra "Críticos 50+ dias" (ver README do frontend).
+const LIMIAR_DIAS_CRITICO = 50;
+// AJUSTE 17 — item 3 do brief ("Se aproximando do Jurídico"): janela de dias
+// de atraso (inclusive nas duas pontas) que qualifica um associado como "logo
+// vai virar Crítico" — imediatamente abaixo de LIMIAR_DIAS_CRITICO (50), até
+// 49. O piso (35) é o valor exato pedido no brief, sem derivação de nenhuma
+// outra constante.
+const LIMIAR_APROXIMANDO_MIN = 35;
+const LIMIAR_APROXIMANDO_MAX = 49;
 
 /**
  * Repaginação dos filtros da tela "Taxa de Inadimplência" (item 2 do brief
@@ -80,7 +100,7 @@ const TIPO_INADIMPLENTE_VALIDAS = ['ativo', 'juridico', 'critico'];
  * aberto AGORA, não o histórico de atraso de algo já quitado (reverte de
  * propósito o raciocínio do AJUSTE CRÍTICO 1, feito originalmente pro caso
  * oposto). `classificarPagamento` continua existindo e sendo usada, sem
- * NENHUMA mudança de comportamento, só para `faixas`/`criticos_90_dias` no
+ * NENHUMA mudança de comportamento, só para `faixas`/`valor_criticos` no
  * modo "historico" — ver docblocks de `resumo` e `computarFaixasECriticos`.
  *
  *   - INADIMPLENTE: status "OVERDUE" (vencida, ainda não paga) ou
@@ -101,7 +121,7 @@ const TIPO_INADIMPLENTE_VALIDAS = ['ativo', 'juridico', 'critico'];
  * (renomeado de "visao_faixas") = "aberto" (padrão, sem regressão). Em
  * "visao=historico", "valor_inadimplente"/"valor_adimplente" passam a usar a
  * MESMA classificação histórica por data de `classificarPagamento` que já
- * alimenta "faixas"/"criticos_90_dias" — ver
+ * alimenta "faixas"/"valor_criticos" — ver
  * `computarValorInadimplenteAdimplenteHistorico` e o docblock de `resumo`.
  * Consequência confirmada explicitamente: o filtro "tipo_pendencia" (que só
  * faz sentido sobre status atual — OVERDUE x CONFIRMED) fica SEM EFEITO
@@ -297,7 +317,7 @@ function validarListaMultipla(valorParam, valoresValidos, nomeParam) {
  * > efetiva"), e é o que faz uma cobrança vencida ontem, ainda não paga, com
  * > 2 dias de tolerância, não ser contada como inadimplência real ainda.
  *
- * AJUSTE 6 — além de "faixas"/"criticos_90_dias" (uso original), esta
+ * AJUSTE 6 — além de "faixas"/"valor_criticos" (uso original), esta
  * classificação passou a alimentar também "valor_inadimplente"/
  * "valor_adimplente" quando "visao=historico" (ver
  * `computarValorInadimplenteAdimplenteHistorico`) — SEM NENHUMA mudança de
@@ -648,7 +668,7 @@ function gerarChavesMeses(vencDe, vencAte) {
  *
  * IMPORTANTE — esta função NÃO foi afetada pelo AJUSTE CRÍTICO 3 (critério
  * de "valor_inadimplente"/"valor_adimplente" por status atual do Asaas):
- * "faixas"/"criticos_90_dias" continuam sendo, de propósito, sobre o
+ * "faixas"/"valor_criticos" continuam sendo, de propósito, sobre o
  * HISTÓRICO de atraso por data (pagamento vs. vencimento) — não sobre se a
  * cobrança "ainda conta como inadimplente hoje" (confirmado explicitamente
  * no brief de correção que originou o AJUSTE CRÍTICO 3).
@@ -669,7 +689,7 @@ function gerarChavesMeses(vencDe, vencAte) {
  * 25) e, no modo "aberto", pode zerar (ou tornar negativo) o atraso de
  * cobranças que o Asaas já marca como OVERDUE mas que ainda estão dentro
  * da janela de tolerância — nesse caso `diasAtraso <= 0` e o pagamento cai
- * em "ate_vencimento", não em nenhuma outra faixa nem em `criticos90Dias`.
+ * em "ate_vencimento", não em nenhuma outra faixa nem em `valorCriticos`.
  */
 /**
  * Extraída de `computarFaixasECriticos` (era inline lá) para ser
@@ -695,7 +715,7 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
     '51_100': 0,
     acima_100: 0,
   };
-  let criticos90Dias = 0;
+  let valorCriticos = 0;
 
   for (const pagamento of pagamentos) {
     const valor = Number(pagamento.value) || 0;
@@ -709,10 +729,10 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
     else if (diasAtraso <= 100) faixas['51_100'] += valor;
     else faixas.acima_100 += valor; // 100+ dias (sem teto)
 
-    if (diasAtraso >= LIMIAR_DIAS_CRITICO) criticos90Dias += valor;
+    if (diasAtraso >= LIMIAR_DIAS_CRITICO) valorCriticos += valor;
   }
 
-  return { faixas, criticos90Dias };
+  return { faixas, valorCriticos };
 }
 
 /**
@@ -721,7 +741,7 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
  * no cálculo de dias de atraso: "aberto" = só status OVERDUE (snapshot de
  * hoje); "historico" = quem já teve desfecho decidido por
  * `classificarPagamento` (exclui só A_VENCER) — EXATAMENTE o mesmo
- * subconjunto que alimenta "faixas"/"criticos_90_dias" hoje (`pagamentosParaFaixas`
+ * subconjunto que alimenta "faixas"/"valor_criticos" hoje (`pagamentosParaFaixas`
  * em `resumo`/`evolucaoMensal`, ver docblocks lá), reproduzido aqui porque
  * o filtro "Crítico" precisa decidir QUEM é crítico ANTES da filtragem
  * final por "Tipo de inadimplente" (senão seria circular — filtrar por
@@ -774,25 +794,70 @@ function aplicarFiltroSituacao(pagamentos, situacaoSelecionada) {
 }
 
 /**
- * Item 6 do brief — "Tipo de inadimplente": filtro de população combinável
- * por OU entre "ativo" (`!emJuridico`), "juridico" (`emJuridico`) e
- * "critico" (`cpfCnpj` presente em `criticoSet`, ver
- * `computarCpfCnpjCriticos`) — um pagamento passa se bater em QUALQUER um
- * dos tipos marcados. `tipoSelecionado` vazio = sem restrição ("Todos").
- * Continua combinando por E com "renegociacao"/"bloqueado", aplicados
- * separadamente em `aplicarFiltrosCrossReference` — este filtro não lida
- * com os dois (só com a parte que substituiu o antigo `em_juridico`
- * exclusivo).
+ * AJUSTE 17 — item 1 do brief ("Filtro 'Jurídico' via cards reais"): devolve
+ * o conjunto de CPF/CNPJ com PELO MENOS 1 card na tabela `cards_juridico`
+ * da franquia atual, em QUALQUER etapa (inclusive "Antigos" — nenhum filtro
+ * de `etapaId`, só a existência do card importa). Vinculado por
+ * `associadoId` (FK pra `Associado`, que é quem de fato guarda o
+ * `cpfCnpj` — o card em si não tem uma coluna própria de CPF/CNPJ, mas o
+ * caminho até ele é o mesmo "card -> associado -> cpfCnpj" descrito no
+ * brief). Cards livres (`associadoId: null`, sem associado vinculado) nunca
+ * entram — não têm CPF/CNPJ pra casar com nenhum pagamento.
+ *
+ * `cardJuridico` é ESCOPO_DIRETO (franquiaId na própria tabela, injetado
+ * automaticamente pela extension do Prisma — ver `config/prismaComEscopo.js`)
+ * — nenhum `where: { franquiaId }` explícito precisa ser passado aqui, mesmo
+ * padrão já usado por `buscarExclusoesConfiguradas` acima.
+ *
+ * Substitui `associados.em_juridico` como fonte de verdade só para o filtro
+ * "Jurídico" de "Tipo de inadimplente" (`aplicarFiltroTipoInadimplente`,
+ * abaixo) — o campo `em_juridico` do associado (e o parâmetro legado
+ * `em_juridico`/`aplicarFiltrosCrossReference`, mantido por compatibilidade)
+ * não foram tocados: o brief pediu a troca só no filtro novo combinável,
+ * não no tri-state antigo (que nem é mais enviado pela tela desde o
+ * AJUSTE 15). Divergir do `em_juridico` é esperado (card criado à mão sem
+ * passar pelo toggle do Dashboard, ou card remanescente de antes do
+ * AJUSTE 10) — é exatamente o motivo da mudança, ver README.
  */
-function aplicarFiltroTipoInadimplente(pagamentos, tipoSelecionado, criticoSet, associadoPorCpfCnpj) {
+async function buscarCpfCnpjComCardJuridico(reqPrisma) {
+  const cards = await reqPrisma.cardJuridico.findMany({
+    where: { associadoId: { not: null } },
+    select: { associado: { select: { cpfCnpj: true } } },
+  });
+  return new Set(cards.map((c) => c.associado?.cpfCnpj).filter(Boolean));
+}
+
+/**
+ * Item 6 do brief — "Tipo de inadimplente": filtro de população combinável
+ * por OU entre "ativo" (`!emJuridico`), "juridico" (AJUSTE 17: `cpfCnpj`
+ * presente em `cpfCnpjComCardJuridico` — existência de card real no
+ * Jurídico, ver `buscarCpfCnpjComCardJuridico` acima; antes deste ajuste
+ * era `emJuridico`, o campo do associado) e "critico" (`cpfCnpj` presente
+ * em `criticoSet`, ver `computarCpfCnpjCriticos`) — um pagamento passa se
+ * bater em QUALQUER um dos tipos marcados. `tipoSelecionado` vazio = sem
+ * restrição ("Todos"). Continua combinando por E com
+ * "renegociacao"/"bloqueado", aplicados separadamente em
+ * `aplicarFiltrosCrossReference` — este filtro não lida com os dois (só com
+ * a parte que substituiu o antigo `em_juridico` exclusivo).
+ *
+ * "ativo" continua definido por `!emJuridico` (o campo do associado, NÃO
+ * card) — decisão deliberada de manter o escopo do brief só no botão
+ * "Jurídico": um associado pode, por drift, aparecer marcado em "Ativo/
+ * Recuperável" (campo `em_juridico=false`) e AO MESMO TEMPO em "Jurídico"
+ * (tem card real) se os dois filtros forem marcados juntos — não é bug,
+ * é o mesmo drift que motivou a mudança, só que agora visível nos dois
+ * filtros ao mesmo tempo em vez de escondido atrás de um campo só.
+ */
+function aplicarFiltroTipoInadimplente(pagamentos, tipoSelecionado, criticoSet, associadoPorCpfCnpj, cpfCnpjComCardJuridico) {
   if (!tipoSelecionado || tipoSelecionado.length === 0) return pagamentos;
 
   return pagamentos.filter((pagamento) => {
     const { cpfCnpj, emJuridico } = resolverPagamento(pagamento, associadoPorCpfCnpj);
     const identificador = cpfCnpj || pagamento.customer;
+    const temCardJuridico = cpfCnpj ? cpfCnpjComCardJuridico.has(cpfCnpj) : false;
 
     if (tipoSelecionado.includes('ativo') && !emJuridico) return true;
-    if (tipoSelecionado.includes('juridico') && emJuridico) return true;
+    if (tipoSelecionado.includes('juridico') && temCardJuridico) return true;
     if (tipoSelecionado.includes('critico') && criticoSet.has(identificador)) return true;
     return false;
   });
@@ -801,7 +866,7 @@ function aplicarFiltroTipoInadimplente(pagamentos, tipoSelecionado, criticoSet, 
 /**
  * AJUSTE 6 — versão "historico" de valor_inadimplente/valor_adimplente:
  * mesma classificação por data de pagamento vs. vencimento já usada em
- * "faixas"/"criticos_90_dias" (`classificarPagamento`), só que agregada em
+ * "faixas"/"valor_criticos" (`classificarPagamento`), só que agregada em
  * 2 somas (inadimplente/adimplente) em vez de 7 faixas de dias. Espelha
  * exatamente a estrutura da versão "aberto" (por status, ver `resumo`):
  * cada pagamento cai em UM dos dois somatórios, ou em nenhum — cobranças
@@ -868,7 +933,7 @@ function computarValorInadimplenteAdimplenteHistorico(pagamentos, hojeStr, diasT
  * PERÍODO DE TOLERÂNCIA — usado em TODOS os cálculos de atraso por data
  * deste endpoint (dias corridos, GET/PATCH /api/config/tolerancia-dias,
  * padrão 0), lido uma vez no início da requisição: "faixas"/
- * "criticos_90_dias" (os dois modos de "visao") E "valor_inadimplente"/
+ * "valor_criticos" (os dois modos de "visao") E "valor_inadimplente"/
  * "valor_adimplente"/as duas taxas quando "visao=historico" (AJUSTE 6) —
  * ver `computarFaixasECriticos`/`computarValorInadimplenteAdimplenteHistorico`
  * para a fórmula ("data limite efetiva" = dueDate + diasTolerancia) e o
@@ -878,18 +943,18 @@ function computarValorInadimplenteAdimplenteHistorico(pagamentos, hojeStr, diasT
  * não entra nessa conta.
  *
  * AJUSTE 6 (renomeia e estende o parâmetro "visao_faixas" → "visao") —
- * "visao" agora controla, ao mesmo tempo, "faixas"/"criticos_90_dias" (uso
+ * "visao" agora controla, ao mesmo tempo, "faixas"/"valor_criticos" (uso
  * original, AJUSTE CRÍTICO 2) E "valor_inadimplente"/"valor_adimplente"/as
  * duas taxas (novo):
  *   - "visao=aberto" (padrão — SEM NENHUMA REGRESSÃO no comportamento
  *     default da tela): "valor_inadimplente"/"valor_adimplente" por STATUS
  *     ATUAL de cada cobrança no Asaas (AJUSTE CRÍTICO 3, mantido tal e
  *     qual — ver `STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA`/
- *     `STATUS_ADIMPLENTE` no topo do arquivo); "faixas"/"criticos_90_dias"
+ *     `STATUS_ADIMPLENTE` no topo do arquivo); "faixas"/"valor_criticos"
  *     restritos a status OVERDUE (snapshot de hoje).
  *   - "visao=historico": "valor_inadimplente"/"valor_adimplente" passam a
  *     usar a MESMA classificação por data de pagamento vs. vencimento que
- *     já alimentava só "faixas"/"criticos_90_dias" (`classificarPagamento`
+ *     já alimentava só "faixas"/"valor_criticos" (`classificarPagamento`
  *     — ver `computarValorInadimplenteAdimplenteHistorico`): reflete o
  *     COMPORTAMENTO do associado no período (pagou em dia ou não),
  *     independente do status atual da cobrança — uma cobrança paga com
@@ -926,10 +991,10 @@ function computarValorInadimplenteAdimplenteHistorico(pagamentos, hojeStr, diasT
  * "valor_adimplente"/"taxa_adimplencia_percentual" (sempre RECEIVED/
  * RECEIVED_IN_CASH) nem "valor_total_faturado" (sempre o período inteiro,
  * qualquer status) nem "top_devedores"/"associados_inadimplentes"/
- * "criticos_90_dias"/"renegociacoes_abertas" (nenhum destes muda com este
+ * "valor_criticos"/"renegociacoes_abertas" (nenhum destes muda com este
  * ajuste — ver docblocks próprios).
  *
- * AJUSTE CRÍTICO 2 — "faixas" e "criticos_90_dias" têm dois modos,
+ * AJUSTE CRÍTICO 2 — "faixas" e "valor_criticos" têm dois modos,
  * controlados por "visao" (padrão "aberto"):
  *   - "aberto": só cobranças AINDA NÃO PAGAS hoje (status OVERDUE),
  *     bucketed por (hoje - dueDate) — é um snapshot do que está em aberto
@@ -1064,10 +1129,14 @@ exports.resumo = async (req, res, next) => {
     // aqui (o "precisaResolverTodos"/"idsOverdue"/"idsParaResolver" de antes
     // existia só para minimizar chamadas à API do Asaas, que não existem
     // mais nesta rota).
-    const [{ validos: pagamentosValidos, excluidos, associadoPorCpfCnpj }, diasTolerancia] = await Promise.all([
-      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte, filtroPeriodo }),
-      getDiasTolerancia(franquiaId),
-    ]);
+    // AJUSTE 17 — `buscarCpfCnpjComCardJuridico` entra no mesmo Promise.all
+    // (consulta independente/barata, mesmo espírito de `diasTolerancia`).
+    const [{ validos: pagamentosValidos, excluidos, associadoPorCpfCnpj }, diasTolerancia, cpfCnpjComCardJuridico] =
+      await Promise.all([
+        buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte, filtroPeriodo }),
+        getDiasTolerancia(franquiaId),
+        buscarCpfCnpjComCardJuridico(req.prisma),
+      ]);
 
     const hojeStr = formatarDataISO(new Date());
 
@@ -1077,8 +1146,10 @@ exports.resumo = async (req, res, next) => {
     //   3. "tipo_inadimplente" (item 6 — ativo/juridico/critico, combinável por
     //      OU), cujo "critico" precisa ser calculado ANTES deste último passo,
     //      sobre a população que já passou pelos 2 primeiros (mesma base que
-    //      "criticos_90_dias" usaria pra essa combinação de filtros) — ver
+    //      "valor_criticos" usaria pra essa combinação de filtros) — ver
     //      docblock de `computarCpfCnpjCriticos` para o porquê da ordem.
+    //      "juridico" (AJUSTE 17) passa a casar contra `cpfCnpjComCardJuridico`
+    //      (cards reais), não mais contra `associados.em_juridico`.
     const populacaoAntesDoTipoInadimplente = aplicarFiltrosCrossReference(
       aplicarFiltroSituacao(pagamentosValidos, situacao),
       { renegociacao, emJuridico, bloqueado },
@@ -1095,7 +1166,8 @@ exports.resumo = async (req, res, next) => {
       populacaoAntesDoTipoInadimplente,
       tipoInadimplente,
       criticoSet,
-      associadoPorCpfCnpj
+      associadoPorCpfCnpj,
+      cpfCnpjComCardJuridico
     );
 
     const valorTotalFaturado = conjuntoTrabalho.reduce((soma, p) => soma + (Number(p.value) || 0), 0);
@@ -1134,7 +1206,7 @@ exports.resumo = async (req, res, next) => {
       visao === 'aberto'
         ? pagamentosOverdue
         : conjuntoTrabalho.filter((p) => classificarPagamento(p, hojeStr, diasTolerancia) !== 'A_VENCER');
-    const { faixas, criticos90Dias } = computarFaixasECriticos(pagamentosParaFaixas, visao, hojeStr, diasTolerancia);
+    const { faixas, valorCriticos } = computarFaixasECriticos(pagamentosParaFaixas, visao, hojeStr, diasTolerancia);
 
     // AJUSTE 6 — "valor_inadimplente"/"valor_adimplente" seguem "visao":
     // "aberto" por STATUS ATUAL (AJUSTE CRÍTICO 3, com "tipo_pendencia" —
@@ -1185,6 +1257,50 @@ exports.resumo = async (req, res, next) => {
       .slice(0, 10)
       .map((d) => ({ nome: d.nome, cpf_cnpj: d.cpf_cnpj, valor: arredondar2(d.valor) }));
 
+    // AJUSTE 17 — item 3 do brief: "Se aproximando do Jurídico" — MESMA base
+    // "aberto hoje" de `pagamentosOverdue` (nunca segue "visao": é sempre
+    // snapshot do status atual, igual "associados_inadimplentes"/
+    // "top_devedores" acima — "dias de atraso = hoje - vencimento,
+    // respeitando a tolerância" só faz sentido como leitura do momento
+    // atual, não teria como reproduzir isso num "fechamento histórico do
+    // mês" sem mudar o que a pergunta significa). Agrupado por devedor
+    // (mesmo padrão de `porDevedor`), mas: (a) só entra quem tem PELO MENOS
+    // 1 cobrança com `diasAtraso` dentro de [LIMIAR_APROXIMANDO_MIN,
+    // LIMIAR_APROXIMANDO_MAX] (35-49); (b) o valor somado é só das
+    // cobranças NESSA janela (não a dívida total do devedor — uma cobrança
+    // já com 120 dias do mesmo devedor não entra na soma aqui, ele já é
+    // "Crítico" por ela, não "se aproximando"); (c) "dias_atraso" exposto é
+    // o MAIOR entre as cobranças que qualificaram esse devedor (pior caso —
+    // o que decide o quão perto ele está de virar Crítico). Ordenado pelo
+    // maior atraso primeiro (`dias_atraso` desc, desempate por `valor`
+    // desc) — "quem vai virar Crítico primeiro se nada for feito" aparece
+    // no topo, conforme o brief. Sem `.slice(10)` como `topDevedores`: a
+    // própria janela de 15 dias já limita naturalmente o tamanho da lista,
+    // e truncar esconderia justamente quem o card existe para mostrar.
+    const porDevedorAproximando = new Map();
+    for (const pagamento of pagamentosOverdue) {
+      const diasAtraso = calcularDiasAtraso(pagamento, 'aberto', hojeStr, diasTolerancia);
+      if (diasAtraso < LIMIAR_APROXIMANDO_MIN || diasAtraso > LIMIAR_APROXIMANDO_MAX) continue;
+
+      const valor = Number(pagamento.value) || 0;
+      const { cpfCnpj, nome } = resolverPagamento(pagamento, associadoPorCpfCnpj);
+      const identificador = cpfCnpj || pagamento.customer;
+
+      const acumulado = porDevedorAproximando.get(identificador) || {
+        nome: nome || identificador,
+        cpf_cnpj: cpfCnpj || identificador,
+        valor: 0,
+        diasAtraso: 0,
+      };
+      acumulado.valor += valor;
+      acumulado.diasAtraso = Math.max(acumulado.diasAtraso, diasAtraso);
+      porDevedorAproximando.set(identificador, acumulado);
+    }
+
+    const aproximandoJuridico = [...porDevedorAproximando.values()]
+      .sort((a, b) => b.diasAtraso - a.diasAtraso || b.valor - a.valor)
+      .map((d) => ({ nome: d.nome, cpf_cnpj: d.cpf_cnpj, valor: arredondar2(d.valor), dias_atraso: d.diasAtraso }));
+
     // AJUSTE 3 — renegociações via descrição do Asaas (PENDING/OVERDUE
     // dentro do conjunto já filtrado), não mais via associados.em_negociacao.
     let renegociacoesQuantidade = 0;
@@ -1207,9 +1323,10 @@ exports.resumo = async (req, res, next) => {
       taxa_adimplencia_percentual: taxaAdimplencia,
       associados_inadimplentes: identificadoresInadimplentes.size,
       renegociacoes_abertas: { quantidade: renegociacoesQuantidade, valor: arredondar2(renegociacoesValor) },
-      criticos_90_dias: arredondar2(criticos90Dias),
+      valor_criticos: arredondar2(valorCriticos),
       faixas: Object.fromEntries(Object.entries(faixas).map(([faixa, valor]) => [faixa, arredondar2(valor)])),
       top_devedores: topDevedores,
+      aproximando_juridico: aproximandoJuridico,
       excluidos,
     };
 
@@ -1390,16 +1507,20 @@ exports.evolucaoMensal = async (req, res, next) => {
     // resolvido para todos os pagamentos válidos do período (consulta local
     // barata) — nenhuma resolução extra de cliente é feita aqui (ver
     // docblock de `buscarPagamentosValidos`/`resolverAssociadosPorCpfCnpj`).
-    const [{ validos: pagamentosValidos, associadoPorCpfCnpj }, diasTolerancia] = await Promise.all([
-      buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte, filtroPeriodo }),
-      getDiasTolerancia(franquiaId),
-    ]);
+    // AJUSTE 17 — mesma consulta de cards reais do /resumo, mesmo padrão.
+    const [{ validos: pagamentosValidos, associadoPorCpfCnpj }, diasTolerancia, cpfCnpjComCardJuridico] =
+      await Promise.all([
+        buscarPagamentosValidos(req.prisma, franquiaId, { vencDe, vencAte, filtroPeriodo }),
+        getDiasTolerancia(franquiaId),
+        buscarCpfCnpjComCardJuridico(req.prisma),
+      ]);
 
     const hojeStr = formatarDataISO(new Date());
 
     // Repaginação de filtros — mesmo pipeline de 3 passos do /resumo (ver
     // docblock lá): situacao -> cross-reference de sempre -> tipo_inadimplente
-    // (com o "critico" calculado sobre a população intermediária).
+    // (com o "critico" calculado sobre a população intermediária; "juridico"
+    // via cards reais, AJUSTE 17).
     const populacaoAntesDoTipoInadimplente = aplicarFiltrosCrossReference(
       aplicarFiltroSituacao(pagamentosValidos, situacao),
       { renegociacao, emJuridico, bloqueado },
@@ -1416,7 +1537,8 @@ exports.evolucaoMensal = async (req, res, next) => {
       populacaoAntesDoTipoInadimplente,
       tipoInadimplente,
       criticoSet,
-      associadoPorCpfCnpj
+      associadoPorCpfCnpj,
+      cpfCnpjComCardJuridico
     );
 
     // AJUSTE 13 — "aberto": mesmo critério por status atual de sempre (ver

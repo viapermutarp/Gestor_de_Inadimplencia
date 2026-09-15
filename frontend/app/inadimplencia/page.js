@@ -8,6 +8,7 @@ import DatePicker from "@/components/DatePicker";
 import ResumoInadimplenciaCards from "@/components/ResumoInadimplenciaCards";
 import FaixasChart from "@/components/FaixasChart";
 import TopDevedores from "@/components/TopDevedores";
+import AproximandoJuridico from "@/components/AproximandoJuridico";
 import EvolucaoMensalChart from "@/components/EvolucaoMensalChart";
 import ExclusoesPanel from "@/components/ExclusoesPanel";
 import ErrorBanner from "@/components/ErrorBanner";
@@ -521,6 +522,11 @@ export default function InadimplenciaPage() {
               .
             </p>
           )}
+
+          {/* AJUSTE 17 — item 3 do brief: "Se aproximando do Jurídico" (35-49
+              dias de atraso), posicionado acima do gráfico de faixas, exatamente
+              como pedido. */}
+          <AproximandoJuridico devedores={resumo?.aproximando_juridico} loading={loading} />
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <FaixasChart
