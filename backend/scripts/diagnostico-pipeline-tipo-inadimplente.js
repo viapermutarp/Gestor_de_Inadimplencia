@@ -68,6 +68,19 @@
  *   --bloqueado=todos            (default: todos — idem "Bloqueado")
  *   --visao=aberto               (default: aberto)
  *   --filtro-periodo=vencimento  (default: vencimento)
+ *
+ * ATUALIZAÇÃO — pipeline de população confirmado limpo (nenhuma queda entre
+ * RAW/STAGE0/STAGE1/STAGE2 nos casos investigados). Próxima hipótese: o
+ * associado sobrevive até STAGE2 (conjuntoTrabalho) mas com TODOS os
+ * pagamentos do período já em status RECEIVED/RECEIVED_IN_CASH — nesse caso
+ * ele corretamente não entra em valor_total_aberto/valor_inadimplente/
+ * top_devedores (que só somam OVERDUE/CONFIRMED/PENDING, ver
+ * STATUS_POR_SITUACAO.em_aberto no controller), e o "sumiço" na Taxa de
+ * Inadimplência está certo — a divergência real estaria entre o card do
+ * Jurídico (lê de `cobrancas`, sync n8n) e `pagamentos_asaas` (fonte única
+ * da Taxa de Inadimplência desde o AJUSTE 14), não neste pipeline. Por isso
+ * a tabela agora também imprime, por associado, a soma de `value` de
+ * STAGE2 separada por `status`.
  */
 const fs = require('fs');
 const path = require('path');
@@ -249,6 +262,36 @@ function contarPorCpfCnpj(pagamentos, cpfCnpjs) {
   return contagem;
 }
 
+// Ordem de exibição preferida — os 4 status que a Taxa de Inadimplência
+// normalmente vê. Qualquer status fora desta lista (ex: um valor inesperado
+// vindo do Asaas) ainda aparece, só que depois destes 4, marcado.
+const STATUS_ORDEM_PADRAO = ['OVERDUE', 'CONFIRMED', 'PENDING', 'RECEIVED'];
+
+/**
+ * Soma `value` por status, por cpfCnpj alvo — pra testar a hipótese de que
+ * um associado "some" da Taxa de Inadimplência não por bug de filtro, mas
+ * porque TODOS os pagamentos dele no período já estão com status RECEIVED
+ * (pago) — nesse caso o sumiço seria correto, e a divergência estaria no
+ * card do Jurídico (que lê de `cobrancas`/sync n8n, uma fonte separada e
+ * possivelmente desatualizada — ver docblock do controller sobre as duas
+ * pipelines).
+ */
+function somarValorPorStatusPorCpf(pagamentos, cpfCnpjs) {
+  const porCpf = new Map(cpfCnpjs.map((c) => [c, new Map()]));
+  for (const p of pagamentos) {
+    if (p.cpfCnpj && porCpf.has(p.cpfCnpj)) {
+      const porStatus = porCpf.get(p.cpfCnpj);
+      const statusChave = p.status || '(sem status)';
+      porStatus.set(statusChave, (porStatus.get(statusChave) || 0) + (Number(p.value) || 0));
+    }
+  }
+  return porCpf;
+}
+
+function formatarBRL(valor) {
+  return (valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
@@ -332,6 +375,7 @@ async function main() {
     const contagemStage0 = contarPorCpfCnpj(diag.stage0.pagamentosValidos, cpfCnpjsAlvo);
     const contagemStage1 = contarPorCpfCnpj(diag.stage1.populacaoAntesDoTipoInadimplente, cpfCnpjsAlvo);
     const contagemStage2 = contarPorCpfCnpj(diag.stage2.conjuntoTrabalho, cpfCnpjsAlvo);
+    const valorPorStatusStage2 = somarValorPorStatusPorCpf(diag.stage2.conjuntoTrabalho, cpfCnpjsAlvo);
 
     console.log(`=== Set de buscarCpfCnpjComCardJuridico usado nesta chamada (via req.prisma real) ===`);
     console.log(`  tipo: ${diag.stage0.cpfCnpjComCardJuridico.constructor.name}  tamanho: ${diag.stage0.cpfCnpjComCardJuridico.size}`);
@@ -352,6 +396,36 @@ async function main() {
       const s2 = contagemStage2.get(cpf);
       console.log(`  ${nome}  (cpf_cnpj="${cpf}")`);
       console.log(`    RAW=${raw}  STAGE0=${s0}  STAGE1=${s1}  STAGE2=${s2}`);
+
+      if (s2 > 0) {
+        const porStatus = valorPorStatusStage2.get(cpf);
+        const statusPresentes = [...porStatus.keys()];
+        const ordemExibicao = [
+          ...STATUS_ORDEM_PADRAO.filter((s) => statusPresentes.includes(s)),
+          ...statusPresentes.filter((s) => !STATUS_ORDEM_PADRAO.includes(s)),
+        ];
+        const somaTotal = [...porStatus.values()].reduce((a, b) => a + b, 0);
+        console.log('    STAGE2 — value por status (pagamentos_asaas):');
+        for (const status of ordemExibicao) {
+          const pct = somaTotal > 0 ? ((porStatus.get(status) / somaTotal) * 100).toFixed(1) : '0.0';
+          console.log(`      ${status.padEnd(18)} ${formatarBRL(porStatus.get(status)).padStart(18)}  (${pct}% do total deste associado)`);
+        }
+        console.log(`      ${'TOTAL'.padEnd(18)} ${formatarBRL(somaTotal).padStart(18)}`);
+
+        // "em_aberto" = OVERDUE+CONFIRMED+PENDING (STATUS_POR_SITUACAO.em_aberto
+        // no controller) — é o que conta pra valor_total_aberto/valor_inadimplente/
+        // top_devedores. Se 100% do valor deste associado está fora dessa lista
+        // (ou seja, só RECEIVED/RECEIVED_IN_CASH), ele nunca vai aparecer como
+        // devedor na Taxa de Inadimplência NESTA chamada — não por bug de
+        // filtro, mas porque já está pago segundo pagamentos_asaas.
+        const statusEmAberto = ['OVERDUE', 'CONFIRMED', 'PENDING'];
+        const valorEmAberto = [...porStatus.entries()].filter(([s]) => statusEmAberto.includes(s)).reduce((a, [, v]) => a + v, 0);
+        if (valorEmAberto === 0 && somaTotal > 0) {
+          console.log('      → 100% do valor em STAGE2 está fora de OVERDUE/CONFIRMED/PENDING (ou seja, já pago segundo pagamentos_asaas) — correto este associado não aparecer como devedor na Taxa de Inadimplência nesta chamada. Se o card do Jurídico ainda mostra valor em aberto pra ele, a divergência está entre `cobrancas` (sync n8n) e `pagamentos_asaas`, não neste pipeline.');
+        } else if (valorEmAberto > 0 && s2 > 0) {
+          console.log(`      → ${formatarBRL(valorEmAberto)} está em status "em aberto" (OVERDUE/CONFIRMED/PENDING) — deveria contar pra valor_total_aberto/valor_inadimplente/top_devedores nesta chamada. Se mesmo assim não aparece nos totais da tela, o próximo ponto a investigar é ali (agregação pós-STAGE2), não mais o pipeline de população.`);
+        }
+      }
 
       if (raw === 0) {
         console.log('    => sem pagamento no período, nem no raw — nada a ver com o pipeline (revisite o diagnóstico anterior, causa (a)/(c)).');
