@@ -10,9 +10,14 @@
  * via Prisma (sem mock do Asaas — AJUSTE 14, GET /resumo não chama o Asaas
  * ao vivo).
  *
- * Cenário (1 franquia, 6 "associados", todos com diasAtraso bem abaixo de
- * LIMIAR_DIAS_CRITICO=50, pra não interferir com faixas/críticos):
+ * Cenário (1 franquia, 8 "associados"):
  *   A — DUNNING_REQUESTED ISOLADA (sem par): 1000, 10 dias de atraso.
+ *       Cobre o gap fechado NUM SEGUNDO LOTE desta mesma correção:
+ *       "pagamentosOverdue" (top_devedores/associados_inadimplentes/faixas/
+ *       aproximando_juridico) filtrava só "status === 'OVERDUE'" e não via
+ *       DUNNING_REQUESTED — o total subia (valor_total_aberto/
+ *       valor_inadimplente) mas ninguém aparecia como responsável por ele
+ *       nas listas operacionais. Ver STATUS_ATRASADOS_PARA_COBRANCA.
  *   B — par Negativada, AMBOS OVERDUE: original 500 (10d) + cópia
  *       "(Negativada)" 500 (11d, mesmo cliente).
  *   C — par Negativada, OVERDUE + DUNNING_REQUESTED (o caso que o item 2 do
@@ -27,6 +32,12 @@
  *       lados (2 parcelas normais, mesmo valor, dueDate próximo): NÃO deve
  *       ser tratado como par — os 2 devem contar.
  *   F — controle, 1 cobrança normal: 200 (10d).
+ *   G — DUNNING_REQUESTED ISOLADA, 900, 40 dias de atraso (dentro da janela
+ *       [35,49] de "aproximando_juridico") — confirma que o gap fechado
+ *       também vale pra essa lista, não só top_devedores.
+ *   H — DUNNING_REQUESTED ISOLADA, 1100, 60 dias de atraso (>= 50,
+ *       LIMIAR_DIAS_CRITICO) — confirma faixa "51_100" e "valor_criticos"
+ *       agora contam uma cobrança DUNNING_REQUESTED isolada.
  *
  * Todos os valores/somas abaixo foram calculados à mão a partir deste
  * cenário, independente do controller.
@@ -135,7 +146,7 @@ async function main() {
       },
     });
 
-    const ASSOCIADOS = ['a', 'b', 'c', 'd', 'e', 'f'].map((letra) => ({
+    const ASSOCIADOS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((letra) => ({
       id: letra,
       cpfCnpj: `92.000.00${letra.charCodeAt(0) - 96}/0001-0${letra.charCodeAt(0) - 96}`,
       nome: `Associado ${letra.toUpperCase()}`,
@@ -186,6 +197,12 @@ async function main() {
     // F — controle, 1 cobrança normal.
     await criarPagamento('p_f', 'f', 200, 10, { status: 'OVERDUE', descricao: 'Cobrança F' });
 
+    // G — DUNNING_REQUESTED isolada, 40 dias de atraso (janela aproximando_juridico).
+    await criarPagamento('p_g', 'g', 900, 40, { status: 'DUNNING_REQUESTED', descricao: 'Cobrança G' });
+
+    // H — DUNNING_REQUESTED isolada, 60 dias de atraso (>= LIMIAR_DIAS_CRITICO).
+    await criarPagamento('p_h', 'h', 1100, 60, { status: 'DUNNING_REQUESTED', descricao: 'Cobrança H' });
+
     const janelaAmpla = `venc_de=${diasAtras(365)}&venc_ate=${diasAtras(-365)}`;
 
     // -------------------------------------------------------------
@@ -195,8 +212,8 @@ async function main() {
     {
       const r = await get(`/inadimplencia/resumo?${janelaAmpla}`, chaveApi);
       assertEqual(r.status, 200, 'GET resumo -> 200');
-      // A(1000) + B(500+500) + C(600+600) + D(700+700) + E(300+300) + F(200) = 5400
-      assertEqual(r.corpo.valor_total_faturado, 5400, 'valor_total_faturado = 5400 (soma de TODAS as linhas, cópias negativadas incluídas)');
+      // A(1000) + B(500+500) + C(600+600) + D(700+700) + E(300+300) + F(200) + G(900) + H(1100) = 7400
+      assertEqual(r.corpo.valor_total_faturado, 7400, 'valor_total_faturado = 7400 (soma de TODAS as linhas, cópias negativadas incluídas)');
     }
 
     // -------------------------------------------------------------
@@ -205,11 +222,11 @@ async function main() {
     console.log('\n== Teste: valor_total_aberto (item 1 + item 2 juntos) ==');
     {
       const r = await get(`/inadimplencia/resumo?${janelaAmpla}`, chaveApi);
-      // A=1000 (DUNNING isolada, agora conta) + B=500 (só original, cópia excluída) +
-      // C=600 (só original OVERDUE; cópia DUNNING_REQUESTED excluída — SEM ISSO duplicaria) +
-      // D=700 (só original; cópia RECEIVED excluída, nem contaria mesmo sem a correção) +
-      // E=600 (300+300, SEM sufixo em nenhum dos 2 — não é par, os 2 contam) + F=200
-      assertEqual(r.corpo.valor_total_aberto, 1000 + 500 + 600 + 700 + 600 + 200, 'valor_total_aberto = 3600');
+      // A=1000 (DUNNING isolada) + B=500 (só original) + C=600 (só original OVERDUE;
+      // cópia DUNNING_REQUESTED excluída — SEM ISSO duplicaria) + D=700 (só original;
+      // cópia RECEIVED excluída) + E=600 (300+300, sem sufixo, não é par) + F=200 +
+      // G=900 (DUNNING isolada) + H=1100 (DUNNING isolada)
+      assertEqual(r.corpo.valor_total_aberto, 1000 + 500 + 600 + 700 + 600 + 200 + 900 + 1100, 'valor_total_aberto = 5600');
     }
 
     // -------------------------------------------------------------
@@ -218,7 +235,7 @@ async function main() {
     console.log('\n== Teste: valor_inadimplente inclui DUNNING_REQUESTED, exclui cópias negativadas ==');
     {
       const r = await get(`/inadimplencia/resumo?${janelaAmpla}&tipo_pendencia=todos`, chaveApi);
-      assertEqual(r.corpo.valor_inadimplente, 3600, 'valor_inadimplente(todos) = 3600, igual a valor_total_aberto neste cenário (sem PENDING)');
+      assertEqual(r.corpo.valor_inadimplente, 5600, 'valor_inadimplente(todos) = 5600, igual a valor_total_aberto neste cenário (sem PENDING)');
     }
 
     // -------------------------------------------------------------
@@ -236,34 +253,57 @@ async function main() {
     console.log('\n== Teste: DUNNING_REQUESTED só entra em tipo_pendencia=todos, não em vencidas/confirmadas ==');
     {
       const rVencidas = await get(`/inadimplencia/resumo?${janelaAmpla}&tipo_pendencia=vencidas`, chaveApi);
-      // vencidas = só OVERDUE, deduplicado: B(500)+C(600)+D(700)+E(600)+F(200) = 2600 — SEM A (DUNNING, não é OVERDUE)
-      assertEqual(rVencidas.corpo.valor_inadimplente, 2600, 'tipo_pendencia=vencidas: valor_inadimplente = 2600 (sem A, que é DUNNING_REQUESTED)');
+      // vencidas = só OVERDUE, deduplicado: B(500)+C(600)+D(700)+E(600)+F(200) = 2600 — SEM A/G/H (DUNNING_REQUESTED)
+      assertEqual(rVencidas.corpo.valor_inadimplente, 2600, 'tipo_pendencia=vencidas: valor_inadimplente = 2600 (sem A/G/H, que são DUNNING_REQUESTED)');
 
       const rConfirmadas = await get(`/inadimplencia/resumo?${janelaAmpla}&tipo_pendencia=confirmadas`, chaveApi);
       assertEqual(rConfirmadas.corpo.valor_inadimplente, 0, 'tipo_pendencia=confirmadas: valor_inadimplente = 0 (nenhum CONFIRMED no cenário)');
     }
 
     // -------------------------------------------------------------
-    // TESTE 6 — top_devedores / associados_inadimplentes: só quem tem status OVERDUE (pagamentosOverdue,
-    // literal — NÃO reaproveita STATUS_POR_SITUACAO/STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA, fora do escopo
-    // deste brief, ver relatório de entrega) — A (só DUNNING) fica de fora aqui, de propósito, é um gap
-    // conhecido e sinalizado, não um bug desta correção.
+    // TESTE 6 — top_devedores / associados_inadimplentes / faixas / valor_criticos / aproximando_juridico:
+    // GAP FECHADO — "pagamentosOverdue" agora reconhece DUNNING_REQUESTED (STATUS_ATRASADOS_PARA_COBRANCA),
+    // então A/G/H (antes invisíveis aqui, só contavam no total) agora aparecem.
     // -------------------------------------------------------------
-    console.log('\n== Teste: top_devedores/associados_inadimplentes — só OVERDUE, deduplicado, A fica de fora (gap sinalizado) ==');
+    console.log('\n== Teste: gap fechado — DUNNING_REQUESTED isolada aparece em top_devedores/associados_inadimplentes/faixas/críticos/aproximando ==');
     {
       const r = await get(`/inadimplencia/resumo?${janelaAmpla}`, chaveApi);
+
       const cpfsTop = r.corpo.top_devedores.map((d) => d.cpf_cnpj);
-      assert(!cpfsTop.includes(associadoPorId['a'].cpfCnpj), 'A (só DUNNING_REQUESTED) NÃO aparece em top_devedores — gap sinalizado no relatório, fora do escopo deste brief');
-      assertEqual(r.corpo.associados_inadimplentes, 5, 'associados_inadimplentes = 5 (B,C,D,E,F — A fica de fora, mesmo motivo)');
+      assert(cpfsTop.includes(associadoPorId['a'].cpfCnpj), 'A (só DUNNING_REQUESTED, 10d) AGORA aparece em top_devedores — gap fechado');
+      assertEqual(r.corpo.associados_inadimplentes, 8, 'associados_inadimplentes = 8 (A,B,C,D,E,F,G,H — todos, gap fechado)');
+
+      const devedorA = r.corpo.top_devedores.find((d) => d.cpf_cnpj === associadoPorId['a'].cpfCnpj);
+      assertEqual(devedorA.valor, 1000, 'A em top_devedores = 1000');
 
       const devedorB = r.corpo.top_devedores.find((d) => d.cpf_cnpj === associadoPorId['b'].cpfCnpj);
       assertEqual(devedorB.valor, 500, 'B em top_devedores = 500 (só o original, cópia negativada excluída — SEM a correção seria 1000)');
 
       const devedorC = r.corpo.top_devedores.find((d) => d.cpf_cnpj === associadoPorId['c'].cpfCnpj);
-      assertEqual(devedorC.valor, 600, 'C em top_devedores = 600 (só o original OVERDUE — a cópia DUNNING_REQUESTED nem entraria aqui de qualquer forma, "pagamentosOverdue" é só status OVERDUE)');
+      assertEqual(devedorC.valor, 600, 'C em top_devedores = 600 (só o original OVERDUE — a cópia DUNNING_REQUESTED excluída como negativada)');
 
       const devedorE = r.corpo.top_devedores.find((d) => d.cpf_cnpj === associadoPorId['e'].cpfCnpj);
       assertEqual(devedorE.valor, 600, 'E em top_devedores = 600 (300+300 — SEM sufixo negativada, as 2 contam, não é par)');
+
+      const devedorG = r.corpo.top_devedores.find((d) => d.cpf_cnpj === associadoPorId['g'].cpfCnpj);
+      assertEqual(devedorG.valor, 900, 'G (DUNNING_REQUESTED, 40d) AGORA aparece em top_devedores = 900 — gap fechado');
+
+      const devedorH = r.corpo.top_devedores.find((d) => d.cpf_cnpj === associadoPorId['h'].cpfCnpj);
+      assertEqual(devedorH.valor, 1100, 'H (DUNNING_REQUESTED, 60d) AGORA aparece em top_devedores = 1100 — gap fechado');
+
+      // faixas (visao=aberto): A/B/C/D/E/F caem todos em "1_20" (10-12 dias);
+      // G (40d) em "31_40"; H (60d) em "51_100".
+      assertEqual(r.corpo.faixas['1_20'], 1000 + 500 + 600 + 700 + 600 + 200, 'faixas.1_20 = 3600 (A+B+C+D+E+F, todos 10-12 dias)');
+      assertEqual(r.corpo.faixas['31_40'], 900, 'faixas.31_40 = 900 (G, DUNNING_REQUESTED, 40 dias) — AGORA conta, gap fechado');
+      assertEqual(r.corpo.faixas['51_100'], 1100, 'faixas.51_100 = 1100 (H, DUNNING_REQUESTED, 60 dias) — AGORA conta, gap fechado');
+
+      // valor_criticos (>= 50 dias): só H (60d) qualifica.
+      assertEqual(r.corpo.valor_criticos, 1100, 'valor_criticos = 1100 (H, DUNNING_REQUESTED, 60 dias >= 50) — AGORA conta, gap fechado');
+
+      // aproximando_juridico (janela 35-49 dias): só G (40d) qualifica — H (60d) já é "crítico", fora da janela.
+      assertEqual(r.corpo.aproximando_juridico.length, 1, 'aproximando_juridico tem 1 devedor (G)');
+      assertEqual(r.corpo.aproximando_juridico[0].cpf_cnpj, associadoPorId['g'].cpfCnpj, 'aproximando_juridico[0] = G (DUNNING_REQUESTED, 40 dias) — AGORA aparece, gap fechado');
+      assertEqual(r.corpo.aproximando_juridico[0].valor, 900, 'aproximando_juridico[0].valor = 900');
     }
 
     // -------------------------------------------------------------
@@ -275,8 +315,8 @@ async function main() {
       assertEqual(r.status, 200, 'GET evolucao-mensal -> 200');
       const totalFaturado = r.corpo.reduce((s, m) => s + m.valor_total_faturado, 0);
       const totalInadimplente = r.corpo.reduce((s, m) => s + m.valor_inadimplente, 0);
-      assertEqual(Math.round(totalFaturado * 100) / 100, 5400, 'evolucao-mensal: soma de valor_total_faturado = 5400 (mesmo do /resumo)');
-      assertEqual(Math.round(totalInadimplente * 100) / 100, 3600, 'evolucao-mensal: soma de valor_inadimplente = 3600 (mesmo do /resumo)');
+      assertEqual(Math.round(totalFaturado * 100) / 100, 7400, 'evolucao-mensal: soma de valor_total_faturado = 7400 (mesmo do /resumo)');
+      assertEqual(Math.round(totalInadimplente * 100) / 100, 5600, 'evolucao-mensal: soma de valor_inadimplente = 5600 (mesmo do /resumo)');
     }
 
     console.log(`\n== Resultado: ${total - falhas}/${total} ==`);

@@ -159,6 +159,26 @@ const STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA = {
 };
 const STATUS_ADIMPLENTE = ['RECEIVED', 'RECEIVED_IN_CASH'];
 
+// CORREÇÃO (fechamento do gap sinalizado após a correção "negativada +
+// DUNNING" acima) — "pagamentosOverdue" (nome histórico, mantido — ver
+// `resumo`) alimenta top_devedores/associados_inadimplentes/faixas
+// (visao="aberto")/valor_criticos(visao="aberto")/aproximando_juridico:
+// TODOS os cálculos de "quem está devendo e precisa ser cobrado agora",
+// com "dias de atraso" contado a partir de "dueDate". Antes desta correção,
+// esse filtro era só "status === 'OVERDUE'" — as 11 cobranças
+// DUNNING_REQUESTED isoladas da auditoria passaram a contar em
+// valor_total_aberto/valor_inadimplente (correção anterior), mas
+// continuavam INVISÍVEIS aqui: o total subia, mas nenhum associado
+// aparecia como responsável por ele nas listas operacionais ("quem
+// cobrar hoje") — inutilizando o propósito prático da tela pra esse
+// dinheiro. "DUNNING_REQUESTED" (cobrança já enviada pro processo de
+// negativação) é, por definição, uma cobrança atrasada em cobrança ativa
+// — mesmo tratamento de "OVERDUE" aqui. NÃO inclui "CONFIRMED"/"PENDING"
+// (nunca incluiu, antes desta correção também, e continua sem sentido
+// pra um cálculo de "dias de atraso": "CONFIRMED" é dinheiro a caminho,
+// ainda não caiu; "PENDING" pode nem ter vencido ainda).
+const STATUS_ATRASADOS_PARA_COBRANCA = ['OVERDUE', 'DUNNING_REQUESTED'];
+
 function formatarDataISO(data) {
   const ano = data.getFullYear();
   const mes = String(data.getMonth() + 1).padStart(2, '0');
@@ -759,19 +779,23 @@ function computarFaixasECriticos(pagamentos, modo, hojeStr, diasTolerancia) {
 /**
  * Item 6 do brief — subconjunto de "pagamentos" (mesmo formato "modo"/
  * "aberto"|"historico" de `computarFaixasECriticos`) que decide QUEM entra
- * no cálculo de dias de atraso: "aberto" = só status OVERDUE (snapshot de
- * hoje); "historico" = quem já teve desfecho decidido por
- * `classificarPagamento` (exclui só A_VENCER) — EXATAMENTE o mesmo
- * subconjunto que alimenta "faixas"/"valor_criticos" hoje (`pagamentosParaFaixas`
- * em `resumo`/`evolucaoMensal`, ver docblocks lá), reproduzido aqui porque
- * o filtro "Crítico" precisa decidir QUEM é crítico ANTES da filtragem
- * final por "Tipo de inadimplente" (senão seria circular — filtrar por
- * "é crítico" exigiria já saber quem sobrou depois de filtrar por "é
- * crítico"). Ver `aplicarFiltroTipoInadimplente`.
+ * no cálculo de dias de atraso: "aberto" = status OVERDUE+DUNNING_REQUESTED
+ * (snapshot de hoje — CORREÇÃO: ver `STATUS_ATRASADOS_PARA_COBRANCA` no
+ * topo do arquivo; antes desta correção era só OVERDUE, e essa função
+ * ficaria fora de sincronia com `pagamentosOverdue`/`pagamentosParaFaixas`
+ * se não fosse atualizada junto — o parágrafo abaixo já dizia que os dois
+ * precisam ser "EXATAMENTE o mesmo subconjunto"); "historico" = quem já
+ * teve desfecho decidido por `classificarPagamento` (exclui só A_VENCER) —
+ * EXATAMENTE o mesmo subconjunto que alimenta "faixas"/"valor_criticos"
+ * hoje (`pagamentosParaFaixas` em `resumo`/`evolucaoMensal`, ver docblocks
+ * lá), reproduzido aqui porque o filtro "Crítico" precisa decidir QUEM é
+ * crítico ANTES da filtragem final por "Tipo de inadimplente" (senão seria
+ * circular — filtrar por "é crítico" exigiria já saber quem sobrou depois
+ * de filtrar por "é crítico"). Ver `aplicarFiltroTipoInadimplente`.
  */
 function pagamentosParaCalculoDeAtraso(pagamentos, modo, hojeStr, diasTolerancia) {
   return modo === 'aberto'
-    ? pagamentos.filter((p) => p.status === 'OVERDUE')
+    ? pagamentos.filter((p) => STATUS_ATRASADOS_PARA_COBRANCA.includes(p.status))
     : pagamentos.filter((p) => classificarPagamento(p, hojeStr, diasTolerancia) !== 'A_VENCER');
 }
 
@@ -1310,11 +1334,12 @@ exports.resumo = async (req, res, next) => {
       }
     }
 
-    // AJUSTE CRÍTICO 2 — "aberto" (snapshot OVERDUE de hoje) x "historico"
-    // (pagas em dia ou não, pelo período inteiro — ver CORREÇÃO no docblock
-    // acima). Os dois já levam o período de tolerância em conta (ver
-    // computarFaixasECriticos).
-    const pagamentosOverdue = pagamentosSemDuplicataNegativada.filter((p) => p.status === 'OVERDUE');
+    // AJUSTE CRÍTICO 2 — "aberto" (snapshot OVERDUE+DUNNING_REQUESTED de
+    // hoje — ver CORREÇÃO/STATUS_ATRASADOS_PARA_COBRANCA no topo do
+    // arquivo) x "historico" (pagas em dia ou não, pelo período inteiro —
+    // ver CORREÇÃO no docblock acima). Os dois já levam o período de
+    // tolerância em conta (ver computarFaixasECriticos).
+    const pagamentosOverdue = pagamentosSemDuplicataNegativada.filter((p) => STATUS_ATRASADOS_PARA_COBRANCA.includes(p.status));
     const pagamentosParaFaixas =
       visao === 'aberto'
         ? pagamentosOverdue
