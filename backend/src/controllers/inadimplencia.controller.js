@@ -72,8 +72,22 @@ const CAMPO_DATA_POR_FILTRO_PERIODO = {
  * mais enviado pela tela.
  */
 const SITUACAO_VALIDAS = ['em_aberto', 'pagas'];
+// CORREÇÃO (auditoria negativada/DUNNING) — "DUNNING_REQUESTED" (cobrança
+// enviada pro processo de cobrança/negativação do Asaas) não entrava em
+// NENHUMA lista de status daqui: não caía em "em_aberto" nem em "pagas",
+// então essas cobranças eram somadas em valor_total_faturado (soma tudo,
+// sem filtro de status) mas ficavam invisíveis em valor_total_aberto/
+// valor_inadimplente/faixas/top_devedores/associados_inadimplentes — uma
+// dívida real, ainda não paga, sumindo da Taxa de Inadimplência por lacuna
+// de classificação (auditoria real: 11 cobranças, R$ 53.132,32). Agora
+// tratada igual a "OVERDUE"/"CONFIRMED" (mesmo grupo "em aberto") — ver
+// também STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA.todos, abaixo, e
+// identificarIdsCopiasNegativadas/pareceDescricaoNegativada logo depois
+// (a correção deste status só é segura porque a duplicata "Negativada" é
+// excluída junto — senão os pares OVERDUE+DUNNING_REQUESTED do mesmo par
+// passariam a contar 2x).
 const STATUS_POR_SITUACAO = {
-  em_aberto: ['OVERDUE', 'CONFIRMED', 'PENDING'],
+  em_aberto: ['OVERDUE', 'CONFIRMED', 'PENDING', 'DUNNING_REQUESTED'],
   pagas: ['RECEIVED', 'RECEIVED_IN_CASH'],
 };
 
@@ -131,8 +145,15 @@ const TIPO_INADIMPLENTE_VALIDAS = ['ativo', 'juridico', 'critico'];
  * isso explícito pro usuário (em vez de aceitar o valor e simplesmente
  * ignorá-lo em silêncio).
  */
+// CORREÇÃO (auditoria negativada/DUNNING) — "DUNNING_REQUESTED" adicionado
+// só em "todos" (mesmo tratamento de "OVERDUE"/"CONFIRMED", a pedido
+// explícito) — NÃO em "vencidas" nem "confirmadas": não existe um
+// equivalente natural de "só vencidas"/"só confirmadas" pra uma cobrança em
+// processo de negativação, e o brief não pediu essa granularidade extra.
+// Selecionar "tipo_pendencia=vencidas" ou "=confirmadas" continua sem
+// incluir DUNNING_REQUESTED — só "todos" (o default) inclui.
 const STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA = {
-  todos: ['OVERDUE', 'CONFIRMED'],
+  todos: ['OVERDUE', 'CONFIRMED', 'DUNNING_REQUESTED'],
   vencidas: ['OVERDUE'],
   confirmadas: ['CONFIRMED'],
 };
@@ -893,6 +914,89 @@ function computarValorInadimplenteAdimplenteHistorico(pagamentos, hojeStr, diasT
 }
 
 /**
+ * CORREÇÃO (auditoria negativada/DUNNING) — o Asaas, ao mandar uma cobrança
+ * pro processo de negativação, gera uma SEGUNDA cobrança (outro `id`),
+ * mesmo `customer` (cliente Asaas), mesmo `value`, `dueDate` igual ou muito
+ * próximo, com uma variação de "(Negativada)"/"(Negativado)" no final da
+ * `description`. As duas são sincronizadas como registros distintos e
+ * legítimos em `pagamentos_asaas` (não é erro de sync) — mas representam a
+ * MESMA dívida, então contar as duas como "em aberto" ao mesmo tempo soma
+ * o valor 2x. Auditoria real (`scripts/auditoria-duplicatas-negativada-dunning.js`,
+ * rodada em produção antes desta correção): 9 pares duplicando o cálculo,
+ * R$ 39.652,95 inflando o total — e ficou ainda mais importante depois do
+ * item acima (`DUNNING_REQUESTED` passou a contar como "em aberto"): pares
+ * OVERDUE+DUNNING_REQUESTED (a cobrança original e a cópia negativada em
+ * processo de cobrança) passariam a duplicar do mesmo jeito se esta função
+ * não existisse.
+ *
+ * `pareceDescricaoNegativada` usa a MESMA regex já validada em
+ * `auditoria-duplicatas-negativada-dunning.js` (não uma reimplementação do
+ * zero) — aceita "(Negativada)", "(Negativado)", "(NEGATIVADO)", "(Neg...",
+ * sempre no FINAL da description, acento/caixa-insensível.
+ *
+ * `identificarIdsCopiasNegativadas` agrupa por `pagamento.customer` (mesmo
+ * campo que `adaptarPagamentoLocal` usa pro `customerId` do Asaas — não
+ * `cpfCnpj`, que pode vir vazio/divergente) e devolve o `id` de cada cópia
+ * negativada identificada num par (a original NUNCA entra no Set devolvido
+ * — só a cópia é excluída). Não decide "qual das duas é a dívida real": as
+ * duas são reais, só uma delas (a que tem o sufixo) é uma DUPLICATA da
+ * outra pro propósito de somar dívida.
+ *
+ * Onde isso é aplicado (ver `resumo`/`evolucaoMensal` abaixo): a cópia
+ * negativada é removida de valor_total_aberto/valor_inadimplente/valor_adimplente/
+ * faixas/valor_criticos/top_devedores/associados_inadimplentes/
+ * aproximando_juridico (esta última e "valor_criticos" são efeito colateral
+ * automático de excluir a cópia de `pagamentosOverdue`/`pagamentosParaFaixas`,
+ * não uma decisão separada) — MAS continua contando normalmente em
+ * valor_total_faturado (é uma cobrança real que existe no Asaas, só não
+ * deve ser contada duas vezes como dívida em aberto). NÃO aplicado em
+ * "renegociacoes_abertas" nem em `computarCpfCnpjCriticos` (o Set de quem é
+ * "crítico" é por PERTENCIMENTO — ter pelo menos 1 cobrança com 50+ dias —
+ * não por soma; uma duplicata não muda se o associado entra ou não nesse
+ * Set) — deixado assim de propósito, fora do escopo pedido; sinalizado no
+ * relatório de entrega desta correção.
+ */
+function normalizarTextoParaComparacao(texto) {
+  return (texto || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+}
+
+function pareceDescricaoNegativada(description) {
+  const normalizado = normalizarTextoParaComparacao(description).trimEnd();
+  return /\(\s*neg[a-z]*\.{0,3}\)?\s*$/.test(normalizado);
+}
+
+function identificarIdsCopiasNegativadas(pagamentos) {
+  const porCliente = new Map();
+  for (const p of pagamentos) {
+    const chave = p.customer;
+    if (!porCliente.has(chave)) porCliente.set(chave, []);
+    porCliente.get(chave).push(p);
+  }
+
+  const idsExcluidos = new Set();
+  for (const linhas of porCliente.values()) {
+    for (let i = 0; i < linhas.length; i++) {
+      for (let j = i + 1; j < linhas.length; j++) {
+        const a = linhas[i];
+        const b = linhas[j];
+        if (arredondar2(a.value) !== arredondar2(b.value)) continue;
+        if (Math.abs((new Date(a.dueDate) - new Date(b.dueDate)) / UM_DIA_MS) > 3) continue;
+
+        const aNeg = pareceDescricaoNegativada(a.description);
+        const bNeg = pareceDescricaoNegativada(b.description);
+        if (aNeg === bNeg) continue; // precisa ser exatamente 1 dos 2 — os dois com/sem sufixo não é o padrão pedido
+
+        idsExcluidos.add(aNeg ? a.id : b.id);
+      }
+    }
+  }
+  return idsExcluidos;
+}
+
+/**
  * GET /api/inadimplencia/resumo
  *   ?venc_de=YYYY-MM-DD&venc_ate=YYYY-MM-DD
  *   &renegociacao=todos|sim|nao&em_juridico=todos|sim|nao&bloqueado=todos|sim|nao
@@ -1172,6 +1276,15 @@ exports.resumo = async (req, res, next) => {
 
     const valorTotalFaturado = conjuntoTrabalho.reduce((soma, p) => soma + (Number(p.value) || 0), 0);
 
+    // CORREÇÃO (auditoria negativada/DUNNING) — a partir daqui, TODOS os
+    // cálculos de dívida (aberto/inadimplente/faixas/críticos/devedores)
+    // usam `pagamentosSemDuplicataNegativada` em vez de `conjuntoTrabalho`
+    // diretamente — só "valorTotalFaturado" (linha acima) continua somando
+    // `conjuntoTrabalho` por inteiro, cópia negativada incluída (ver
+    // docblock de `identificarIdsCopiasNegativadas`).
+    const idsCopiasNegativadasExcluidas = identificarIdsCopiasNegativadas(conjuntoTrabalho);
+    const pagamentosSemDuplicataNegativada = conjuntoTrabalho.filter((p) => !idsCopiasNegativadasExcluidas.has(p.id));
+
     // AJUSTE 16 — "Total em Aberto": soma de tudo que ainda não entrou no
     // caixa (OVERDUE+CONFIRMED+PENDING), SEM toggle e SEM depender de
     // vencimento — reaproveita a mesma lista de status que
@@ -1191,7 +1304,7 @@ exports.resumo = async (req, res, next) => {
     // "valor_total_faturado"/"valor_adimplente" pros cards "em destaque" da
     // tela (ver frontend, ResumoInadimplenciaCards).
     let valorTotalAberto = 0;
-    for (const pagamento of conjuntoTrabalho) {
+    for (const pagamento of pagamentosSemDuplicataNegativada) {
       if (STATUS_POR_SITUACAO.em_aberto.includes(pagamento.status)) {
         valorTotalAberto += Number(pagamento.value) || 0;
       }
@@ -1201,11 +1314,11 @@ exports.resumo = async (req, res, next) => {
     // (pagas em dia ou não, pelo período inteiro — ver CORREÇÃO no docblock
     // acima). Os dois já levam o período de tolerância em conta (ver
     // computarFaixasECriticos).
-    const pagamentosOverdue = conjuntoTrabalho.filter((p) => p.status === 'OVERDUE');
+    const pagamentosOverdue = pagamentosSemDuplicataNegativada.filter((p) => p.status === 'OVERDUE');
     const pagamentosParaFaixas =
       visao === 'aberto'
         ? pagamentosOverdue
-        : conjuntoTrabalho.filter((p) => classificarPagamento(p, hojeStr, diasTolerancia) !== 'A_VENCER');
+        : pagamentosSemDuplicataNegativada.filter((p) => classificarPagamento(p, hojeStr, diasTolerancia) !== 'A_VENCER');
     const { faixas, valorCriticos } = computarFaixasECriticos(pagamentosParaFaixas, visao, hojeStr, diasTolerancia);
 
     // AJUSTE 6 — "valor_inadimplente"/"valor_adimplente" seguem "visao":
@@ -1217,13 +1330,13 @@ exports.resumo = async (req, res, next) => {
     let valorAdimplente = 0;
     if (visao === 'historico') {
       ({ valorInadimplente, valorAdimplente } = computarValorInadimplenteAdimplenteHistorico(
-        conjuntoTrabalho,
+        pagamentosSemDuplicataNegativada,
         hojeStr,
         diasTolerancia
       ));
     } else {
       const statusInadimplenteValidos = STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA[tipoPendencia];
-      for (const pagamento of conjuntoTrabalho) {
+      for (const pagamento of pagamentosSemDuplicataNegativada) {
         const valor = Number(pagamento.value) || 0;
         if (statusInadimplenteValidos.includes(pagamento.status)) valorInadimplente += valor;
         else if (STATUS_ADIMPLENTE.includes(pagamento.status)) valorAdimplente += valor;
@@ -1550,6 +1663,15 @@ exports.evolucaoMensal = async (req, res, next) => {
     const meses = gerarChavesMeses(vencDe, vencAte);
     const porMes = new Map(meses.map((mes) => [mes, { valorTotalFaturado: 0, valorInadimplente: 0, valorAdimplente: 0 }]));
 
+    // CORREÇÃO (auditoria negativada/DUNNING) — mesma exclusão do /resumo
+    // (ver docblock de `identificarIdsCopiasNegativadas`): a cópia
+    // negativada continua somando em "valor_total_faturado" (loop abaixo,
+    // sem checar o Set), mas é pulada antes de somar em
+    // valorInadimplente/valorAdimplente — nas duas visões ("aberto" por
+    // status E "historico" por classificarPagamento, que também duplicaria
+    // sem isso, já que os 2 lados do par têm value/dueDate quase idênticos).
+    const idsCopiasNegativadasExcluidas = identificarIdsCopiasNegativadas(conjuntoTrabalho);
+
     // Repaginação de filtros — o mês de cada ponto do gráfico passa a vir do
     // MESMO campo de data usado pra filtrar o período ("filtro_periodo"),
     // não mais sempre "dueDate": em "vencimento" (padrão) é idêntico a
@@ -1568,6 +1690,8 @@ exports.evolucaoMensal = async (req, res, next) => {
 
       const valor = Number(pagamento.value) || 0;
       acumulado.valorTotalFaturado += valor;
+
+      if (idsCopiasNegativadasExcluidas.has(pagamento.id)) continue; // conta em faturado (acima), não em inadimplente/adimplente
 
       if (visao === 'historico') {
         const classificacao = classificarPagamento(pagamento, hojeStr, diasTolerancia);
