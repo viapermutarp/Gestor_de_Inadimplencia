@@ -28,10 +28,25 @@ const { RECURSOS } = require('../config/recursos');
  * o token expirar) — se a chave não estiver na lista, 403. Mesmo padrão de
  * erro que exigirSuperAdmin.js: 403 (não 401) — a autenticação em si já foi
  * validada por "auth"; isso aqui é só autorização.
+ *
+ * AJUSTE 19 — também aceita um ARRAY de chaves (`exigirRecurso(['dashboard',
+ * 'associados'])`): libera a rota se o usuário tiver QUALQUER UMA delas
+ * (OR, não AND). Motivado por `GET /api/associados/:cpfCnpj` — o detalhe
+ * completo do associado passou a ser usado tanto pela aba "Dashboard"
+ * (recurso `dashboard`) quanto pela aba nova "Associados" (recurso
+ * `associados`), sem duplicar o endpoint; um usuário só precisa ter UMA das
+ * duas telas liberadas pra abrir o detalhe. Uso normal com uma chave só
+ * (string) continua funcionando exatamente como antes.
  */
-module.exports = function exigirRecurso(chave) {
-  if (!RECURSOS.includes(chave)) {
-    throw new Error(`exigirRecurso: recurso desconhecido "${chave}" (válidos: ${RECURSOS.join(', ')}).`);
+module.exports = function exigirRecurso(chaveOuChaves) {
+  const chaves = Array.isArray(chaveOuChaves) ? chaveOuChaves : [chaveOuChaves];
+  if (chaves.length === 0) {
+    throw new Error('exigirRecurso: é preciso passar pelo menos uma chave.');
+  }
+  for (const chave of chaves) {
+    if (!RECURSOS.includes(chave)) {
+      throw new Error(`exigirRecurso: recurso desconhecido "${chave}" (válidos: ${RECURSOS.join(', ')}).`);
+    }
   }
 
   return async function (req, res, next) {
@@ -53,7 +68,7 @@ module.exports = function exigirRecurso(chave) {
         select: { recursosPermitidos: true },
       });
 
-      if (!usuario || !usuario.recursosPermitidos.includes(chave)) {
+      if (!usuario || !chaves.some((chave) => usuario.recursosPermitidos.includes(chave))) {
         return res.status(403).json({ error: 'Seu usuário não tem acesso a esta tela.' });
       }
 

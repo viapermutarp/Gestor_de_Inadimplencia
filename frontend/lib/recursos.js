@@ -4,6 +4,7 @@
 // "Controle Geral" nunca entra aqui — não é um recurso restringível.
 export const RECURSOS = [
   { chave: "dashboard", label: "Dashboard" },
+  { chave: "associados", label: "Associados" },
   { chave: "inadimplencia", label: "Taxa de Inadimplência %" },
   { chave: "cadastro", label: "Cadastro" },
   { chave: "contratos", label: "Contratos" },

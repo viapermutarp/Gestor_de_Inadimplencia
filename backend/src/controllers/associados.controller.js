@@ -40,6 +40,16 @@ function serializeHistorico(historico) {
   };
 }
 
+/**
+ * AJUSTE 19 — campos cadastrais novos (preenchidos só pelo fluxo de
+ * Cadastro/CSV, nunca pelo sync — ver docblock deles em schema.prisma),
+ * incluídos aqui pra ficarem disponíveis em QUALQUER resposta que use
+ * `serializeAssociado` — tanto o detalhe já existente (GET
+ * /api/associados/:cpfCnpj, usado pelo Dashboard) quanto o novo (mesma
+ * rota, agora também acessível pela aba "Associados" — ver
+ * registroAssociados.controller.js) ganham os campos de uma vez só, sem
+ * duplicar serialização.
+ */
 function serializeAssociado(associado) {
   const serialized = {
     id: associado.id,
@@ -58,6 +68,29 @@ function serializeAssociado(associado) {
     ciclo_resetado_em: associado.cicloResetadoEm,
     criado_em: associado.criadoEm,
     atualizado_em: associado.atualizadoEm,
+    // AJUSTE 19 — campos do Cadastro (todos nullable; ver mapearPayloadParaAssociado em cadastros.controller.js).
+    tipo_pessoa: associado.tipoPessoa,
+    razao_social: associado.razaoSocial,
+    nome_fantasia: associado.nomeFantasia,
+    cep: associado.cep,
+    endereco: associado.endereco,
+    numero: associado.numero,
+    complemento: associado.complemento,
+    bairro: associado.bairro,
+    cidade: associado.cidade,
+    uf: associado.uf,
+    contato_nome: associado.contatoNome,
+    celular: associado.celular,
+    email_cadastro: associado.emailCadastro,
+    descricao_servico: associado.descricaoServico,
+    valor_entrada: associado.valorEntrada,
+    data_entrada: associado.dataEntrada,
+    numero_parcelas: associado.numeroParcelas,
+    valor_parcela: associado.valorParcela,
+    valor_total: associado.valorTotal,
+    data_vencimento: associado.dataVencimento,
+    desconto_parcela: associado.descontoParcela,
+    observacoes_cadastro: associado.observacoesCadastro,
   };
 
   if (associado.cobrancas) {
@@ -644,3 +677,8 @@ exports.resetarBloqueios = async (req, res, next) => {
     next(err);
   }
 };
+
+// AJUSTE 19 — exportado pra reaproveitar em registroAssociados.controller.js
+// (listagem/detalhe da aba "Associados" e importação de CSV) sem duplicar
+// a serialização.
+exports.serializeAssociado = serializeAssociado;

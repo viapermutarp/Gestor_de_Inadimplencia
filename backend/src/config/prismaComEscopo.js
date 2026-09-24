@@ -1,4 +1,5 @@
 const prisma = require('./prisma');
+const { apenasDigitos } = require('../lib/cpfCnpj');
 
 /**
  * Multi-franquia — Fase 3 (ver docs/plano-multi-franquia.md, seção 4).
@@ -46,9 +47,13 @@ const prisma = require('./prisma');
  *     os itens, valida numa query só, e rejeita o LOTE INTEIRO (não filtra
  *     item a item) se qualquer um não bater — ver seção 4 do plano pro
  *     porquê de ser tudo-ou-nada.
- *   - upsert: só usado hoje em Associado (sync.controller.js). Como a
- *     chave usada (cpf_cnpj) é única GLOBALMENTE, não por franquia, o
- *     tratamento é: busca se já existe em QUALQUER franquia; se não existe,
+ *   - upsert: usado hoje em Associado por 3 caminhos (sync.controller.js,
+ *     cadastros.controller.js, registroAssociados.controller.js — importação
+ *     de CSV). Como a chave usada (cpf_cnpj) é única GLOBALMENTE, não por
+ *     franquia, o tratamento é: busca se já existe em QUALQUER franquia
+ *     (pela versão só-dígitos de cpf_cnpj — cpfCnpjDigits —, nunca pelo
+ *     valor exato, pra "123.456.789-00" e "12345678900" serem sempre o
+ *     mesmo associado; ver `executarUpsertEscopado` abaixo); se não existe,
  *     segue o branch de "create" (validando/injetando franquiaId); se
  *     existe e é da MESMA franquia, executa só o "update"; se existe e é de
  *     OUTRA franquia, rejeita com um erro claro de conflito (nunca sobrescreve
@@ -203,11 +208,29 @@ async function prepararCreateMany(nomeModel, data, franquiaId, relacao) {
  * upsert: hoje só usado em Associado (cpf_cnpj — único globalmente, não por
  * franquia). Busca se já existe em QUALQUER franquia antes de decidir entre
  * create/update/rejeitar.
+ *
+ * Correção pós-AJUSTE 19: pra Associado, a busca do "já existe" NUNCA
+ * compara `cpf_cnpj` pelo valor exato — compara pela versão só-dígitos
+ * (`cpfCnpjDigits`, ver schema.prisma), calculada aqui a partir do valor
+ * recebido em `args.where.cpfCnpj`. Isso é o que garante que os 3 caminhos
+ * que chamam upsert em Associado (POST /api/sync, POST /api/cadastros,
+ * importação de CSV) reconhecem "123.456.789-00" e "12345678900" como o
+ * MESMO associado, nunca criando duplicata só por diferença de pontuação —
+ * centralizado aqui de propósito, pra nenhum dos 3 controllers precisar
+ * lembrar de normalizar nada por conta própria. Único lugar, além da
+ * própria migração de backfill, que grava `cpfCnpjDigits`.
  */
 async function executarUpsertEscopado({ nomeModel, args, franquiaId, relacao, query }) {
-  const existenteGlobal = await prisma[nomeModel].findFirst({ where: args.where });
+  const ehAssociadoPorCpfCnpj = nomeModel === 'associado' && args.where?.cpfCnpj !== undefined;
+  const digitosCpfCnpj = ehAssociadoPorCpfCnpj ? apenasDigitos(args.where.cpfCnpj) : null;
+  const whereBusca = ehAssociadoPorCpfCnpj ? { cpfCnpjDigits: digitosCpfCnpj } : args.where;
+
+  const existenteGlobal = await prisma[nomeModel].findFirst({ where: whereBusca });
 
   if (!existenteGlobal) {
+    if (digitosCpfCnpj !== null) {
+      args.create.cpfCnpjDigits = digitosCpfCnpj;
+    }
     await prepararCreate(nomeModel, args.create, franquiaId, relacao);
     return query(args);
   }
@@ -223,7 +246,16 @@ async function executarUpsertEscopado({ nomeModel, args, franquiaId, relacao, qu
     );
   }
 
-  return prisma[nomeModel].update({ where: args.where, data: args.update });
+  if (digitosCpfCnpj !== null && args.update && args.update.cpfCnpj !== undefined) {
+    args.update.cpfCnpjDigits = apenasDigitos(args.update.cpfCnpj);
+  }
+
+  // "existenteGlobal.id" (nunca "args.where") — o valor recebido pode ter
+  // vindo num formato diferente do que está gravado (é exatamente o caso
+  // que este ajuste corrige); o "id" da linha achada pela busca por dígitos
+  // sempre identifica o registro certo, tenha vindo no mesmo formato ou não.
+  const whereUpdate = digitosCpfCnpj !== null ? { id: existenteGlobal.id } : args.where;
+  return prisma[nomeModel].update({ where: whereUpdate, data: args.update });
 }
 
 /**

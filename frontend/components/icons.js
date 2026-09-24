@@ -295,3 +295,13 @@ export function IconExpand({ className = "h-5 w-5" }) {
     </svg>
   );
 }
+
+// AJUSTE 19 — usado no botão "Importar CSV" da aba Associados.
+export function IconUpload({ className = "h-5 w-5" }) {
+  return (
+    <svg {...base} className={className}>
+      <path d="M12 15V4M12 4l-4 4M12 4l4 4" />
+      <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+    </svg>
+  );
+}

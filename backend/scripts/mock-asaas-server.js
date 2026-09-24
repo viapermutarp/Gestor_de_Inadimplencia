@@ -289,13 +289,22 @@ async function seedAssociadosLocais() {
   let prisma;
   try {
     prisma = require('../src/config/prisma');
+    // Correção pós-AJUSTE 19: este script usa o client "cru" (sem a
+    // extension de escopo por franquia — ver prismaComEscopo.js), então o
+    // upsert por CPF/CNPJ digit-aware que os 3 caminhos da aplicação ganham
+    // automaticamente precisa ser replicado aqui à mão: "cpf_cnpj_digits" é
+    // NOT NULL/UNIQUE no banco, e os CNPJs fictícios acima vêm pontuados
+    // ("12.345.678/0001-90"), então tanto o "where" quanto o "create"
+    // precisam da versão só-dígitos.
+    const { apenasDigitos } = require('../src/lib/cpfCnpj');
     await Promise.all(
       ASSOCIADOS_LOCAIS.map((a) =>
         prisma.associado.upsert({
-          where: { cpfCnpj: a.cpfCnpj },
+          where: { cpfCnpjDigits: apenasDigitos(a.cpfCnpj) },
           update: { emNegociacao: a.emNegociacao, emJuridico: a.emJuridico, bloqueado: a.bloqueado },
           create: {
             cpfCnpj: a.cpfCnpj,
+            cpfCnpjDigits: apenasDigitos(a.cpfCnpj),
             nome: a.nome,
             telefone: a.telefone,
             emNegociacao: a.emNegociacao,

@@ -12,6 +12,6 @@
  * middleware/exigirSuperAdmin.js), e não depende de usuário/franquia
  * nenhuma.
  */
-const RECURSOS = ['dashboard', 'inadimplencia', 'cadastro', 'contratos', 'juridico', 'configuracoes'];
+const RECURSOS = ['dashboard', 'inadimplencia', 'cadastro', 'contratos', 'juridico', 'configuracoes', 'associados'];
 
 module.exports = { RECURSOS };

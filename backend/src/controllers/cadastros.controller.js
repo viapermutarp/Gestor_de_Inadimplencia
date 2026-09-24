@@ -25,6 +25,91 @@ function campoPreenchido(valor) {
   return typeof valor === 'string' && valor.trim() !== '';
 }
 
+function arredondar2(valor) {
+  return Math.round((valor + Number.EPSILON) * 100) / 100;
+}
+
+function textoOuNull(valor) {
+  if (typeof valor !== 'string') return null;
+  const limpo = valor.trim();
+  return limpo === '' ? null : limpo;
+}
+
+/** "YYYY-MM-DD" (campo <input type="date">) -> Date (meia-noite UTC) | null. Nunca lança — data inválida vira null, sem derrubar o cadastro por causa disso. */
+function dataOuNull(valor) {
+  const limpo = textoOuNull(valor);
+  if (!limpo) return null;
+  const data = new Date(`${limpo}T00:00:00.000Z`);
+  return Number.isNaN(data.getTime()) ? null : data;
+}
+
+/** String decimal (ex.: "1234.56", já em reais — ver centavosParaDecimalString no frontend) -> number | null. */
+function decimalOuNull(valor) {
+  const limpo = textoOuNull(valor);
+  if (limpo === null) return null;
+  const numero = Number(limpo);
+  return Number.isFinite(numero) ? numero : null;
+}
+
+function inteiroOuNull(valor) {
+  const limpo = textoOuNull(valor);
+  if (limpo === null) return null;
+  const numero = parseInt(limpo, 10);
+  return Number.isFinite(numero) ? numero : null;
+}
+
+/**
+ * AJUSTE 19 — mapeia o payload de POST /api/cadastros (chaves em português,
+ * mesmo formato já enviado ao n8n) para as colunas novas do model
+ * `Associado` (ver docblock delas em schema.prisma). Todo campo aqui é
+ * exclusivo do Cadastro — nunca escrito por POST /api/sync nem pelo
+ * webhook/backfill de pagamentos_asaas (ver mesmo docblock).
+ *
+ * "valorParcela" não vem no payload (é só preview calculado no frontend,
+ * nunca enviado — ver comentário em app/cadastro/page.js) — recalculado
+ * aqui com a MESMA fórmula já usada de verdade em
+ * contratosGeracao.service.js ({{Valor da Parcela}}): (valorTotal -
+ * valorEntrada) / numeroParcelas, só quando numeroParcelas > 1 e valorTotal
+ * está preenchido (com 1 parcela só, "a parcela" é o valor total inteiro —
+ * mesma regra de negócio do preview do formulário, não faz sentido gravar
+ * um valor "de parcela" separado nesse caso).
+ */
+function mapearPayloadParaAssociado(payload) {
+  const valorEntrada = decimalOuNull(payload['Valor da Entrada']);
+  const valorTotal = decimalOuNull(payload['Valor Total']);
+  const numeroParcelas = inteiroOuNull(payload['Número de Parcelas']);
+
+  let valorParcela = null;
+  if (valorTotal !== null && numeroParcelas && numeroParcelas > 1) {
+    valorParcela = arredondar2((valorTotal - (valorEntrada ?? 0)) / numeroParcelas);
+  }
+
+  return {
+    tipoPessoa: textoOuNull(payload['Tipo de Pessoa']),
+    razaoSocial: textoOuNull(payload['Razão Social']),
+    nomeFantasia: textoOuNull(payload['Nome Fantasia']),
+    cep: textoOuNull(payload['CEP']),
+    endereco: textoOuNull(payload['Endereço']),
+    numero: textoOuNull(payload['Número']),
+    complemento: textoOuNull(payload['Complemento']),
+    bairro: textoOuNull(payload['Bairro']),
+    cidade: textoOuNull(payload['Cidade']),
+    uf: textoOuNull(payload['UF']),
+    contatoNome: textoOuNull(payload['Contato']),
+    celular: textoOuNull(payload['Celular']),
+    emailCadastro: textoOuNull(payload['E-mail']),
+    descricaoServico: textoOuNull(payload['Descrição do Serviço']),
+    valorEntrada,
+    dataEntrada: dataOuNull(payload['Data da Entrada']),
+    numeroParcelas,
+    valorParcela,
+    valorTotal,
+    dataVencimento: dataOuNull(payload['Data Vencimento']),
+    descontoParcela: decimalOuNull(payload['Desconto Parcela']),
+    observacoesCadastro: textoOuNull(payload['Observações']),
+  };
+}
+
 /**
  * Valida os campos obrigatórios do payload de POST /api/cadastros:
  * "CNPJ/CPF", ("Razão Social" OU "Contato"), "Descrição do Serviço" e
@@ -189,6 +274,32 @@ function serializeCadastro(cadastro) {
  *      registro (nome_pasta, modelos_contrato_ids). O resultado
  *      (pasta_drive_id, arquivos_gerados) é preenchido de forma
  *      assíncrona — consulte GET /api/cadastros depois pra ver o status.
+ *
+ *   6. AJUSTE 19 — além de salvar em "cadastros_enviados", faz upsert do
+ *      `Associado` correspondente (chave: "CNPJ/CPF" do payload), SEMPRE,
+ *      **antes** de disparar o webhook do n8n — decisão explícita do
+ *      brief: "persistir local primeiro, sempre; o disparo externo pode
+ *      falhar e ser reenviado depois, mas o registro no sistema não
+ *      deveria depender disso". O upsert do associado e a criação do
+ *      "cadastroEnviado" rodam na MESMA transação (`req.prisma.$transaction`,
+ *      forma callback — mesmo padrão de associados.controller.js, exigido
+ *      pela extension de isolamento por franquia); se qualquer um dos dois
+ *      falhar, nenhum dos dois é salvo. Só depois dessa transação confirmada
+ *      é que `enviarParaN8n` é chamado — uma falha ali (rede, timeout, n8n
+ *      fora do ar) não desfaz nem impede o registro local, só marca o
+ *      "cadastroEnviado" como "erro" (ver passo 4 acima, inalterado).
+ *
+ *      Ver `mapearPayloadParaAssociado` pro mapeamento campo a campo. Em
+ *      um UPDATE (associado já existia — por exemplo, criado antes por
+ *      POST /api/sync), "nome"/"telefone"/"email" (campos legados) NÃO são
+ *      tocados — continuam sendo escritos só pelo sync (ver docblock do
+ *      model em schema.prisma). Em um CREATE (associado ainda não
+ *      existia), como "nome"/"telefone" são NOT NULL no schema, usa
+ *      fallback: nome = Razão Social || Nome Fantasia || Contato (uma
+ *      dessas sempre vem preenchida, `validarPayload` garante Razão Social
+ *      OU Contato); telefone = Celular (pode ficar como string vazia se o
+ *      formulário não trouxer Celular — o valor real chega depois, na
+ *      primeira vez que o sync do Asaas tocar esse associado).
  */
 exports.criar = async (req, res, next) => {
   try {
@@ -229,16 +340,32 @@ exports.criar = async (req, res, next) => {
       }
     }
 
+    const cpfCnpj = payload['CNPJ/CPF'].trim();
+    const camposAssociado = mapearPayloadParaAssociado(payload);
+    const nomeFallback =
+      textoOuNull(payload['Razão Social']) || textoOuNull(payload['Nome Fantasia']) || textoOuNull(payload['Contato']) || cpfCnpj;
+    const telefoneFallback = textoOuNull(payload['Celular']) || '';
+
     // Multi-franquia — Fase 3: "franquiaId" injetado automaticamente pela
     // extension (ver prismaComEscopo.js) — não precisa mais resolver via
     // franquiaPadrao.service.js aqui.
-    let cadastro = await req.prisma.cadastroEnviado.create({
-      data: {
-        payload,
-        status: 'enviado',
-        nomePasta: typeof nomePasta === 'string' && nomePasta.trim() !== '' ? nomePasta.trim() : null,
-        modelosContratoIds: modelosIds,
-      },
+    let { cadastro } = await req.prisma.$transaction(async (tx) => {
+      await tx.associado.upsert({
+        where: { cpfCnpj },
+        create: { cpfCnpj, nome: nomeFallback, telefone: telefoneFallback, ...camposAssociado },
+        update: camposAssociado,
+      });
+
+      const cadastro = await tx.cadastroEnviado.create({
+        data: {
+          payload,
+          status: 'enviado',
+          nomePasta: typeof nomePasta === 'string' && nomePasta.trim() !== '' ? nomePasta.trim() : null,
+          modelosContratoIds: modelosIds,
+        },
+      });
+
+      return { cadastro };
     });
 
     const franquiaId = await resolverFranquiaIdOuPadrao(req);

@@ -11,9 +11,12 @@ import FranquiaSelector from "@/components/FranquiaSelector";
 // "recurso": chave de RECURSOS (ver backend/src/config/recursos.js) — cada
 // link só aparece se `temRecurso(recurso)` for true pra sessão atual (ver
 // abaixo). Jurídico entra entre Taxa de Inadimplência e Cadastro, exatamente
-// como pedido no escopo.
+// como pedido no escopo. AJUSTE 19 — "Associados" entra logo depois de
+// "Dashboard" (posição pedida no brief); recurso próprio ("associados"),
+// não reaproveita "dashboard" — ver exigirRecurso.js.
 const NAV_LINKS = [
   { href: "/dashboard", label: "Dashboard", recurso: "dashboard" },
+  { href: "/associados", label: "Associados", recurso: "associados" },
   { href: "/inadimplencia", label: "Taxa de Inadimplência %", recurso: "inadimplencia" },
   { href: "/juridico", label: "Jurídico", recurso: "juridico" },
   { href: "/cadastro", label: "Cadastro", recurso: "cadastro" },

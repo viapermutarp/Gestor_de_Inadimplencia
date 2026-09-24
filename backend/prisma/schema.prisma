@@ -100,6 +100,18 @@ model Associado {
   franquiaId             String    @map("franquia_id")
   franquia               Franquia  @relation(fields: [franquiaId], references: [id])
   cpfCnpj                String    @unique @map("cpf_cnpj")
+  /// Correção pós-AJUSTE 19 — versão só-dígitos de "cpf_cnpj", mantida em
+  /// sincronia PELA APLICAÇÃO a cada escrita (extension de escopo por
+  /// franquia, ver executarUpsertEscopado em prismaComEscopo.js — nunca por
+  /// trigger/generated column do banco). É a chave de fato usada em TODA
+  /// busca/comparação de cpf_cnpj nos 3 caminhos que escrevem esse campo
+  /// (POST /api/sync, POST /api/cadastros, importação de CSV), pra que
+  /// "123.456.789-00" e "12345678900" sejam sempre reconhecidos como o
+  /// MESMO associado — nunca criado como duplicata só por causa da
+  /// pontuação. "cpf_cnpj" acima continua guardando o valor original,
+  /// verbatim, exatamente como sempre guardou — nunca reformatado, nunca
+  /// usado sozinho pra decidir se um associado já existe.
+  cpfCnpjDigits          String    @unique @map("cpf_cnpj_digits")
   nome                   String
   // Nome exatamente como cadastrado no Asaas (verbatim, sem parsing/tratamento),
   // incluindo o prefixo numérico que o Asaas usa (ex: "45.493.621 ERICA DA COSTA ROSA").
@@ -118,12 +130,49 @@ model Associado {
   criadoEm               DateTime  @default(now()) @map("criado_em")
   atualizadoEm           DateTime  @updatedAt @map("atualizado_em")
 
+  // AJUSTE 19 — "Nova aba 'Associados' + Cadastro passa a abastecer o
+  // registro do associado". Todos os campos abaixo são preenchidos
+  // exclusivamente pelo fluxo de Cadastro (POST /api/cadastros) — NUNCA
+  // pelo sync do Asaas (POST /api/sync) nem pelo webhook/backfill de
+  // pagamentos_asaas — para não haver conflito de quem escreve o quê:
+  // "nome"/"telefone"/"email" acima continuam sendo escritos só pelo sync
+  // (ver AJUSTE 9), e não são tocados por este ajuste. Todos nullable —
+  // um associado que nunca passou pelo Cadastro (só existe via sync, ou
+  // via import de CSV parcial) simplesmente não tem esses valores.
+  //
+  // Nomes de campo pensados pra ficar ESTÁVEIS — a ideia documentada no
+  // brief é que, no futuro, um sistema externo passe a ler esses dados via
+  // API; evitar renomear sem necessidade (ver README, seção "AJUSTE 19").
+  tipoPessoa          String?   @map("tipo_pessoa") // "PF" | "PJ"
+  razaoSocial         String?   @map("razao_social")
+  nomeFantasia        String?   @map("nome_fantasia")
+  cep                 String?
+  endereco            String?
+  numero              String?
+  complemento         String?
+  bairro              String?
+  cidade              String?
+  uf                  String?
+  contatoNome         String?   @map("contato_nome")
+  celular             String?
+  emailCadastro       String?   @map("email_cadastro")
+  descricaoServico    String?   @map("descricao_servico")
+  valorEntrada        Decimal?  @db.Decimal(12, 2) @map("valor_entrada")
+  dataEntrada         DateTime? @db.Date @map("data_entrada")
+  numeroParcelas      Int?      @map("numero_parcelas")
+  valorParcela        Decimal?  @db.Decimal(12, 2) @map("valor_parcela")
+  valorTotal          Decimal?  @db.Decimal(12, 2) @map("valor_total")
+  dataVencimento      DateTime? @db.Date @map("data_vencimento")
+  descontoParcela     Decimal?  @db.Decimal(12, 2) @map("desconto_parcela")
+  observacoesCadastro String?   @map("observacoes_cadastro")
+
   cobrancas       Cobranca[]
   historicoStatus HistoricoStatusAssociado[]
   cardsJuridico   CardJuridico[]
 
   @@index([cpfCnpj])
   @@index([franquiaId])
+  @@index([emailCadastro])
   @@map("associados")
 }
 

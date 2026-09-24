@@ -248,6 +248,56 @@ export function resetarBloqueios(cpfCnpj) {
 }
 
 /**
+ * AJUSTE 19 — aba "Associados".
+ *
+ * GET /api/associados/registro — resposta paginada: { dados: [...], paginacao: {...} }.
+ * Listagem enxuta da carteira cadastral (não filtra por cobrança em aberto,
+ * diferente de getAssociados acima). "busca" pesquisa por nome, cpf_cnpj ou
+ * e-mail (ver docblock do controller).
+ */
+export function getAssociadosRegistro({ busca, page, limit } = {}) {
+  const params = new URLSearchParams();
+  if (busca) params.set("busca", busca);
+  if (page !== undefined) params.set("page", String(page));
+  if (limit !== undefined) params.set("limit", String(limit));
+
+  const query = params.toString();
+  return request(`/api/associados/registro${query ? `?${query}` : ""}`);
+}
+
+/**
+ * POST /api/associados/importar — multipart/form-data, campo "arquivo"
+ * (CSV, exportação de contatos do Bling). Só leitura no backend: devolve
+ * { total_linhas, delimitador_detectado, novos, conflitos, erros } pro
+ * frontend guardar em memória e decidir o que fazer em cada conflito antes
+ * de chamar `aplicarImportacaoAssociados`. Não usa `request()` pelo mesmo
+ * motivo de `uploadDocumentoJuridico` — precisa mandar FormData, não JSON.
+ */
+export async function previewImportacaoAssociados(arquivo) {
+  const formData = new FormData();
+  formData.append("arquivo", arquivo);
+  const res = await requestBinario("/api/associados/importar", {
+    method: "POST",
+    body: formData,
+  });
+  return res.json();
+}
+
+/**
+ * POST /api/associados/importar/aplicar — body { novos, decisoes }, onde
+ * "novos" é o array devolvido por `previewImportacaoAssociados` (sempre
+ * criado, sem precisar de decisão por linha) e "decisoes" é o array de
+ * "conflitos" com um campo "acao" ("atualizar" | "pular") adicionado em
+ * cada item pelo usuário. Resposta: { criados, atualizados, pulados, erros }.
+ */
+export function aplicarImportacaoAssociados({ novos, decisoes }) {
+  return request("/api/associados/importar/aplicar", {
+    method: "POST",
+    body: { novos, decisoes },
+  });
+}
+
+/**
  * GET /api/config/api-keys — lista todas as API keys cadastradas (ativas e
  * revogadas), mais recentes primeiro, sempre mascaradas. Cada item:
  * { id, nome, chave_mascarada, criada_em, ultimo_uso_em, ativa }.

@@ -77,9 +77,9 @@ export function isSuperAdmin() {
 
 /**
  * Restrição de telas por franquia (ver escopo do pedido, item 2). Chaves
- * válidas: "dashboard" | "inadimplencia" | "cadastro" | "contratos" |
- * "juridico" | "configuracoes" (mesmas de RECURSOS no backend, ver
- * src/config/recursos.js). `temRecurso` é usado tanto pelo AppHeader (só
+ * válidas: "dashboard" | "associados" | "inadimplencia" | "cadastro" |
+ * "contratos" | "juridico" | "configuracoes" (mesmas de RECURSOS no
+ * backend, ver src/config/recursos.js). `temRecurso` é usado tanto pelo AppHeader (só
  * mostra o link de tela liberada) quanto por RequireRecurso.js (bloqueia
  * acesso direto pela URL) — SUPER_ADMIN sempre "tem" qualquer recurso,
  * nunca lê o claim "recursosPermitidos" (que nem existe no token dele, ver
@@ -110,6 +110,7 @@ export function temRecurso(chave) {
  */
 const ORDEM_PRIORIDADE_ROTAS = [
   { recurso: "dashboard", rota: "/dashboard" },
+  { recurso: "associados", rota: "/associados" },
   { recurso: "inadimplencia", rota: "/inadimplencia" },
   { recurso: "juridico", rota: "/juridico" },
   { recurso: "cadastro", rota: "/cadastro" },

@@ -3,6 +3,7 @@ const auth = require('../middleware/auth');
 const escopoFranquia = require('../middleware/escopoFranquia');
 const exigirRecurso = require('../middleware/exigirRecurso');
 const ctrl = require('../controllers/associados.controller');
+const registroCtrl = require('../controllers/registroAssociados.controller');
 
 const router = Router();
 
@@ -12,9 +13,29 @@ const router = Router();
 // ver juridico.routes.js).
 const dashboard = exigirRecurso('dashboard');
 
+// AJUSTE 19 — aba nova "Associados": recurso próprio, não reaproveita
+// "dashboard". Rotas literais (registro/importar/importar/aplicar) IGUAIS
+// aqui, ANTES de "/associados/:cpfCnpj" — Express casa a primeira rota que
+// bater, e ":cpfCnpj" (parâmetro) casaria com "registro"/"importar" também
+// se viesse antes.
+const associados = exigirRecurso('associados');
+
 router.get('/associados', auth, dashboard, escopoFranquia, ctrl.listar);
 router.get('/associados/resumo', auth, dashboard, escopoFranquia, ctrl.resumo);
-router.get('/associados/:cpfCnpj', auth, dashboard, escopoFranquia, ctrl.detalhar);
+router.get('/associados/registro', auth, associados, escopoFranquia, registroCtrl.listar);
+router.post(
+  '/associados/importar',
+  auth,
+  associados,
+  escopoFranquia,
+  registroCtrl.uploadMiddleware,
+  registroCtrl.importarPreview
+);
+router.post('/associados/importar/aplicar', auth, associados, escopoFranquia, registroCtrl.importarAplicar);
+// Detalhe completo do associado — usado tanto pelo Dashboard quanto pela
+// aba nova Associados (ver docblock de exigirRecurso.js): libera se o
+// usuário tiver QUALQUER UMA das duas telas.
+router.get('/associados/:cpfCnpj', auth, exigirRecurso(['dashboard', 'associados']), escopoFranquia, ctrl.detalhar);
 router.patch('/associados/:cpfCnpj/negociacao', auth, dashboard, escopoFranquia, ctrl.atualizarNegociacao);
 router.patch('/associados/:cpfCnpj/bloqueio', auth, dashboard, escopoFranquia, ctrl.atualizarBloqueio);
 router.patch('/associados/:cpfCnpj/juridico', auth, dashboard, escopoFranquia, ctrl.atualizarJuridico);

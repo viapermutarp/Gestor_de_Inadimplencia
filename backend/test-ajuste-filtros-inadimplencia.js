@@ -41,6 +41,10 @@
  */
 const { execSync, spawn } = require('child_process');
 const crypto = require('crypto');
+// Correção pós-AJUSTE 19: "db.associado.create" abaixo usa o PrismaClient
+// cru (sem a extension de escopo por franquia), e "cpf_cnpj_digits" agora é
+// NOT NULL/UNIQUE no banco — precisa ser informado à mão (ver prismaComEscopo.js).
+const { apenasDigitos } = require('./src/lib/cpfCnpj');
 
 const BACKEND_DIR = __dirname;
 const APP_PORT = 3091;
@@ -242,6 +246,7 @@ async function main() {
         data: {
           franquiaId: franquia.id,
           cpfCnpj: cliente.cpfCnpj,
+          cpfCnpjDigits: apenasDigitos(cliente.cpfCnpj),
           nome: cliente.name,
           telefone: '00000000000',
           emJuridico: customerId === 'cus_c',

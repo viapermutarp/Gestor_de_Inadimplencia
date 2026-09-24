@@ -1,5 +1,6 @@
 const { buscarClientePorCpfCnpj } = require('../services/asaas.service');
 const { buscarCobrancasPresas, aplicarQuitacao } = require('../services/cobrancasPresas.service');
+const { apenasDigitos } = require('../lib/cpfCnpj');
 
 const STATUS_VALIDOS = ['pending', 'overdue', 'paid'];
 
@@ -181,7 +182,15 @@ exports.sync = async (req, res, next) => {
         continue;
       }
 
-      const existente = await req.prisma.associado.findUnique({ where: { cpfCnpj } });
+      // Correção pós-AJUSTE 19: busca pela versão só-dígitos, não pelo
+      // valor exato de "cpfCnpj" — o Asaas já manda o CPF/CNPJ sempre no
+      // mesmo formato, mas esta checagem existe só pra contar
+      // criados/atualizados (estatística do sync_log), então usa a mesma
+      // normalização do resto do sistema por consistência, mesmo que o
+      // risco prático de formato divergente seja baixo aqui.
+      const existente = await req.prisma.associado.findFirst({
+        where: { cpfCnpjDigits: apenasDigitos(cpfCnpj) },
+      });
 
       // Multi-franquia — Fase 3: "franquiaId" não é mais resolvido aqui —
       // o "create" da extension injeta automaticamente a franquia da
@@ -189,7 +198,9 @@ exports.sync = async (req, res, next) => {
       // existir em OUTRA franquia (cpf_cnpj é único globalmente, não por
       // franquia — ver schema.prisma), a extension rejeita com um erro
       // claro de conflito em vez de sobrescrever o registro de outra
-      // franquia ou criar duplicata.
+      // franquia ou criar duplicata. A comparação em si (inclusive entre
+      // franquias) é feita pela versão só-dígitos — ver
+      // executarUpsertEscopado em prismaComEscopo.js.
       const associado = await req.prisma.associado.upsert({
         where: { cpfCnpj },
         update: { nome, telefone, email: email ?? null },
@@ -215,8 +226,13 @@ exports.sync = async (req, res, next) => {
         try {
           const nomeAsaas = await buscarClientePorCpfCnpj(cpfCnpj, req.franquiaId);
           if (nomeAsaas) {
+            // "associado.id" (não "cpfCnpj" — o valor local do loop) —
+            // depois da correção pós-AJUSTE 19, o registro gravado pode ter
+            // um "cpf_cnpj" num formato diferente do que veio neste payload
+            // (mesmo dígitos, pontuação diferente); "id" sempre identifica
+            // a linha certa, independente disso.
             await req.prisma.associado.update({
-              where: { cpfCnpj },
+              where: { id: associado.id },
               data: { nomeAsaas },
             });
           }
