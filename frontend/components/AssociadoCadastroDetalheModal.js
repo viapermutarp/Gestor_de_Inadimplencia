@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getAssociadoDetalhe, ApiError } from "@/lib/api";
+import { getAssociadoDetalhe, excluirCadastroAssociado, ApiError } from "@/lib/api";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
 import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
@@ -13,8 +13,15 @@ import { IconClose } from "@/components/icons";
  * associados.routes.js — aceita tanto o recurso "dashboard" quanto
  * "associados"), mas mostra um recorte DIFERENTE: aqui o foco é o cadastro
  * (todos os campos do item 1 do brief) — sem os controles de negociação/
- * bloqueio/reset, que continuam exclusivos do Dashboard. Puramente somente
- * leitura: nenhuma ação de escrita aqui.
+ * bloqueio/reset, que continuam exclusivos do Dashboard.
+ *
+ * AJUSTE 20 — ganhou a ÚNICA ação de escrita deste modal: "Excluir
+ * cadastro" (botão no rodapé). Confirmação simples (`window.confirm`, mesmo
+ * padrão já usado pra excluir documento jurídico — não o padrão "digite o
+ * nome" da franquia, essa ação é bem menos destrutiva). Ao confirmar, chama
+ * `onCadastroExcluido` (o pai fecha o modal e recarrega a lista — o
+ * associado some da aba, ver `filtroTemCadastro` no backend, mas continua
+ * existindo pro Dashboard/Jurídico/Taxa de Inadimplência).
  */
 function Campo({ label, valor }) {
   return (
@@ -25,10 +32,30 @@ function Campo({ label, valor }) {
   );
 }
 
-export default function AssociadoCadastroDetalheModal({ cpfCnpj, onClose }) {
+export default function AssociadoCadastroDetalheModal({ cpfCnpj, onClose, onCadastroExcluido }) {
   const [associado, setAssociado] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [excluindo, setExcluindo] = useState(false);
+
+  async function handleExcluirCadastro() {
+    if (excluindo) return;
+    const confirmado = window.confirm(
+      "Isso vai apagar os dados de cadastro deste associado — endereço, contato e faturamento. " +
+        "O associado continua no sistema, só esses dados somem. Confirmar?"
+    );
+    if (!confirmado) return;
+
+    setExcluindo(true);
+    setError("");
+    try {
+      await excluirCadastroAssociado(cpfCnpj);
+      onCadastroExcluido?.();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Erro ao excluir cadastro.");
+      setExcluindo(false);
+    }
+  }
 
   useEffect(() => {
     let ativo = true;
@@ -189,6 +216,19 @@ export default function AssociadoCadastroDetalheModal({ cpfCnpj, onClose }) {
             </>
           ) : null}
         </div>
+
+        {associado && (
+          <div className="sticky bottom-0 z-10 flex justify-end border-t border-border-soft bg-surface/95 px-6 py-4 backdrop-blur">
+            <button
+              type="button"
+              onClick={handleExcluirCadastro}
+              disabled={excluindo}
+              className="rounded-xl border border-status-red/40 bg-status-red/10 px-3.5 py-2 text-sm font-medium text-status-red transition-colors hover:bg-status-red/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {excluindo ? "Excluindo..." : "Excluir cadastro"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

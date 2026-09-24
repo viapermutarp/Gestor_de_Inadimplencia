@@ -14,10 +14,59 @@ const { apenasDigitos } = require('../lib/cpfCnpj');
  * O detalhe (GET /api/associados/:cpfCnpj) É REAPROVEITADO de
  * associados.controller.js sem nenhuma duplicação — ver associados.routes.js
  * (a mesma rota agora aceita tanto o recurso `dashboard` quanto `associados`).
+ *
+ * AJUSTE 20 — "Excluir cadastro (individual e em massa)": `excluirCadastro`/
+ * `excluirCadastroLote`, mais o filtro novo em `listar` (ver
+ * `CAMPOS_CADASTRO`/`filtroTemCadastro` logo abaixo).
  */
 
 const LIMITE_PADRAO = 100;
 const LIMITE_MAXIMO = 100;
+
+// AJUSTE 20 — os 22 campos do AJUSTE 19 (identificação, endereço, contato,
+// faturamento — ver docblock deles em schema.prisma), num lugar só, pra
+// nunca esquecer um campo em algum dos 3 usos abaixo:
+//   1. `filtroTemCadastro` — "tem cadastro" = pelo menos um destes != null
+//      (usado por `listar` — ver AJUSTE 20 no README pro raciocínio de por
+//      que isso precisou virar um filtro explícito).
+//   2. `dadosCadastroNulo()` — objeto { campo: null, ... } usado por
+//      `excluirCadastro`/`excluirCadastroLote` pra limpar todos de uma vez.
+// NUNCA inclui "cpfCnpj"/"cpfCnpjDigits"/"nome"/"telefone"/"email" (legados,
+// nunca tocados por "excluir cadastro") nem "criadoEm"/"atualizadoEm".
+const CAMPOS_CADASTRO = [
+  'tipoPessoa',
+  'razaoSocial',
+  'nomeFantasia',
+  'cep',
+  'endereco',
+  'numero',
+  'complemento',
+  'bairro',
+  'cidade',
+  'uf',
+  'contatoNome',
+  'celular',
+  'emailCadastro',
+  'descricaoServico',
+  'valorEntrada',
+  'dataEntrada',
+  'numeroParcelas',
+  'valorParcela',
+  'valorTotal',
+  'dataVencimento',
+  'descontoParcela',
+  'observacoesCadastro',
+];
+
+/** { tipoPessoa: null, razaoSocial: null, ... } — sempre um objeto NOVO (nunca reaproveitado entre chamadas). */
+function dadosCadastroNulo() {
+  return Object.fromEntries(CAMPOS_CADASTRO.map((campo) => [campo, null]));
+}
+
+/** Filtro Prisma: "tem pelo menos um campo de cadastro preenchido" (OR). */
+function filtroTemCadastro() {
+  return { OR: CAMPOS_CADASTRO.map((campo) => ({ [campo]: { not: null } })) };
+}
 
 // multer com memoryStorage (mesmo padrão de juridicoDocumentos.controller.js)
 // — o CSV nunca é escrito em disco, só processado em memória. Limite de 10MB
@@ -59,6 +108,16 @@ exports.uploadMiddleware = uploadMiddleware;
  * e-mail (tanto o "email" legado quanto o novo "email_cadastro" — contains,
  * case-insensitive). Ordenado por nome (A-Z). Paginado (mesmo padrão do
  * resto do projeto: "page" padrão 1, "limit" padrão 100, máximo 100).
+ *
+ * AJUSTE 20 — só lista associado que TEM cadastro (pelo menos um dos 22
+ * campos do AJUSTE 19 preenchido, ver `filtroTemCadastro`). Investigado na
+ * introdução do "excluir cadastro": antes deste ajuste, `listar` não tinha
+ * NENHUM filtro por cadastro — mostrava toda a carteira da franquia,
+ * inclusive associado que nunca passou por Cadastro/importação (só existe
+ * via sync do Asaas). Sem este filtro explícito, "excluir cadastro"
+ * limparia os campos mas o associado continuaria aparecendo na aba — o
+ * comportamento esperado é justamente o contrário (a aba existe pra mostrar
+ * quem TEM dado de cadastro).
  */
 exports.listar = async (req, res, next) => {
   try {
@@ -72,7 +131,7 @@ exports.listar = async (req, res, next) => {
     if (!Number.isInteger(limit) || limit < 1) limit = LIMITE_PADRAO;
     if (limit > LIMITE_MAXIMO) limit = LIMITE_MAXIMO;
 
-    const where =
+    const filtroBusca =
       termoBusca !== ''
         ? {
             OR: [
@@ -84,7 +143,9 @@ exports.listar = async (req, res, next) => {
               { emailCadastro: { contains: termoBusca, mode: 'insensitive' } },
             ],
           }
-        : {};
+        : null;
+
+    const where = { AND: [filtroTemCadastro(), ...(filtroBusca ? [filtroBusca] : [])] };
 
     const totalRegistros = await req.prisma.associado.count({ where });
     const totalPaginas = Math.max(Math.ceil(totalRegistros / limit), 1);
@@ -525,6 +586,91 @@ exports.importarAplicar = async (req, res, next) => {
     }
 
     res.json({ criados, atualizados, pulados, erros });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------
+// AJUSTE 20 — Excluir cadastro (individual e em massa)
+// ---------------------------------------------------------------------
+
+/**
+ * DELETE /api/associados/:cpfCnpj/cadastro
+ *
+ * Limpa (seta como `null`) só os 22 campos de cadastro do AJUSTE 19 (ver
+ * `CAMPOS_CADASTRO` acima) — NUNCA os campos legados (`nome`, `telefone`,
+ * `email`, `em_negociacao`, `bloqueado`, `em_juridico` etc.) nem nenhuma
+ * outra tabela. O associado continua existindo normalmente pro
+ * Dashboard/Jurídico/Taxa de Inadimplência; só some da listagem desta aba
+ * (`GET /associados/registro`, ver `filtroTemCadastro` acima), porque essa
+ * aba é justamente "quem tem dado de cadastro".
+ *
+ * `req.prisma.associado.update` já é escopado por franquia pela extension
+ * (`prismaComEscopo.js` — `garantirRegistroDaFranquia` antes do update, lança
+ * P2025/404 se o CPF/CNPJ não existir NESTA franquia), mesmo padrão já usado
+ * por `atualizarBloqueio`/`resetarBloqueios` em associados.controller.js —
+ * não precisa (nem deveria) filtrar franquia manualmente aqui.
+ */
+exports.excluirCadastro = async (req, res, next) => {
+  try {
+    const { cpfCnpj } = req.params;
+
+    const associado = await req.prisma.associado.findUnique({ where: { cpfCnpj } });
+    if (!associado) {
+      return res.status(404).json({ error: 'Associado não encontrado.' });
+    }
+
+    await req.prisma.associado.update({ where: { cpfCnpj }, data: dadosCadastroNulo() });
+
+    res.json({ cpf_cnpj: cpfCnpj, cadastro_excluido: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/associados/cadastro/excluir-lote
+ * Body: { "cpf_cnpjs": ["...", "..."] }
+ *
+ * Mesma limpeza de `excluirCadastro`, aplicada a cada CPF/CNPJ da lista.
+ * Cada item é processado de forma independente (mesmo padrão de
+ * `importarAplicar`) — um CPF/CNPJ que não existe (ou não pertence a esta
+ * franquia — `findUnique` escopado devolve `null` do mesmo jeito) não
+ * derruba o resto do lote, só entra em "nao_encontrados". Um associado que
+ * já está sem cadastro (todos os 22 campos já `null`) é achado normalmente e
+ * contado em "excluidos" — limpar `null` pra `null` de novo é inofensivo
+ * (idempotente), não é tratado como erro.
+ */
+exports.excluirCadastroLote = async (req, res, next) => {
+  try {
+    const { cpf_cnpjs: cpfCnpjs } = req.body || {};
+    const lista = Array.isArray(cpfCnpjs)
+      ? [...new Set(cpfCnpjs.filter((v) => typeof v === 'string' && v.trim() !== '').map((v) => v.trim()))]
+      : [];
+
+    if (lista.length === 0) {
+      return res.status(400).json({ error: '"cpf_cnpjs" deve ser uma lista não vazia de CPF/CNPJ.' });
+    }
+
+    let excluidos = 0;
+    const naoEncontrados = [];
+
+    for (const cpfCnpj of lista) {
+      const associado = await req.prisma.associado.findUnique({ where: { cpfCnpj } });
+      if (!associado) {
+        naoEncontrados.push(cpfCnpj);
+        continue;
+      }
+      await req.prisma.associado.update({ where: { cpfCnpj }, data: dadosCadastroNulo() });
+      excluidos += 1;
+    }
+
+    res.json({
+      total_solicitados: lista.length,
+      excluidos,
+      nao_encontrados: naoEncontrados,
+    });
   } catch (err) {
     next(err);
   }

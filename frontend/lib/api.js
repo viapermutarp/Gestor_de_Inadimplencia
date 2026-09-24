@@ -298,6 +298,34 @@ export function aplicarImportacaoAssociados({ novos, decisoes }) {
 }
 
 /**
+ * AJUSTE 20 — "Excluir cadastro" (individual e em massa) na aba
+ * "Associados". Limpa só os 22 campos de cadastro do AJUSTE 19 — o
+ * associado continua existindo (Dashboard/Jurídico/Taxa de Inadimplência),
+ * só some desta aba (ver docblock de `listar`/`filtroTemCadastro` no
+ * backend).
+ *
+ * DELETE /api/associados/:cpf_cnpj/cadastro — individual. Resposta:
+ * { cpf_cnpj, cadastro_excluido: true }.
+ */
+export function excluirCadastroAssociado(cpfCnpj) {
+  return request(`/api/associados/${encodeURIComponent(cpfCnpj)}/cadastro`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * POST /api/associados/cadastro/excluir-lote — body { cpf_cnpjs: [...] }.
+ * Cada CPF/CNPJ é processado de forma independente (um que não existe não
+ * derruba o resto). Resposta: { total_solicitados, excluidos, nao_encontrados }.
+ */
+export function excluirCadastroAssociadosLote(cpfCnpjs) {
+  return request("/api/associados/cadastro/excluir-lote", {
+    method: "POST",
+    body: { cpf_cnpjs: cpfCnpjs },
+  });
+}
+
+/**
  * GET /api/config/api-keys — lista todas as API keys cadastradas (ativas e
  * revogadas), mais recentes primeiro, sempre mascaradas. Cada item:
  * { id, nome, chave_mascarada, criada_em, ultimo_uso_em, ativa }.

@@ -320,7 +320,13 @@ async function main() {
     const buscaPorEmail = await get('/associados/registro?busca=cadastro-novo%40example.com', tokenSoAssociados);
     assert(buscaPorEmail.corpo?.dados?.some((a) => a.cpf_cnpj === '99988877766'), 'busca por emailCadastro funciona');
 
-    await db.associado.create({ data: { franquiaId: franquiaB.id, cpfCnpj: '10203040506', cpfCnpjDigits: apenasDigitos('10203040506'), nome: 'Associado Franquia B Isolado', telefone: '11911112222' } });
+    // AJUSTE 20 — "razaoSocial" preenchida de propósito: desde o filtro novo
+    // de "tem cadastro" em GET /associados/registro (ver
+    // filtroTemCadastro em registroAssociados.controller.js), um associado
+    // sem NENHUM campo de cadastro não apareceria nesta listagem pra
+    // ninguém — o que quebraria este teste de isolamento por franquia, que
+    // não tem relação nenhuma com o AJUSTE 20.
+    await db.associado.create({ data: { franquiaId: franquiaB.id, cpfCnpj: '10203040506', cpfCnpjDigits: apenasDigitos('10203040506'), nome: 'Associado Franquia B Isolado', telefone: '11911112222', razaoSocial: 'Associado Franquia B Isolado' } });
     const listaFranquiaA = await get('/associados/registro?limit=100', tokenSoAssociados);
     assert(!listaFranquiaA.corpo?.dados?.some((a) => a.cpf_cnpj === '10203040506'), 'listagem da franquia A NÃO vê associado da franquia B');
     const listaFranquiaB = await get('/associados/registro?limit=100', tokenFranquiaB);
