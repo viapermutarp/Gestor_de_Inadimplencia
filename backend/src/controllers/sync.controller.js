@@ -1,6 +1,16 @@
 const { buscarClientePorCpfCnpj } = require('../services/asaas.service');
+const { buscarCobrancasPresas, aplicarQuitacao } = require('../services/cobrancasPresas.service');
 
 const STATUS_VALIDOS = ['pending', 'overdue', 'paid'];
+
+// AJUSTE 18 — guardrail de segurança pro endpoint de reconciliação via
+// pagamentos_asaas (ver exports.reconciliarCobrancasQuitadas abaixo):
+// mesmo limiar/mesma lógica de scripts/reconciliar-cobrancas-quitadas-no-asaas.js
+// e scripts/reconciliar-cobrancas-presas.js — o endpoint HTTP não tem como
+// pedir confirmação interativa (--force), então, ao estourar o limite, só
+// recusa aplicar e devolve 409 (quem chamou — um workflow n8n agendado —
+// decide se alerta alguém ou tenta de novo mais tarde).
+const LIMITE_SEGURANCA_RECONCILIACAO_COBRANCAS = 60;
 
 // Status considerados "em aberto" no banco — mesmo conjunto usado por
 // GET /api/associados e GET /api/associados/resumo (ver COBRANCAS_ABERTAS
@@ -463,5 +473,73 @@ exports.atualizarSobDemanda = async (req, res) => {
     res.status(502).json({ error: mensagem });
   } finally {
     clearTimeout(timeoutId);
+  }
+};
+
+/**
+ * POST /api/sync/reconciliar-cobrancas-quitadas
+ *
+ * AJUSTE 18 — segunda via de reconciliação de `cobrancas`, independente do
+ * payload do n8n, exposta como endpoint HTTP pra quem preferir disparar via
+ * um workflow n8n agendado em vez de rodar
+ * `scripts/reconciliar-cobrancas-quitadas-no-asaas.js` direto no host
+ * (mesmo padrão de `POST /api/inadimplencia/reconciliar-pagamentos` pro
+ * AJUSTE 14 — ver docblock lá). Ver docblock do script irmão e de
+ * `src/services/cobrancasPresas.service.js` para o "porquê" completo: a
+ * janela `-53/+5 dias` que o n8n manda em `POST /api/sync` só anda pra
+ * frente, então uma cobrança paga cujo vencimento já envelheceu além do
+ * início da janela nunca mais seria reconciliada só por ali — este
+ * endpoint usa `pagamentos_asaas` (sem limite de janela) como fonte de
+ * verdade independente.
+ *
+ * Escopado a UMA franquia por chamada (a do usuário/API key autenticado,
+ * via "auth" + "escopoFranquia" — mesmo padrão do resto da API
+ * multi-franquia), nunca "todas" — um agendador externo que precise
+ * reconciliar várias franquias chama este endpoint uma vez por franquia
+ * (mesmo padrão de POST /api/sync e de POST /api/inadimplencia/reconciliar-pagamentos).
+ *
+ * Sem modo dry-run — sempre aplica (o script é o lugar pra "só mostrar";
+ * um endpoint chamado por um agendador automatizado não tem quem leia um
+ * relatório de dry-run). Tem o mesmo guardrail de segurança dos scripts
+ * irmãos: se o número de cobranças presas encontradas passar de
+ * LIMITE_SEGURANCA_RECONCILIACAO_COBRANCAS, recusa aplicar e responde 409
+ * (sem --force possível aqui — quem precisar ignorar o guardrail nesse
+ * cenário usa o script direto, com --confirm --force, depois de revisar a
+ * lista).
+ *
+ * `quitadaEm` grava o `paymentDate` real do Asaas (não "agora") — mesmo
+ * comportamento do script, ver `aplicarQuitacao` no serviço.
+ */
+exports.reconciliarCobrancasQuitadas = async (req, res, next) => {
+  try {
+    const { presas, comIdExterno, semIdExterno, semCorrespondencia } = await buscarCobrancasPresas({
+      franquiaId: req.franquiaId,
+    });
+
+    if (presas.length > LIMITE_SEGURANCA_RECONCILIACAO_COBRANCAS) {
+      return res.status(409).json({
+        error:
+          `${presas.length} cobrança(s) presa(s) encontrada(s) — acima do limite de segurança ` +
+          `(${LIMITE_SEGURANCA_RECONCILIACAO_COBRANCAS}) pra aplicar automaticamente via endpoint.`,
+        presas_encontradas: presas.length,
+        limite_seguranca: LIMITE_SEGURANCA_RECONCILIACAO_COBRANCAS,
+        acao_sugerida:
+          'Revise com scripts/diagnostico-cobrancas-presas-sistemico.js (dry-run) e, se a lista estiver correta, ' +
+          'aplique com scripts/reconciliar-cobrancas-quitadas-no-asaas.js --confirm --force.',
+      });
+    }
+
+    const aplicados = await aplicarQuitacao(presas, { prisma: req.prisma });
+    const valorTotalQuitado = presas.reduce((soma, { cobranca }) => soma + Number(cobranca.valor), 0);
+
+    res.json({
+      cobrancas_verificadas: comIdExterno.length,
+      cobrancas_quitadas: aplicados.length,
+      valor_total_quitado: valorTotalQuitado,
+      sem_id_externo: semIdExterno.length,
+      sem_correspondencia_em_pagamentos_asaas: semCorrespondencia.length,
+    });
+  } catch (err) {
+    next(err);
   }
 };

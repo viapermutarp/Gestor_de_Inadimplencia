@@ -1,63 +1,81 @@
 /**
- * Varredura sistêmica (só leitura, NÃO corrige nada) — refinamento da
- * seção 7 de scripts/diagnostico-marcela-cobranca-presa.js.
+ * Varredura sistêmica — refinamento da seção 7 de
+ * scripts/diagnostico-marcela-cobranca-presa.js — E remediação pontual do
+ * caso já confirmado (AJUSTE 18).
  *
- * MOTIVO DO REFINAMENTO: o critério anterior ("todas as linhas do
- * associado em pagamentos_asaas estão RECEIVED") é POR ASSOCIADO, não por
- * cobrança — e por isso não pegaria nem a própria Marcela em produção nos
- * casos em que ela tem parcelas de renegociação genuinamente em aberto
- * misturadas com a cobrança velha presa: uma linha em aberto em
- * pagamentos_asaas já derruba "todasQuitadas" pro associado inteiro, escondendo
- * a cobrança específica que está presa. O critério certo é POR COBRANÇA:
- * casar cada `Cobranca` com o `PagamentoAsaas` que representa ELA MESMA
- * (via id_externo === id, o id do Asaas), não com o conjunto de pagamentos
- * do associado.
+ * MOTIVO DO REFINAMENTO (mantido da versão original deste script): o
+ * critério anterior ("todas as linhas do associado em pagamentos_asaas
+ * estão RECEIVED") é POR ASSOCIADO, não por cobrança — e por isso não
+ * pegaria nem a própria Marcela em produção, já que ela tem parcelas de
+ * renegociação genuinamente em aberto misturadas com a cobrança velha
+ * presa: uma linha em aberto em pagamentos_asaas já derrubava
+ * "todasQuitadas" pro associado inteiro, escondendo a cobrança específica
+ * presa. O critério certo é POR COBRANÇA: casar cada `Cobranca` com o
+ * `PagamentoAsaas` que representa ELA MESMA (via id_externo === id, o id
+ * do Asaas), não com o conjunto de pagamentos do associado. Toda a lógica
+ * de busca/classificação vive agora em `src/services/cobrancasPresas.service.js`
+ * — usada também pelo job periódico (`reconciliar-cobrancas-quitadas-no-asaas.js`)
+ * e pelo endpoint HTTP (`POST /api/sync/reconciliar-cobrancas-quitadas`),
+ * pra garantir que os três caminhos usem exatamente o mesmo critério.
  *
- * O QUE ESTE SCRIPT FAZ (tudo somente leitura):
+ * O QUE ESTE SCRIPT FAZ (tudo somente leitura por padrão):
  *   1. Busca toda `Cobranca` com status IN ('pending','overdue') e
- *      id_externo preenchido, em TODAS as franquias.
+ *      id_externo preenchido, em TODAS as franquias (ou só uma, com
+ *      --franquia=).
  *   2. Pra cada uma, busca o `PagamentoAsaas` cujo id seja exatamente esse
  *      id_externo (é o mesmo pagamento no Asaas, não o conjunto do
  *      associado).
  *   3. Se esse pagamento específico está RECEIVED/RECEIVED_IN_CASH, a
- *      cobrança é uma "presa" de verdade — continua contando como em
- *      aberto no Dashboard, mas já foi paga no Asaas.
+ *      cobrança é uma "presa" de verdade.
  *   4. Agrupa o resultado por associado só pra leitura — a comparação em
  *      si é sempre por cobrança individual.
  *   5. Pra cada presa encontrada, calcula se o `vencimento` cai dentro ou
- *      fora da janela -53/+5 dias de hoje — pra confirmar (ou refutar) a
- *      hipótese de causa raiz já levantada (janela rolante que só anda pra
- *      frente, nunca alcança de novo um vencimento que já ficou velho
- *      demais).
- *   6. Reporta separadamente, sem incluir nos números acima:
- *        - cobranças abertas SEM id_externo (não têm como ser casadas por
- *          este método — não é possível concluir nada sobre elas aqui);
- *        - cobranças com id_externo que não bateu com NENHUM PagamentoAsaas
- *          (pode ser que esse associado nunca passou pelo backfill/webhook
- *          novo, ou é uma cobrança recente ainda não replicada lá).
+ *      fora da janela -53/+5 dias de hoje — confirma (ou refuta) a
+ *      hipótese de causa raiz (janela rolante que só anda pra frente).
+ *   6. Reporta separadamente, sem incluir nos números acima: cobranças
+ *      abertas SEM id_externo, e cobranças com id_externo sem
+ *      correspondência em pagamentos_asaas.
+ *
+ * MODO DE REMEDIAÇÃO (`--confirm`): pra cada presa encontrada, marca
+ * `status = 'quitada'` e `quitadaEm = ` o `paymentDate` do
+ * `pagamentos_asaas` correspondente (não a data de agora — ver docblock de
+ * `aplicarQuitacao` no serviço). Sem `--confirm`, continua só reportando
+ * (dry-run), mesmo padrão de todos os outros scripts do projeto. Tem
+ * guardrail de segurança (recusa aplicar se o número de presas passar
+ * muito do esperado, a não ser que você passe `--force` também), mesmo
+ * padrão de `scripts/reconciliar-cobrancas-presas.js`.
  *
  * Uso:
- *   node scripts/diagnostico-cobrancas-presas-sistemico.js
+ *   node scripts/diagnostico-cobrancas-presas-sistemico.js                       # dry run
  *   node scripts/diagnostico-cobrancas-presas-sistemico.js --franquia=<id>
  *   node scripts/diagnostico-cobrancas-presas-sistemico.js --limite=50
+ *   node scripts/diagnostico-cobrancas-presas-sistemico.js --confirm             # aplica (com guardrail)
+ *   node scripts/diagnostico-cobrancas-presas-sistemico.js --confirm --force     # aplica ignorando o guardrail
  *
  * --franquia (opcional): restringe a UMA franquia. Por padrão varre TODAS.
  * --limite (opcional, default 100): quantas cobranças presas de exemplo
  *   imprimir em detalhe (as CONTAGENS/SOMAS sempre cobrem 100% do
- *   resultado, o limite é só pra não afogar o console).
+ *   resultado, o limite é só pra não afogar o console — não afeta quantas
+ *   são efetivamente corrigidas com --confirm, que é sempre TODAS as
+ *   encontradas).
+ * --confirm (opcional): aplica a quitação de verdade. Rode primeiro sem
+ *   esta flag pra conferir a lista, e só depois com ela.
+ * --force (opcional): ignora o guardrail de segurança (> LIMITE_SEGURANCA_SEM_FORCE
+ *   presas). Use só depois de já ter revisado a lista impressa.
  */
-const prismaBase = require('../src/config/prisma');
+const { buscarCobrancasPresas, aplicarQuitacao } = require('../src/services/cobrancasPresas.service');
 
-const STATUS_ADIMPLENTE_ASAAS = ['RECEIVED', 'RECEIVED_IN_CASH'];
-const STATUS_CONSIDERADOS_ABERTOS = ['pending', 'overdue'];
 const JANELA_DIAS_TRAS = 53;
 const JANELA_DIAS_FRENTE = 5;
+const LIMITE_SEGURANCA_SEM_FORCE = 60;
 
 function parseArgs(argv) {
-  const args = { franquiaId: null, limite: 100 };
+  const args = { franquiaId: null, limite: 100, confirm: false, force: false };
   for (const a of argv) {
     if (a.startsWith('--franquia=')) args.franquiaId = a.slice('--franquia='.length);
     else if (a.startsWith('--limite=')) args.limite = Number(a.slice('--limite='.length)) || 100;
+    else if (a === '--confirm') args.confirm = true;
+    else if (a === '--force') args.force = true;
   }
   return args;
 }
@@ -85,67 +103,25 @@ async function main() {
   console.log('\n=== Varredura sistêmica — cobranças presas (comparação por cobrança individual) ===\n');
   if (args.franquiaId) console.log(`Restrito à franquia: ${args.franquiaId}`);
   else console.log('Varrendo TODAS as franquias.');
+  console.log(args.confirm ? 'Modo: APLICANDO (--confirm)' : 'Modo: DRY RUN (relatório apenas)');
 
-  // --- 1. Cobranças abertas ---
-  const cobrancasAbertas = await prismaBase.cobranca.findMany({
-    where: {
-      status: { in: STATUS_CONSIDERADOS_ABERTOS },
-      ...(args.franquiaId ? { associado: { franquiaId: args.franquiaId } } : {}),
-    },
-    include: { associado: { select: { id: true, nome: true, cpfCnpj: true, franquiaId: true } } },
-    orderBy: [{ associado: { nome: 'asc' } }, { vencimento: 'asc' }],
-  });
+  const { totalAbertas, semIdExterno, comIdExterno, presas, semCorrespondencia, naoQuitadasNoAsaas } =
+    await buscarCobrancasPresas({ franquiaId: args.franquiaId });
 
-  const comIdExterno = cobrancasAbertas.filter((c) => c.idExterno);
-  const semIdExterno = cobrancasAbertas.filter((c) => !c.idExterno);
-
-  console.log(`\nCobranças pending/overdue encontradas: ${cobrancasAbertas.length}`);
+  console.log(`\nCobranças pending/overdue encontradas: ${totalAbertas}`);
   console.log(`  com id_externo preenchido (elegíveis pra esta comparação): ${comIdExterno.length}`);
   console.log(`  SEM id_externo (fora do escopo deste método — ver seção final): ${semIdExterno.length}`);
-
-  if (comIdExterno.length === 0) {
-    console.log('\nNenhuma cobrança elegível para comparação por id_externo. Encerrando.');
-    await prismaBase.$disconnect();
-    return;
-  }
-
-  // --- 2. Busca em lote os PagamentoAsaas correspondentes (evita N+1) ---
-  const idsExternos = comIdExterno.map((c) => c.idExterno);
-  const pagamentosCorrespondentes = await prismaBase.pagamentoAsaas.findMany({
-    where: { id: { in: idsExternos } },
-  });
-  const pagamentoPorId = new Map(pagamentosCorrespondentes.map((p) => [p.id, p]));
-
-  // --- 3. Classifica cada cobrança ---
-  const presas = [];
-  const semCorrespondenciaEmPagamentosAsaas = [];
-  const naoQuitadasNoAsaas = [];
-
-  for (const c of comIdExterno) {
-    const pagamento = pagamentoPorId.get(c.idExterno);
-    if (!pagamento) {
-      semCorrespondenciaEmPagamentosAsaas.push(c);
-      continue;
-    }
-    if (STATUS_ADIMPLENTE_ASAAS.includes(pagamento.status)) {
-      presas.push({ cobranca: c, pagamento });
-    } else {
-      naoQuitadasNoAsaas.push({ cobranca: c, pagamento });
-    }
-  }
-
-  console.log(`  id_externo casou com um PagamentoAsaas: ${comIdExterno.length - semCorrespondenciaEmPagamentosAsaas.length}`);
+  console.log(`  id_externo casou com um PagamentoAsaas: ${comIdExterno.length - semCorrespondencia.length}`);
   console.log(`    dessas, o PagamentoAsaas está RECEIVED/RECEIVED_IN_CASH (>>> PRESA de verdade): ${presas.length}`);
   console.log(`    dessas, o PagamentoAsaas AINDA não está quitado (cobrança em aberto legítima): ${naoQuitadasNoAsaas.length}`);
-  console.log(`  id_externo SEM correspondência em pagamentos_asaas: ${semCorrespondenciaEmPagamentosAsaas.length}`);
+  console.log(`  id_externo SEM correspondência em pagamentos_asaas: ${semCorrespondencia.length}`);
 
   if (presas.length === 0) {
-    console.log('\nNenhuma cobrança presa encontrada por este critério (id_externo específico já RECEIVED/RECEIVED_IN_CASH). Encerrando.');
-    await prismaBase.$disconnect();
+    console.log('\nNenhuma cobrança presa encontrada por este critério. Encerrando.');
     return;
   }
 
-  // --- 4/5. Agrupa por associado + checagem de janela ---
+  // --- Agrupa por associado + checagem de janela ---
   const hoje = hojeUTC();
   const janelaInicio = new Date(hoje);
   janelaInicio.setUTCDate(janelaInicio.getUTCDate() - JANELA_DIAS_TRAS);
@@ -161,18 +137,17 @@ async function main() {
   let dentroDaJanelaCount = 0;
   let foraDaJanelaCount = 0;
 
-  for (const { cobranca: c, pagamento: p } of presas) {
+  for (const item of presas) {
+    const { cobranca: c } = item;
     const key = c.associado?.id ?? '(associado desconhecido)';
-    if (!porAssociado.has(key)) {
-      porAssociado.set(key, { associado: c.associado, itens: [] });
-    }
+    if (!porAssociado.has(key)) porAssociado.set(key, { associado: c.associado, itens: [] });
     const vencimento = new Date(c.vencimento);
     const dentroDaJanela = vencimento >= janelaInicio && vencimento <= janelaFim;
     if (dentroDaJanela) dentroDaJanelaCount += 1;
     else foraDaJanelaCount += 1;
 
     valorTotalPreso += Number(c.valor);
-    porAssociado.get(key).itens.push({ cobranca: c, pagamento: p, dentroDaJanela });
+    porAssociado.get(key).itens.push({ ...item, dentroDaJanela });
   }
 
   console.log(`\n>>> ${presas.length} cobrança(s) presa(s), de ${porAssociado.size} associado(s) distinto(s).`);
@@ -211,22 +186,49 @@ async function main() {
     impressos += 1;
   }
 
-  // --- 6. Fora de escopo, reportado à parte ---
+  // --- Fora de escopo, reportado à parte ---
   if (semIdExterno.length > 0) {
     console.log(`\n--- Fora do escopo desta comparação: ${semIdExterno.length} cobrança(s) aberta(s) sem id_externo ---`);
     console.log('  (Não é possível casar com uma linha específica de pagamentos_asaas sem id_externo — precisariam de outro método, ex.: por associado+valor+vencimento aproximado.)');
   }
-  if (semCorrespondenciaEmPagamentosAsaas.length > 0) {
-    console.log(`\n--- ${semCorrespondenciaEmPagamentosAsaas.length} cobrança(s) com id_externo mas SEM correspondência em pagamentos_asaas ---`);
+  if (semCorrespondencia.length > 0) {
+    console.log(`\n--- ${semCorrespondencia.length} cobrança(s) com id_externo mas SEM correspondência em pagamentos_asaas ---`);
     console.log('  (Pode ser cobrança recente ainda não replicada pelo webhook/backfill novo, ou associado que nunca passou pelo AJUSTE 9/14 — não é possível concluir nada sobre elas por este cruzamento.)');
   }
 
-  console.log('\n=== Fim da varredura — nenhuma alteração foi feita no banco. ===\n');
-  await prismaBase.$disconnect();
+  // --- Remediação ---
+  if (!args.confirm) {
+    console.log('\nDRY RUN — nada foi alterado no banco. Rode de novo com --confirm para aplicar.');
+    return;
+  }
+
+  if (presas.length > LIMITE_SEGURANCA_SEM_FORCE && !args.force) {
+    console.error(
+      `\n⚠️  ${presas.length} presa(s) é bem mais que o esperado (caso confirmado até agora: 1, a Marcela). ` +
+        'Recusando aplicar por segurança — revise a lista acima e, se estiver correta, rode de novo com --confirm --force.'
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`\nAplicando quitação em ${presas.length} cobrança(s)...`);
+  const aplicados = await aplicarQuitacao(presas);
+  const aproximadas = aplicados.filter((a) => a.quitadaEmAproximada);
+  console.log(`\n✓ ${aplicados.length} cobrança(s) marcada(s) como "quitada" (quitada_em = data do pagamento no Asaas).`);
+  if (aproximadas.length > 0) {
+    console.log(
+      `⚠️  ${aproximadas.length} delas não tinham paymentDate em pagamentos_asaas (inesperado) — quitada_em gravado como "agora" nesses casos.`
+    );
+  }
+  console.log('Nenhum registro foi apagado — só mudou de status. Confira no Dashboard.');
 }
 
-main().catch(async (err) => {
-  console.error('Erro ao rodar a varredura sistêmica:', err);
-  await prismaBase.$disconnect();
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error('Erro ao rodar a varredura/remediação:', err);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    const prismaBase = require('../src/config/prisma');
+    await prismaBase.$disconnect();
+  });
