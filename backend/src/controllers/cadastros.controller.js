@@ -1,6 +1,19 @@
 const { getWebhookCadastroUrl } = require('../services/config.service');
 const { gerarContratosParaCadastro } = require('../services/contratosGeracao.service');
 const { resolverFranquiaIdOuPadrao } = require('../services/franquiaPadrao.service');
+// AJUSTE 21 — estas funções viviam definidas aqui local; extraídas pra
+// src/lib/camposCadastro.js pra serem reaproveitadas, byte a byte, pelo
+// PATCH /api/associados/:cpf_cnpj/cadastro novo (registroAssociados.controller.js)
+// — ver docblock do módulo compartilhado.
+const {
+  DESCRICOES_SERVICO_VALIDAS,
+  TIPOS_PESSOA_VALIDOS,
+  textoOuNull,
+  dataOuNull,
+  decimalOuNull,
+  inteiroOuNull,
+  calcularValorParcela,
+} = require('../lib/camposCadastro');
 
 const LIMITE_PADRAO = 100;
 const LIMITE_MAXIMO = 100;
@@ -12,50 +25,8 @@ const LIMITE_MAXIMO = 100;
 // pra testes automatizados não precisarem esperar isso de verdade.
 const TIMEOUT_N8N_MS = Number(process.env.CADASTRO_WEBHOOK_TIMEOUT_MS) || 60000;
 
-const DESCRICOES_SERVICO_VALIDAS = [
-  'Anuidade (PIX)',
-  'Anuidade (Boleto)',
-  'Anuidade (Cartão de Crédito)',
-  'Recorrência Cartão de Crédito (Anuidade)',
-];
-
-const TIPOS_PESSOA_VALIDOS = ['PF', 'PJ'];
-
 function campoPreenchido(valor) {
   return typeof valor === 'string' && valor.trim() !== '';
-}
-
-function arredondar2(valor) {
-  return Math.round((valor + Number.EPSILON) * 100) / 100;
-}
-
-function textoOuNull(valor) {
-  if (typeof valor !== 'string') return null;
-  const limpo = valor.trim();
-  return limpo === '' ? null : limpo;
-}
-
-/** "YYYY-MM-DD" (campo <input type="date">) -> Date (meia-noite UTC) | null. Nunca lança — data inválida vira null, sem derrubar o cadastro por causa disso. */
-function dataOuNull(valor) {
-  const limpo = textoOuNull(valor);
-  if (!limpo) return null;
-  const data = new Date(`${limpo}T00:00:00.000Z`);
-  return Number.isNaN(data.getTime()) ? null : data;
-}
-
-/** String decimal (ex.: "1234.56", já em reais — ver centavosParaDecimalString no frontend) -> number | null. */
-function decimalOuNull(valor) {
-  const limpo = textoOuNull(valor);
-  if (limpo === null) return null;
-  const numero = Number(limpo);
-  return Number.isFinite(numero) ? numero : null;
-}
-
-function inteiroOuNull(valor) {
-  const limpo = textoOuNull(valor);
-  if (limpo === null) return null;
-  const numero = parseInt(limpo, 10);
-  return Number.isFinite(numero) ? numero : null;
 }
 
 /**
@@ -79,10 +50,9 @@ function mapearPayloadParaAssociado(payload) {
   const valorTotal = decimalOuNull(payload['Valor Total']);
   const numeroParcelas = inteiroOuNull(payload['Número de Parcelas']);
 
-  let valorParcela = null;
-  if (valorTotal !== null && numeroParcelas && numeroParcelas > 1) {
-    valorParcela = arredondar2((valorTotal - (valorEntrada ?? 0)) / numeroParcelas);
-  }
+  // AJUSTE 21 — fórmula extraída pra calcularValorParcela (src/lib/camposCadastro.js),
+  // reaproveitada byte a byte pelo PATCH /api/associados/:cpf_cnpj/cadastro novo.
+  const valorParcela = calcularValorParcela({ valorTotal, valorEntrada, numeroParcelas });
 
   return {
     tipoPessoa: textoOuNull(payload['Tipo de Pessoa']),

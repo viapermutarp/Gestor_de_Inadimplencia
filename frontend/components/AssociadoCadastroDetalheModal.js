@@ -1,11 +1,27 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getAssociadoDetalhe, excluirCadastroAssociado, ApiError } from "@/lib/api";
+import {
+  getAssociadoDetalhe,
+  excluirCadastroAssociado,
+  editarCadastroAssociado,
+  ApiError,
+} from "@/lib/api";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
+import {
+  maskCep,
+  maskCelular,
+  isValidEmail,
+  digitosParaCentavos,
+  formatCentavosInput,
+  UFS,
+  DESCRICOES_SERVICO,
+  OPCOES_PARCELAS,
+} from "@/lib/mascaras";
 import Spinner from "@/components/Spinner";
 import ErrorBanner from "@/components/ErrorBanner";
-import { IconClose } from "@/components/icons";
+import DatePicker from "@/components/DatePicker";
+import { IconClose, IconAlert } from "@/components/icons";
 
 /**
  * AJUSTE 19 — detalhe da aba "Associados". Reaproveita GET
@@ -15,13 +31,24 @@ import { IconClose } from "@/components/icons";
  * (todos os campos do item 1 do brief) — sem os controles de negociação/
  * bloqueio/reset, que continuam exclusivos do Dashboard.
  *
- * AJUSTE 20 — ganhou a ÚNICA ação de escrita deste modal: "Excluir
- * cadastro" (botão no rodapé). Confirmação simples (`window.confirm`, mesmo
- * padrão já usado pra excluir documento jurídico — não o padrão "digite o
- * nome" da franquia, essa ação é bem menos destrutiva). Ao confirmar, chama
- * `onCadastroExcluido` (o pai fecha o modal e recarrega a lista — o
- * associado some da aba, ver `filtroTemCadastro` no backend, mas continua
- * existindo pro Dashboard/Jurídico/Taxa de Inadimplência).
+ * AJUSTE 20 — ganhou a ação "Excluir cadastro" (botão no rodapé).
+ * Confirmação simples (`window.confirm`, mesmo padrão já usado pra excluir
+ * documento jurídico — não o padrão "digite o nome" da franquia, essa ação é
+ * bem menos destrutiva). Ao confirmar, chama `onCadastroExcluido` (o pai
+ * fecha o modal e recarrega a lista).
+ *
+ * AJUSTE 21 — ganhou o modo de edição ("Editar" -> campos viram inputs,
+ * "Salvar"/"Cancelar"). Reaproveita os MESMOS componentes de input do
+ * formulário de Cadastro (app/cadastro/page.js: máscaras de CEP/celular,
+ * campos monetários em centavos, DatePicker, selects de UF/Descrição do
+ * Serviço/Número de Parcelas) — mesma consistência visual e de validação
+ * client-side pedida no brief. "Valor da Parcela" continua um PREVIEW
+ * calculado no cliente (nunca um input editável), igual ao Cadastro — o
+ * PATCH nunca manda "valor_parcela" explicitamente, deixando o backend
+ * recalcular sozinho a partir de valor_total/valor_entrada/numero_parcelas
+ * (sempre presentes no body deste modal, já que o form mostra todos os
+ * campos de uma vez — ver docblock de `editarCadastro` no backend pra como
+ * o recálculo funciona).
  */
 function Campo({ label, valor }) {
   return (
@@ -32,11 +59,159 @@ function Campo({ label, valor }) {
   );
 }
 
+function CampoEditavel({ label, opcional, className = "", children }) {
+  return (
+    <div className={className}>
+      <label className="mb-1.5 block text-xs text-muted-foreground">
+        {label}
+        {opcional && <span className="text-muted/60"> (opcional)</span>}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+const INPUT =
+  "w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-60";
+const INPUT_MONO = `${INPUT} font-mono`;
+
+/** Converte um valor decimal já salvo (string "1234.56" vinda do backend, ou number) para centavos (inteiro) | null — inverso de `centavosParaDecimalString` de lib/mascaras.js. */
+function decimalParaCentavos(valor) {
+  if (valor === null || valor === undefined || valor === "") return null;
+  const numero = Number(valor);
+  if (Number.isNaN(numero)) return null;
+  return Math.round(numero * 100);
+}
+
+/** Centavos (inteiro ou null) -> string decimal | null pro body do PATCH — null explícito LIMPA o campo (diferente de centavosParaDecimalString, que sempre devolve "0.00"). */
+function centavosParaDecimalOuNull(centavos) {
+  if (centavos === null || centavos === undefined) return null;
+  return (Number(centavos) / 100).toFixed(2);
+}
+
+/** ISO datetime devolvido pelo backend ("2026-09-25T00:00:00.000Z") -> "YYYY-MM-DD" esperado pelo DatePicker. */
+function isoParaDataInput(valor) {
+  if (!valor) return "";
+  return String(valor).slice(0, 10);
+}
+
+/** Monta o estado editável do formulário a partir do associado carregado (snake_case -> camelCase, mesma forma de ESTADO_INICIAL em app/cadastro/page.js). */
+function montarFormEdit(associado) {
+  return {
+    tipoPessoa: associado.tipo_pessoa === "PF" ? "PF" : "PJ",
+    razaoSocial: associado.razao_social || "",
+    nomeFantasia: associado.nome_fantasia || "",
+    cep: associado.cep || "",
+    endereco: associado.endereco || "",
+    numero: associado.numero || "",
+    complemento: associado.complemento || "",
+    bairro: associado.bairro || "",
+    cidade: associado.cidade || "",
+    uf: associado.uf || "",
+    contatoNome: associado.contato_nome || "",
+    celular: associado.celular || "",
+    emailCadastro: associado.email_cadastro || "",
+    descricaoServico: associado.descricao_servico || "",
+    dataEntrada: isoParaDataInput(associado.data_entrada),
+    numeroParcelas: associado.numero_parcelas ? String(associado.numero_parcelas) : "1",
+    dataVencimento: isoParaDataInput(associado.data_vencimento),
+    observacoesCadastro: associado.observacoes_cadastro || "",
+  };
+}
+
 export default function AssociadoCadastroDetalheModal({ cpfCnpj, onClose, onCadastroExcluido }) {
   const [associado, setAssociado] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [excluindo, setExcluindo] = useState(false);
+
+  const [editando, setEditando] = useState(false);
+  const [formEdit, setFormEdit] = useState(null);
+  const [valorEntradaCentavos, setValorEntradaCentavos] = useState(null);
+  const [valorTotalCentavos, setValorTotalCentavos] = useState(null);
+  const [descontoParcelaCentavos, setDescontoParcelaCentavos] = useState(null);
+  const [errosEdicao, setErrosEdicao] = useState([]);
+  const [salvando, setSalvando] = useState(false);
+
+  function atualizarCampoEdit(campo, valor) {
+    setFormEdit((prev) => ({ ...prev, [campo]: valor }));
+  }
+
+  function iniciarEdicao() {
+    setFormEdit(montarFormEdit(associado));
+    setValorEntradaCentavos(decimalParaCentavos(associado.valor_entrada));
+    setValorTotalCentavos(decimalParaCentavos(associado.valor_total));
+    setDescontoParcelaCentavos(decimalParaCentavos(associado.desconto_parcela));
+    setErrosEdicao([]);
+    setEditando(true);
+  }
+
+  function cancelarEdicao() {
+    setEditando(false);
+    setFormEdit(null);
+    setErrosEdicao([]);
+  }
+
+  // Preview de "Valor da Parcela" — mesma fórmula/mesmo caráter de preview
+  // (não editável) do formulário de Cadastro.
+  const numeroParcelasPreview = formEdit ? parseInt(formEdit.numeroParcelas, 10) || 1 : 1;
+  const valorParcelaPreview =
+    numeroParcelasPreview > 1 && valorTotalCentavos
+      ? formatCentavosInput(
+          Math.round(((valorTotalCentavos || 0) - (valorEntradaCentavos || 0)) / numeroParcelasPreview)
+        )
+      : "";
+
+  async function handleSalvar() {
+    if (!formEdit || salvando) return;
+
+    const novosErros = [];
+    if (formEdit.emailCadastro.trim() && !isValidEmail(formEdit.emailCadastro)) {
+      novosErros.push('O "E-mail (Cadastro)" informado não é válido.');
+    }
+    setErrosEdicao(novosErros);
+    if (novosErros.length > 0) return;
+
+    const payload = {
+      tipo_pessoa: formEdit.tipoPessoa,
+      razao_social: formEdit.razaoSocial.trim(),
+      nome_fantasia: formEdit.nomeFantasia.trim(),
+      cep: formEdit.cep.trim(),
+      endereco: formEdit.endereco.trim(),
+      numero: formEdit.numero.trim(),
+      complemento: formEdit.complemento.trim(),
+      bairro: formEdit.bairro.trim(),
+      cidade: formEdit.cidade.trim(),
+      uf: formEdit.uf,
+      contato_nome: formEdit.contatoNome.trim(),
+      celular: formEdit.celular.trim(),
+      email_cadastro: formEdit.emailCadastro.trim(),
+      descricao_servico: formEdit.descricaoServico,
+      valor_entrada: centavosParaDecimalOuNull(valorEntradaCentavos),
+      data_entrada: formEdit.dataEntrada,
+      numero_parcelas: formEdit.numeroParcelas,
+      valor_total: centavosParaDecimalOuNull(valorTotalCentavos),
+      data_vencimento: formEdit.dataVencimento,
+      desconto_parcela: centavosParaDecimalOuNull(descontoParcelaCentavos),
+      observacoes_cadastro: formEdit.observacoesCadastro.trim(),
+      // "valor_parcela" propositalmente NÃO entra aqui — deixa o backend
+      // recalcular sozinho a partir dos 3 campos acima (sempre presentes
+      // neste payload).
+    };
+
+    setSalvando(true);
+    setError("");
+    try {
+      const atualizado = await editarCadastroAssociado(cpfCnpj, payload);
+      setAssociado(atualizado);
+      setEditando(false);
+      setFormEdit(null);
+    } catch (err) {
+      setErrosEdicao([err instanceof ApiError ? err.message : "Erro ao salvar o cadastro."]);
+    } finally {
+      setSalvando(false);
+    }
+  }
 
   async function handleExcluirCadastro() {
     if (excluindo) return;
@@ -138,6 +313,302 @@ export default function AssociadoCadastroDetalheModal({ cpfCnpj, onClose, onCada
             <div className="flex justify-center py-16">
               <Spinner className="h-7 w-7" />
             </div>
+          ) : associado && editando && formEdit ? (
+            <>
+              {errosEdicao.length > 0 && (
+                <div className="rounded-xl border border-status-red/30 bg-status-red/10 px-4 py-3 text-sm text-foreground">
+                  <p className="mb-1.5 flex items-center gap-2 font-semibold">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-status-red/20 text-status-red">
+                      <IconAlert className="h-3.5 w-3.5" />
+                    </span>
+                    Corrija os campos abaixo antes de salvar:
+                  </p>
+                  <ul className="ml-8 list-disc space-y-0.5 text-muted-foreground">
+                    {errosEdicao.map((erro) => (
+                      <li key={erro}>{erro}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <section>
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Identificação
+                </h3>
+                <div className="grid grid-cols-1 gap-4 rounded-2xl bg-surface-elevated p-4 sm:grid-cols-2">
+                  <CampoEditavel label="CPF/CNPJ">
+                    <input type="text" disabled className={`${INPUT_MONO} cursor-not-allowed`} value={associado.cpf_cnpj || ""} />
+                  </CampoEditavel>
+                  <CampoEditavel label="Tipo de Pessoa">
+                    <div className="inline-flex rounded-xl border border-border-soft bg-surface p-1">
+                      {["PJ", "PF"].map((tipo) => (
+                        <button
+                          key={tipo}
+                          type="button"
+                          onClick={() => atualizarCampoEdit("tipoPessoa", tipo)}
+                          disabled={salvando}
+                          className={`rounded-lg px-6 py-1.5 text-sm font-medium transition-colors ${
+                            formEdit.tipoPessoa === tipo
+                              ? "bg-primary text-primary-foreground"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          {tipo}
+                        </button>
+                      ))}
+                    </div>
+                  </CampoEditavel>
+                  <CampoEditavel label="Razão Social">
+                    <input
+                      type="text"
+                      className={INPUT}
+                      value={formEdit.razaoSocial}
+                      onChange={(e) => atualizarCampoEdit("razaoSocial", e.target.value)}
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                  <CampoEditavel label="Nome Fantasia">
+                    <input
+                      type="text"
+                      className={INPUT}
+                      value={formEdit.nomeFantasia}
+                      onChange={(e) => atualizarCampoEdit("nomeFantasia", e.target.value)}
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                </div>
+              </section>
+
+              <section>
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Contato
+                </h3>
+                <div className="grid grid-cols-1 gap-4 rounded-2xl bg-surface-elevated p-4 sm:grid-cols-2">
+                  <CampoEditavel label="Contato">
+                    <input
+                      type="text"
+                      className={INPUT}
+                      value={formEdit.contatoNome}
+                      onChange={(e) => atualizarCampoEdit("contatoNome", e.target.value)}
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                  <CampoEditavel label="Celular">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className={INPUT_MONO}
+                      value={formEdit.celular}
+                      onChange={(e) => atualizarCampoEdit("celular", maskCelular(e.target.value))}
+                      placeholder="(00) 00000-0000"
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                  <CampoEditavel label="E-mail (Cadastro)" className="sm:col-span-2">
+                    <input
+                      type="email"
+                      className={INPUT}
+                      value={formEdit.emailCadastro}
+                      onChange={(e) => atualizarCampoEdit("emailCadastro", e.target.value)}
+                      placeholder="nome@empresa.com"
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                </div>
+              </section>
+
+              <section>
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Endereço
+                </h3>
+                <div className="grid grid-cols-1 gap-4 rounded-2xl bg-surface-elevated p-4 sm:grid-cols-2">
+                  <CampoEditavel label="CEP">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className={INPUT_MONO}
+                      value={formEdit.cep}
+                      onChange={(e) => atualizarCampoEdit("cep", maskCep(e.target.value))}
+                      placeholder="00000-000"
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                  <CampoEditavel label="Número">
+                    <input
+                      type="text"
+                      className={INPUT}
+                      value={formEdit.numero}
+                      onChange={(e) => atualizarCampoEdit("numero", e.target.value)}
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                  <CampoEditavel label="Endereço" className="sm:col-span-2">
+                    <input
+                      type="text"
+                      className={INPUT}
+                      value={formEdit.endereco}
+                      onChange={(e) => atualizarCampoEdit("endereco", e.target.value)}
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                  <CampoEditavel label="Complemento" opcional>
+                    <input
+                      type="text"
+                      className={INPUT}
+                      value={formEdit.complemento}
+                      onChange={(e) => atualizarCampoEdit("complemento", e.target.value)}
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                  <CampoEditavel label="Bairro">
+                    <input
+                      type="text"
+                      className={INPUT}
+                      value={formEdit.bairro}
+                      onChange={(e) => atualizarCampoEdit("bairro", e.target.value)}
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                  <CampoEditavel label="Cidade">
+                    <input
+                      type="text"
+                      className={INPUT}
+                      value={formEdit.cidade}
+                      onChange={(e) => atualizarCampoEdit("cidade", e.target.value)}
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                  <CampoEditavel label="UF">
+                    <select
+                      className={INPUT}
+                      value={formEdit.uf}
+                      onChange={(e) => atualizarCampoEdit("uf", e.target.value)}
+                      disabled={salvando}
+                    >
+                      <option value="">Selecione...</option>
+                      {UFS.map((uf) => (
+                        <option key={uf} value={uf}>
+                          {uf}
+                        </option>
+                      ))}
+                    </select>
+                  </CampoEditavel>
+                </div>
+              </section>
+
+              <section>
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Faturamento
+                </h3>
+                <div className="grid grid-cols-1 gap-4 rounded-2xl bg-surface-elevated p-4 sm:grid-cols-2">
+                  <CampoEditavel label="Descrição do Serviço" className="sm:col-span-2">
+                    <select
+                      className={INPUT}
+                      value={formEdit.descricaoServico}
+                      onChange={(e) => atualizarCampoEdit("descricaoServico", e.target.value)}
+                      disabled={salvando}
+                    >
+                      <option value="">Selecione...</option>
+                      {DESCRICOES_SERVICO.map((opcao) => (
+                        <option key={opcao} value={opcao}>
+                          {opcao}
+                        </option>
+                      ))}
+                    </select>
+                  </CampoEditavel>
+
+                  <CampoEditavel label="Valor da Entrada" opcional>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className={INPUT_MONO}
+                      value={formatCentavosInput(valorEntradaCentavos)}
+                      onChange={(e) => setValorEntradaCentavos(digitosParaCentavos(e.target.value))}
+                      placeholder="R$ 0,00"
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+
+                  <CampoEditavel label="Data da Entrada" opcional>
+                    <DatePicker
+                      value={formEdit.dataEntrada}
+                      onChange={(iso) => atualizarCampoEdit("dataEntrada", iso)}
+                    />
+                  </CampoEditavel>
+
+                  <CampoEditavel label="Número de Parcelas">
+                    <select
+                      className={INPUT}
+                      value={formEdit.numeroParcelas}
+                      onChange={(e) => atualizarCampoEdit("numeroParcelas", e.target.value)}
+                      disabled={salvando}
+                    >
+                      {OPCOES_PARCELAS.map((n) => (
+                        <option key={n} value={String(n)}>
+                          {n}x
+                        </option>
+                      ))}
+                    </select>
+                  </CampoEditavel>
+
+                  <CampoEditavel label="Valor da Parcela" opcional>
+                    <input
+                      type="text"
+                      readOnly
+                      disabled
+                      className={`${INPUT_MONO} cursor-not-allowed`}
+                      value={valorParcelaPreview}
+                      placeholder="R$ 0,00"
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Recalculado automaticamente a partir de Valor Total, Valor da Entrada e Número
+                      de Parcelas.
+                    </p>
+                  </CampoEditavel>
+
+                  <CampoEditavel label="Valor Total">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className={INPUT_MONO}
+                      value={formatCentavosInput(valorTotalCentavos)}
+                      onChange={(e) => setValorTotalCentavos(digitosParaCentavos(e.target.value))}
+                      placeholder="R$ 0,00"
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+
+                  <CampoEditavel label="Data Vencimento">
+                    <DatePicker
+                      value={formEdit.dataVencimento}
+                      onChange={(iso) => atualizarCampoEdit("dataVencimento", iso)}
+                    />
+                  </CampoEditavel>
+
+                  <CampoEditavel label="Desconto Parcela" opcional>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className={INPUT_MONO}
+                      value={formatCentavosInput(descontoParcelaCentavos)}
+                      onChange={(e) => setDescontoParcelaCentavos(digitosParaCentavos(e.target.value))}
+                      placeholder="R$ 0,00"
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+
+                  <CampoEditavel label="Observações" className="sm:col-span-2">
+                    <textarea
+                      rows={3}
+                      className={`${INPUT} resize-none`}
+                      value={formEdit.observacoesCadastro}
+                      onChange={(e) => atualizarCampoEdit("observacoesCadastro", e.target.value)}
+                      disabled={salvando}
+                    />
+                  </CampoEditavel>
+                </div>
+              </section>
+            </>
           ) : associado ? (
             <>
               <section>
@@ -218,15 +689,46 @@ export default function AssociadoCadastroDetalheModal({ cpfCnpj, onClose, onCada
         </div>
 
         {associado && (
-          <div className="sticky bottom-0 z-10 flex justify-end border-t border-border-soft bg-surface/95 px-6 py-4 backdrop-blur">
-            <button
-              type="button"
-              onClick={handleExcluirCadastro}
-              disabled={excluindo}
-              className="rounded-xl border border-status-red/40 bg-status-red/10 px-3.5 py-2 text-sm font-medium text-status-red transition-colors hover:bg-status-red/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {excluindo ? "Excluindo..." : "Excluir cadastro"}
-            </button>
+          <div className="sticky bottom-0 z-10 flex justify-end gap-3 border-t border-border-soft bg-surface/95 px-6 py-4 backdrop-blur">
+            {editando ? (
+              <>
+                <button
+                  type="button"
+                  onClick={cancelarEdicao}
+                  disabled={salvando}
+                  className="rounded-xl border border-border-soft px-3.5 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSalvar}
+                  disabled={salvando}
+                  className="flex items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {salvando && <Spinner className="h-4 w-4" />}
+                  {salvando ? "Salvando..." : "Salvar"}
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={handleExcluirCadastro}
+                  disabled={excluindo}
+                  className="rounded-xl border border-status-red/40 bg-status-red/10 px-3.5 py-2 text-sm font-medium text-status-red transition-colors hover:bg-status-red/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {excluindo ? "Excluindo..." : "Excluir cadastro"}
+                </button>
+                <button
+                  type="button"
+                  onClick={iniciarEdicao}
+                  className="rounded-xl border border-border-soft bg-surface px-3.5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-surface-hover"
+                >
+                  Editar
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

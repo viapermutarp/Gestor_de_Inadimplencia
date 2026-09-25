@@ -326,6 +326,27 @@ export function excluirCadastroAssociadosLote(cpfCnpjs) {
 }
 
 /**
+ * AJUSTE 21 — "Editar cadastro" na aba "Associados".
+ *
+ * PATCH /api/associados/:cpf_cnpj/cadastro — body com QUALQUER SUBCONJUNTO
+ * dos campos de cadastro (mesmas chaves snake_case devolvidas por
+ * `getAssociadoDetalhe`, ex.: "razao_social", "valor_total"), só os campos
+ * presentes em `campos` são atualizados (edição parcial — não precisa
+ * reenviar o objeto inteiro). O backend recalcula "valor_parcela"
+ * automaticamente quando "valor_total"/"valor_entrada"/"numero_parcelas"
+ * vierem no body (a menos que "valor_parcela" também venha, aí ele manda).
+ * Resposta: o associado inteiro já serializado (mesmo formato de
+ * `getAssociadoDetalhe`) — dá pra atualizar o estado local direto com ela,
+ * sem precisar de um GET extra.
+ */
+export function editarCadastroAssociado(cpfCnpj, campos) {
+  return request(`/api/associados/${encodeURIComponent(cpfCnpj)}/cadastro`, {
+    method: "PATCH",
+    body: campos,
+  });
+}
+
+/**
  * GET /api/config/api-keys — lista todas as API keys cadastradas (ativas e
  * revogadas), mais recentes primeiro, sempre mascaradas. Cada item:
  * { id, nome, chave_mascarada, criada_em, ultimo_uso_em, ativa }.

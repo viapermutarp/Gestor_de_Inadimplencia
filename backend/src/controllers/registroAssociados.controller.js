@@ -1,6 +1,16 @@
 const multer = require('multer');
 const { serializeAssociado } = require('./associados.controller');
 const { apenasDigitos } = require('../lib/cpfCnpj');
+const {
+  DESCRICOES_SERVICO_VALIDAS,
+  TIPOS_PESSOA_VALIDOS,
+  textoOuNull,
+  dataOuNull,
+  decimalOuNull,
+  inteiroOuNull,
+  calcularValorParcela,
+  decimalPrismaParaNumeroOuNull,
+} = require('../lib/camposCadastro');
 
 /**
  * AJUSTE 19 — "Nova aba 'Associados' + Cadastro passa a abastecer o
@@ -18,6 +28,11 @@ const { apenasDigitos } = require('../lib/cpfCnpj');
  * AJUSTE 20 — "Excluir cadastro (individual e em massa)": `excluirCadastro`/
  * `excluirCadastroLote`, mais o filtro novo em `listar` (ver
  * `CAMPOS_CADASTRO`/`filtroTemCadastro` logo abaixo).
+ *
+ * AJUSTE 21 — "Editar cadastro do associado": `editarCadastro` (PATCH
+ * parcial), reaproveitando `CAMPOS_CADASTRO` (mesma lista do DELETE) e as
+ * funções de validação/conversão/cálculo de src/lib/camposCadastro.js —
+ * exatamente as mesmas usadas por POST /api/cadastros (cadastros.controller.js).
  */
 
 const LIMITE_PADRAO = 100;
@@ -671,6 +686,139 @@ exports.excluirCadastroLote = async (req, res, next) => {
       excluidos,
       nao_encontrados: naoEncontrados,
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------
+// AJUSTE 21 — Editar cadastro (PATCH parcial)
+// ---------------------------------------------------------------------
+
+/** "valorEntrada" -> "valor_entrada" (mesma convenção snake_case usada por serializeAssociado/GET detalhe). */
+function camelParaSnake(campo) {
+  return campo.replace(/[A-Z]/g, (letra) => `_${letra.toLowerCase()}`);
+}
+
+// Só precisa listar os campos que NÃO são texto simples — qualquer coisa de
+// `CAMPOS_CADASTRO` que não apareça aqui é tratada como 'texto' (textoOuNull)
+// por `converterCampo` abaixo. Mantido separado de CAMPOS_CADASTRO (que é a
+// lista "quais campos existem", não "como cada um se converte") de propósito
+// — CAMPOS_CADASTRO continua sendo reaproveitado tal e qual pelo DELETE.
+const TIPO_CAMPO_CADASTRO = {
+  valorEntrada: 'decimal',
+  dataEntrada: 'data',
+  numeroParcelas: 'inteiro',
+  valorParcela: 'decimal',
+  valorTotal: 'decimal',
+  dataVencimento: 'data',
+  descontoParcela: 'decimal',
+};
+
+/** Converte o valor bruto do body pro tipo esperado do campo — mesmas funções de src/lib/camposCadastro.js usadas por POST /api/cadastros. */
+function converterCampo(campo, valorBruto) {
+  const tipo = TIPO_CAMPO_CADASTRO[campo] || 'texto';
+  switch (tipo) {
+    case 'decimal':
+      return decimalOuNull(valorBruto);
+    case 'data':
+      return dataOuNull(valorBruto);
+    case 'inteiro':
+      return inteiroOuNull(valorBruto);
+    default:
+      return textoOuNull(valorBruto);
+  }
+}
+
+/**
+ * PATCH /api/associados/:cpfCnpj/cadastro
+ * Body: JSON (snake_case, mesmo formato de GET /api/associados/:cpfCnpj) com
+ * QUALQUER SUBCONJUNTO dos 22 campos de `CAMPOS_CADASTRO` — nunca exige o
+ * payload inteiro. Só atualiza os campos efetivamente PRESENTES no body
+ * (checado via hasOwnProperty, não "truthy") — um campo ausente do body
+ * nunca é tocado; um campo enviado como `null`/`""` LIMPA aquele campo
+ * (mesma semântica de `textoOuNull`/`decimalOuNull`/etc., que já tratam
+ * string vazia como null).
+ *
+ * NÃO toca em nenhum campo legado (`nome`, `telefone`, `email`,
+ * `em_negociacao`, `bloqueado`, `em_juridico`) nem em nenhuma outra tabela —
+ * mesmo escopo do DELETE (CAMPOS_CADASTRO).
+ *
+ * Validação: mesma de POST /api/cadastros (`tipo_pessoa` só PF/PJ,
+ * `descricao_servico` só as 4 opções válidas), mas só pros campos PRESENTES
+ * — nada aqui é obrigatório (edição parcial). Datas inválidas não dão erro,
+ * viram `null` silenciosamente — mesmo comportamento de sempre de
+ * `dataOuNull`, herdado de POST /api/cadastros.
+ *
+ * Recálculo de valor_parcela: se `valor_total`, `valor_entrada` ou
+ * `numero_parcelas` vierem no body, valor_parcela é recalculado com a mesma
+ * fórmula de POST /api/cadastros (`calcularValorParcela`) — os componentes
+ * que NÃO vierem no body são lidos do registro atual no banco (pra
+ * recalcular certo mesmo editando só um dos três). Se `valor_parcela` vier
+ * EXPLICITAMENTE no body, ele tem prioridade e nunca é sobrescrito pelo
+ * recálculo (permite ajuste manual pontual, tipo desconto negociado numa
+ * parcela específica — inclusive `null` explícito pra limpar).
+ */
+exports.editarCadastro = async (req, res, next) => {
+  try {
+    const { cpfCnpj } = req.params;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+
+    const associado = await req.prisma.associado.findUnique({ where: { cpfCnpj } });
+    if (!associado) {
+      return res.status(404).json({ error: 'Associado não encontrado.' });
+    }
+
+    const data = {};
+    for (const campo of CAMPOS_CADASTRO) {
+      const chaveSnake = camelParaSnake(campo);
+      if (Object.prototype.hasOwnProperty.call(body, chaveSnake)) {
+        data[campo] = converterCampo(campo, body[chaveSnake]);
+      }
+    }
+
+    // Validação (só dos campos presentes e não-nulos — nada é obrigatório).
+    if (Object.prototype.hasOwnProperty.call(data, 'tipoPessoa') && data.tipoPessoa !== null) {
+      if (!TIPOS_PESSOA_VALIDOS.includes(data.tipoPessoa)) {
+        return res.status(400).json({ error: `"tipo_pessoa" inválido (esperado ${TIPOS_PESSOA_VALIDOS.join(' ou ')}).` });
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'descricaoServico') && data.descricaoServico !== null) {
+      if (!DESCRICOES_SERVICO_VALIDAS.includes(data.descricaoServico)) {
+        return res.status(400).json({ error: `"descricao_servico" inválido (esperado um de: ${DESCRICOES_SERVICO_VALIDAS.join(', ')}).` });
+      }
+    }
+
+    // Recálculo de valor_parcela — só quando algum dos 3 componentes veio no
+    // body E valor_parcela em si NÃO veio explicitamente (explícito sempre
+    // vence). Componentes ausentes do body são lidos do registro atual.
+    const tocouComponentesDaParcela =
+      Object.prototype.hasOwnProperty.call(data, 'valorTotal') ||
+      Object.prototype.hasOwnProperty.call(data, 'valorEntrada') ||
+      Object.prototype.hasOwnProperty.call(data, 'numeroParcelas');
+    const valorParcelaExplicito = Object.prototype.hasOwnProperty.call(data, 'valorParcela');
+
+    if (tocouComponentesDaParcela && !valorParcelaExplicito) {
+      const valorTotal = Object.prototype.hasOwnProperty.call(data, 'valorTotal')
+        ? data.valorTotal
+        : decimalPrismaParaNumeroOuNull(associado.valorTotal);
+      const valorEntrada = Object.prototype.hasOwnProperty.call(data, 'valorEntrada')
+        ? data.valorEntrada
+        : decimalPrismaParaNumeroOuNull(associado.valorEntrada);
+      const numeroParcelas = Object.prototype.hasOwnProperty.call(data, 'numeroParcelas')
+        ? data.numeroParcelas
+        : associado.numeroParcelas;
+
+      data.valorParcela = calcularValorParcela({ valorTotal, valorEntrada, numeroParcelas });
+    }
+
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ error: 'Nenhum campo de cadastro válido foi enviado.' });
+    }
+
+    const atualizado = await req.prisma.associado.update({ where: { cpfCnpj }, data });
+
+    res.json(serializeAssociado(atualizado));
   } catch (err) {
     next(err);
   }

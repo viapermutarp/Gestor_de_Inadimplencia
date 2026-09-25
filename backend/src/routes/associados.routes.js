@@ -50,5 +50,8 @@ router.post('/associados/:cpfCnpj/bloqueios/resetar', auth, dashboard, escopoFra
 // AJUSTE 20 — "excluir cadastro" individual. Exige "associados" (não
 // "dashboard") — é uma ação da aba nova, não do Dashboard.
 router.delete('/associados/:cpfCnpj/cadastro', auth, associados, escopoFranquia, registroCtrl.excluirCadastro);
+// AJUSTE 21 — "editar cadastro" (PATCH parcial). Mesmo recurso ("associados",
+// não "dashboard") das outras ações desta aba nova.
+router.patch('/associados/:cpfCnpj/cadastro', auth, associados, escopoFranquia, registroCtrl.editarCadastro);
 
 module.exports = router;
