@@ -159,10 +159,58 @@ async function buscarClientePorCpfCnpj(cpfCnpj, franquiaId) {
   return clientes[0].name || null;
 }
 
+/**
+ * Investigação "cobranças removidas no Asaas" (setembro/2026) — busca UM
+ * pagamento específico pelo id ("pay_..."), via GET /v3/payments/{id}, pra
+ * CONFIRMAR na fonte de verdade se ele foi removido no Asaas, distinto de
+ * "nunca existiu" ou "ainda existe sob outro status". Motivo de existir:
+ * quando o Asaas apaga uma cobrança (evento PAYMENT_DELETED), a linha
+ * correspondente é REMOVIDA por inteiro de `pagamentos_asaas`
+ * (`excluirPagamento`, `pagamentosAsaas.service.js`) — não sobra nenhum
+ * status local "deletado" pra comparar, então uma `Cobranca` local
+ * pending/overdue cujo id_externo não bate com nada em `pagamentos_asaas`
+ * é AMBÍGUA só por comparação local (ver
+ * `scripts/diagnostico-cobrancas-removidas-asaas.js`, primeiro consumidor,
+ * e futuramente o webhook `PAYMENT_DELETED`/job de reconciliação diária,
+ * que precisam da mesma confirmação antes de marcar `Cobranca.status =
+ * "removida"` — nunca só pela ausência local).
+ *
+ * Diferente de `requisitar` (usada pelas demais funções deste módulo), esta
+ * função trata 404 como uma resposta VÁLIDA (id nunca existiu nesta conta),
+ * não uma falha — por isso não deixa a `AsaasApiError` de 404 subir crua;
+ * qualquer outro erro (401/timeout/5xx) continua subindo normalmente.
+ *
+ * A API do Asaas continua respondendo 200 com o pagamento (campo
+ * `"deleted": true`) para um id que já foi excluído — só um 404 de verdade
+ * significa "nunca existiu nesta conta". Retorna:
+ *   - `{ existe: false }` — 404.
+ *   - `{ existe: true, deletado: boolean, pagamento: {...} }` — 200,
+ *     `pagamento` é o objeto cru do Asaas (mesmos campos de
+ *     `listarPagamentos`/webhook: id/customer/value/dueDate/paymentDate/
+ *     status/description/deleted).
+ */
+async function buscarPagamentoPorId(id, franquiaId) {
+  try {
+    const pagamento = await requisitar(`/payments/${id}`, {}, franquiaId);
+    return { existe: true, deletado: pagamento.deleted === true, pagamento };
+  } catch (err) {
+    // "requisitar" não expõe o status HTTP real do Asaas em "err.status"
+    // (sempre 502 pra qualquer coisa != 401 — ver implementação acima) — o
+    // status real do Asaas vem embutido na MENSAGEM
+    // ("...respondeu com status ${resposta.status}..."). Só 404 é tratado
+    // aqui como resposta válida; qualquer outro texto/erro sobe intacto.
+    if (err instanceof AsaasApiError && /respondeu com status 404\b/.test(err.message)) {
+      return { existe: false };
+    }
+    throw err;
+  }
+}
+
 module.exports = {
   listarPagamentos,
   obterClientesPorId,
   buscarClientePorCpfCnpj,
+  buscarPagamentoPorId,
   AsaasApiError,
   ASAAS_BASE_URL,
 };
