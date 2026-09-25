@@ -40,14 +40,36 @@ const prismaBase = require('../config/prisma');
  * temporal que a janela rolante deixa aberto pra quitações.
  */
 
-const STATUS_ADIMPLENTE_ASAAS = ['RECEIVED', 'RECEIVED_IN_CASH'];
+/**
+ * AJUSTE 22 (revisão pré-commit) — inclui "CONFIRMED" (cartão de crédito
+ * aprovado, repasse pro lojista ainda pendente de cair na conta) a partir
+ * desta revisão. Critério único: em `Cobranca.status`, CONFIRMED conta como
+ * quitado em TODOS os caminhos que usam esta constante — "presas" (esta
+ * função, `buscarCobrancasPresas`/`aplicarQuitacao`, usada pelo job diário e
+ * pelo diagnóstico manual), `classificarCandidataAusente`
+ * (`cobrancasRemovidas.service.js`, POST /api/sync e a reconciliação de
+ * "sem correspondência") e `reverterRemovidaParaStatusAsaas` (webhook
+ * PAYMENT_RESTORED) — nenhum caminho mais tem seu próprio critério
+ * divergente (o script CLI do job diário também, ver
+ * `scripts/reconciliar-cobrancas-quitadas-no-asaas.js`, que agora reaproveita
+ * a mesma função do endpoint HTTP em vez de ter lógica própria).
+ *
+ * IMPORTANTE — isto NÃO afeta a tela de Taxa de Inadimplência
+ * (`GET /api/inadimplencia/*`, `inadimplencia.controller.js`): aquele
+ * controller nunca importa esta constante, lê `PagamentoAsaas.status` cru
+ * direto e tem seus próprios critérios (`STATUS_INADIMPLENTE_POR_TIPO_PENDENCIA`
+ * etc.) — mudar esta constante não muda "Total recebido"/faixas/críticos
+ * daquela tela em nada.
+ */
+const STATUS_ADIMPLENTE_ASAAS = ['RECEIVED', 'RECEIVED_IN_CASH', 'CONFIRMED'];
 const STATUS_CONSIDERADOS_ABERTOS = ['pending', 'overdue'];
 
 /**
  * Busca cobranças pending/overdue com id_externo preenchido (opcionalmente
  * restrito a uma franquia) e classifica cada uma comparando com o
  * PagamentoAsaas de MESMO id — "presa" só quando esse pagamento específico
- * já está RECEIVED/RECEIVED_IN_CASH. Só leitura, não aplica nada.
+ * já está em STATUS_ADIMPLENTE_ASAAS (RECEIVED/RECEIVED_IN_CASH/CONFIRMED).
+ * Só leitura, não aplica nada.
  *
  * @param {{ franquiaId?: string|null }} opts
  * @returns {Promise<{
@@ -99,15 +121,22 @@ async function buscarCobrancasPresas({ franquiaId = null } = {}) {
 }
 
 /**
- * Aplica a quitação de verdade — `status: 'quitada'`, `quitadaEm` igual ao
- * `paymentDate` do Asaas (não a data de agora — preserva quando o
- * pagamento realmente aconteceu, pra não distorcer relatórios que olhem
- * pra `quitada_em` no futuro). `paymentDate` é gravado como string
- * "YYYY-MM-DD" em `pagamentos_asaas` (ver schema.prisma); convertido pra
- * meia-noite UTC daquele dia. No caso (não esperado — só chega aqui com
- * status RECEIVED/RECEIVED_IN_CASH) de `paymentDate` nulo, cai pra "agora"
- * e o item vem marcado com `quitadaEmAproximada: true` no retorno, pra
- * quem chamou poder sinalizar isso no relatório.
+ * Aplica a quitação de verdade — `status: 'quitada'`, `quitadaEm` a partir
+ * da primeira data disponível, nesta ordem: `paymentDate` ?? `clientPaymentDate`
+ * ?? `confirmedDate` ?? "agora" (AJUSTE 22, revisão pré-commit). Preserva
+ * quando o pagamento realmente aconteceu, pra não distorcer relatórios que
+ * olhem pra `quitada_em` no futuro. Motivo da cadeia (antes só `paymentDate`):
+ * pra CONFIRMED (cartão aprovado), `paymentDate` costuma vir `null` até o
+ * repasse pro lojista terminar de processar — `confirmedDate`/
+ * `clientPaymentDate` já vêm preenchidos nesse meio tempo (ver docblock dos
+ * campos em schema.prisma), então usá-los evita cair em "agora"
+ * desnecessariamente pro caso mais comum de CONFIRMED. Todos gravados como
+ * string "YYYY-MM-DD" (ver schema.prisma); a data escolhida é convertida pra
+ * meia-noite UTC daquele dia. Só quando NENHUMA das três existe (RECEIVED/
+ * RECEIVED_IN_CASH sem `paymentDate` — caso de borda não esperado na
+ * prática — ou um CONFIRMED tão recente que nenhuma das três já chegou) cai
+ * pra "agora", e o item vem marcado com `quitadaEmAproximada: true` no
+ * retorno, pra quem chamou poder sinalizar isso no relatório.
  *
  * Aceita opcionalmente um client Prisma já escopado por franquia (ex.:
  * `req.prisma`, ver `config/prismaComEscopo.js`) — mesma defesa em
@@ -125,12 +154,24 @@ async function buscarCobrancasPresas({ franquiaId = null } = {}) {
 async function aplicarQuitacao(presas, { prisma = prismaBase } = {}) {
   const aplicados = [];
   for (const { cobranca, pagamento } of presas) {
-    const quitadaEmAproximada = !pagamento.paymentDate;
-    const quitadaEm = pagamento.paymentDate ? new Date(`${pagamento.paymentDate}T00:00:00.000Z`) : new Date();
+    const dataQuitacao = pagamento.paymentDate ?? pagamento.clientPaymentDate ?? pagamento.confirmedDate ?? null;
+    const quitadaEmAproximada = !dataQuitacao;
+    const quitadaEm = dataQuitacao ? new Date(`${dataQuitacao}T00:00:00.000Z`) : new Date();
 
     await prisma.cobranca.update({
       where: { id: cobranca.id },
-      data: { status: 'quitada', quitadaEm },
+      data: {
+        status: 'quitada',
+        quitadaEm,
+        // AJUSTE 22 — limpa removidaEm sempre, mesmo quando a cobrança nunca
+        // esteve "removida" (fica null->null, no-op inofensivo nesse caso).
+        // Necessário pro caminho novo, via reverterRemovidaParaStatusAsaas
+        // (webhook PAYMENT_RESTORED de uma cobrança que estava "removida" e
+        // volta já RECEIVED): sem isso, "quitada" ficaria com um
+        // removidaEm remanescente — inconsistente, os dois campos nunca
+        // devem estar preenchidos ao mesmo tempo.
+        removidaEm: null,
+      },
     });
 
     aplicados.push({ cobrancaId: cobranca.id, quitadaEm, quitadaEmAproximada });

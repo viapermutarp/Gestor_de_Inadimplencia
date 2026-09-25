@@ -1,5 +1,11 @@
 const { buscarClientePorCpfCnpj } = require('../services/asaas.service');
 const { buscarCobrancasPresas, aplicarQuitacao } = require('../services/cobrancasPresas.service');
+const {
+  LIMITE_GUARDRAIL_REMOVIDAS,
+  reconciliarCandidatasEmLote,
+  confirmarERemoverSemCorrespondencia,
+  reverterRemovidaSeReapareceuNoPayload,
+} = require('../services/cobrancasRemovidas.service');
 const { apenasDigitos } = require('../lib/cpfCnpj');
 
 const STATUS_VALIDOS = ['pending', 'overdue', 'paid'];
@@ -135,6 +141,62 @@ async function registrarSyncLog(reqPrisma, { total, sucesso }) {
  * Em ambos os modos: se uma cobrança marcada "quitada" voltar a aparecer
  * num payload seguinte (ex.: reversão de pagamento no Asaas), a quitação é
  * desfeita automaticamente pelo upsert normal (quitada_em volta a null).
+ *
+ * AJUSTE 22 — "removida" (cobrança apagada no Asaas, nunca paga — ver
+ * src/services/cobrancasRemovidas.service.js para o contexto completo e por
+ * que nunca reaproveita "quitada"): duas mudanças neste endpoint,
+ * decorrentes do mesmo problema raiz.
+ *
+ * 1) Reconciliação de "ausente do payload" NÃO marca mais "quitada" às
+ *    cegas (o `updateMany` direto que existia antes desta versão). Pra cada
+ *    candidata (pending/overdue, não tocada por este payload, no modo por
+ *    associado OU no modo global — ver `reconciliarCandidatasEmLote`):
+ *      a) se `pagamentos_asaas` já tem esse id em STATUS_ADIMPLENTE_ASAAS
+ *         (RECEIVED/RECEIVED_IN_CASH/CONFIRMED — critério ÚNICO, revisão
+ *         pré-commit: a mesma constante em cobrancasPresas.service.js
+ *         decide "quitada" em TODOS os caminhos, incluindo a detecção de
+ *         "presas" do job diário e a reversão do webhook PAYMENT_RESTORED;
+ *         CONFIRMED existe pra cartão de crédito aprovado mas ainda
+ *         aguardando repasse não voltar a aparecer como "em aberto" no
+ *         Dashboard só porque saiu do payload, mesmo comportamento de antes
+ *         do AJUSTE 22) -> quitada (quitada_em = paymentDate ??
+ *         clientPaymentDate ?? confirmedDate ?? agora — ver `aplicarQuitacao`);
+ *      b) senão, consulta a API do Asaas ao vivo — `deleted: true` ->
+ *         removida (removida_em = agora, SALVO se o guardrail de remoção
+ *         bloquear — ver LIMITE_GUARDRAIL_REMOVIDAS em
+ *         cobrancasRemovidas.service.js: mais de 20 candidatas confirmadas
+ *         como removida NUMA ÚNICA chamada a `reconciliarCandidatasEmLote`
+ *         e NENHUMA é aplicada, contam em `removidas_bloqueadas_guardrail`);
+ *         existe e em STATUS_ADIMPLENTE_ASAAS -> quitada (mesmo critério do
+ *         item a, só que confirmado ao vivo); qualquer outra resposta
+ *         (existe sob outro status, 404, ou falha do Asaas) -> NÃO MEXE, só
+ *         entra em "erros" pra revisão manual. Uma falha ao consultar o
+ *         Asaas (timeout, 5xx) nunca aplica nada — fica pending/overdue até
+ *         a próxima chamada tentar de novo.
+ *    Efeito prático: este endpoint agora pode fazer chamadas HTTP pro Asaas
+ *    (uma por candidata sem correspondência local, concorrência limitada —
+ *    ver CONCORRENCIA_CONFIRMACAO_ASAAS), então pode ficar mais lento que
+ *    antes quando há muitas cobranças "sumidas" no mesmo payload (ver
+ *    seção "Volume de chamadas ao Asaas" no README pra números).
+ *
+ * 2) Se uma Cobranca JÁ MARCADA "removida" reaparecer num payload (o
+ *    próprio n8n volta a trazer aquele id_externo, pending/overdue) — desde
+ *    a revisão pré-commit (item 5), NÃO é mais um "ignora e reporta" cego:
+ *    `reverterRemovidaSeReapareceuNoPayload` consulta a API do Asaas AO VIVO
+ *    pra esse id_externo antes de decidir —
+ *      - Asaas confirma `deleted: false` -> reverte pro status TRAZIDO PELO
+ *        PAYLOAD (não necessariamente o que a cobrança tinha antes de ser
+ *        removida — o payload é o dado mais fresco disponível) e limpa
+ *        `removidaEm`; conta em `cobrancas_removida_revertida`.
+ *      - qualquer outra resposta (ainda `deleted: true`, 404, ou falha do
+ *        Asaas) -> NÃO MEXE, permanece "removida", entra em "erros" pra
+ *        revisão humana; conta em `cobrancas_removida_reaparecida`.
+ *    O payload do n8n sozinho continua NÃO sendo confirmação suficiente
+ *    (pode estar atrasado/com uma janela obsoleta em relação a uma remoção
+ *    recém-processada) — só a consulta ao vivo autoriza a reversão aqui.
+ *    Isto é DIFERENTE do webhook `PAYMENT_RESTORED` (evento ao vivo do
+ *    próprio Asaas — já é a confirmação em si, sem precisar de uma chamada
+ *    extra, ver `reverterRemovidaParaStatusAsaas`).
  */
 exports.sync = async (req, res, next) => {
   let totalAssociadosProcessados = 0;
@@ -168,6 +230,15 @@ exports.sync = async (req, res, next) => {
     let cobrancasCriadas = 0;
     let cobrancasAtualizadas = 0;
     let cobrancasQuitadas = 0;
+    let cobrancasRemovidas = 0;
+    let cobrancasRemovidaReaparecida = 0;
+    let cobrancasRemovidaRevertida = 0;
+    // AJUSTE 22 (revisão pré-commit, item 4) — candidatas a "removida" que
+    // ficaram de fora porque o guardrail de segurança bloqueou a chamada
+    // inteira (ver LIMITE_GUARDRAIL_REMOVIDAS em cobrancasRemovidas.service.js
+    // e reconciliarCandidatasEmLote) — permanecem pending/overdue, cada uma
+    // também detalhada em "erros".
+    let cobrancasRemovidaBloqueadaGuardrail = 0;
     const erros = [];
     // Ids (internos) de toda cobrança criada/atualizada por QUALQUER
     // associado deste payload — só usado no modo global (com "janela"), pra
@@ -313,6 +384,41 @@ exports.sync = async (req, res, next) => {
             });
           }
 
+          if (cobrancaExistente && cobrancaExistente.status === 'removida') {
+            // AJUSTE 22 (revisão pré-commit, item 5) — cobrança marcada
+            // "removida" reapareceu no payload do n8n: consulta a API do
+            // Asaas AO VIVO antes de decidir (ver docblock de exports.sync
+            // acima, item 2, e reverterRemovidaSeReapareceuNoPayload em
+            // cobrancasRemovidas.service.js) — o payload do n8n sozinho não
+            // é confirmação suficiente, mas também não é mais ignorado
+            // cegamente como antes desta revisão.
+            const resultadoReversao = await reverterRemovidaSeReapareceuNoPayload(
+              cobrancaExistente,
+              req.franquiaId,
+              dadosComuns,
+              { prisma: req.prisma }
+            );
+
+            if (resultadoReversao.revertida) {
+              cobrancasRemovidaRevertida += 1;
+              idsTratados.add(cobrancaExistente.id);
+              idsTratadosGlobal.add(cobrancaExistente.id);
+              cobrancasAtualizadas += 1;
+            } else {
+              cobrancasRemovidaReaparecida += 1;
+              erros.push({
+                index,
+                cpf_cnpj: cpfCnpj,
+                id_externo: idExterno,
+                erro:
+                  'Cobrança marcada "removida" reapareceu no payload do n8n — Asaas consultado ao vivo não confirmou ' +
+                  `a reversão (${resultadoReversao.acao}${resultadoReversao.detalhe ? `: ${resultadoReversao.detalhe}` : ''}). ` +
+                  'Permanece "removida", revisar manualmente.',
+              });
+            }
+            continue;
+          }
+
           if (cobrancaExistente) {
             await req.prisma.cobranca.update({
               where: { id: cobrancaExistente.id },
@@ -350,25 +456,57 @@ exports.sync = async (req, res, next) => {
         // por-associado tem a limitação que o modo global resolve (não
         // reconcilia associados que sumiram inteiros do payload).
         if (!janela) {
-          // Multi-franquia — Fase 3: este "updateMany" era o caso concreto
-          // que embasou todo o desenho da extension de isolamento (ver
-          // seção 4 do plano) — SEM filtro de franquia explícito aqui, um
-          // sync de uma franquia podia marcar como "quitada" cobranças de
-          // OUTRA franquia por engano. Agora "req.prisma" (escopado pela
-          // franquia da API key usada) injeta "associado: { franquiaId }"
-          // automaticamente nesse "where" (Cobranca é escopo por relação —
-          // ver prismaComEscopo.js), mesmo esse "where" já filtrando por
-          // "associadoId" específico (que já é da franquia certa, mas a
-          // dupla checagem é a defesa em profundidade documentada).
-          const resultadoQuitacao = await req.prisma.cobranca.updateMany({
+          // Multi-franquia — Fase 3: este bloco era o caso concreto que
+          // embasou todo o desenho da extension de isolamento (ver seção 4
+          // do plano) — SEM filtro de franquia explícito aqui, um sync de
+          // uma franquia podia tocar cobranças de OUTRA franquia por
+          // engano. "req.prisma" (escopado pela franquia da API key usada)
+          // injeta "associado: { franquiaId }" automaticamente neste
+          // "findMany" (Cobranca é escopo por relação — ver
+          // prismaComEscopo.js), mesmo já filtrando por "associadoId"
+          // específico (que já é da franquia certa, mas a dupla checagem é
+          // a defesa em profundidade documentada).
+          //
+          // AJUSTE 22 — não é mais um "updateMany" cego pra "quitada" (ver
+          // docblock de exports.sync acima, item 1): busca as candidatas e
+          // classifica/aplica cada uma via reconciliarCandidatasEmLote.
+          const candidatasAusentes = await req.prisma.cobranca.findMany({
             where: {
               associadoId: associado.id,
               status: { in: STATUS_CONSIDERADOS_ABERTOS },
               ...(idsTratados.size > 0 ? { id: { notIn: Array.from(idsTratados) } } : {}),
             },
-            data: { status: 'quitada', quitadaEm: new Date() },
           });
-          cobrancasQuitadas += resultadoQuitacao.count;
+          const resultado = await reconciliarCandidatasEmLote(candidatasAusentes, req.franquiaId, { prisma: req.prisma });
+          cobrancasQuitadas += resultado.quitadas.length;
+          cobrancasRemovidas += resultado.removidas.length;
+          for (const item of resultado.naoResolvidas) {
+            if (item.acao === 'sem_id_externo') continue; // sem id_externo: nunca deu pra confirmar nada, não é um "erro" a reportar
+            erros.push({
+              index,
+              cpf_cnpj: cpfCnpj,
+              id_externo: item.cobranca.idExterno,
+              erro: `Cobrança ausente do payload não reconciliada (${item.acao}${item.detalhe ? `: ${item.detalhe}` : ''}) — permanece pending/overdue.`,
+            });
+          }
+          // AJUSTE 22 (revisão pré-commit, item 4) — guardrail de remoção:
+          // nenhuma das candidatas a "removida" desta chamada foi aplicada
+          // porque o total confirmado passou de LIMITE_GUARDRAIL_REMOVIDAS
+          // nesta chamada específica a reconciliarCandidatasEmLote (escopo
+          // por-associado — ver docblock de LIMITE_GUARDRAIL_REMOVIDAS em
+          // cobrancasRemovidas.service.js pra como isso se compõe com o modo
+          // global logo abaixo). Cada uma permanece pending/overdue.
+          cobrancasRemovidaBloqueadaGuardrail += resultado.removidasBloqueadasGuardrail.length;
+          for (const item of resultado.removidasBloqueadasGuardrail) {
+            erros.push({
+              index,
+              cpf_cnpj: cpfCnpj,
+              id_externo: item.cobranca.idExterno,
+              erro:
+                `Cobrança confirmada como removida no Asaas, mas NÃO aplicada — guardrail de segurança ` +
+                `(mais de ${LIMITE_GUARDRAIL_REMOVIDAS} remoções confirmadas nesta chamada). Permanece pending/overdue.`,
+            });
+          }
         }
       }
     }
@@ -380,24 +518,53 @@ exports.sync = async (req, res, next) => {
     // associado sumir inteiro do payload porque todas as cobranças dele
     // foram pagas (o modo por-associado nunca examinava esse associado).
     if (janela) {
-      // Multi-franquia — Fase 3: ESTE é o "updateMany" citado na seção 4 do
-      // plano como justificativa central da extension — roda sobre a base
-      // INTEIRA (nenhum filtro de associado aqui, de propósito, é o modo
-      // "global"), então sem isolamento automático um sync de uma franquia
-      // marcaria cobranças de OUTRA franquia como quitadas. "req.prisma"
-      // (Cobranca é escopo por relação) injeta "associado: { franquiaId }"
-      // nesse "where" automaticamente — ver prismaComEscopo.js e o teste
-      // dedicado a este cenário específico.
+      // Multi-franquia — Fase 3: ESTE é o "findMany" (era "updateMany" cego
+      // antes do AJUSTE 22) citado na seção 4 do plano como justificativa
+      // central da extension — roda sobre a base INTEIRA (nenhum filtro de
+      // associado aqui, de propósito, é o modo "global"), então sem
+      // isolamento automático um sync de uma franquia tocaria cobranças de
+      // OUTRA franquia. "req.prisma" (Cobranca é escopo por relação) injeta
+      // "associado: { franquiaId }" nesse "where" automaticamente — ver
+      // prismaComEscopo.js e o teste dedicado a este cenário específico.
+      //
+      // AJUSTE 22 — mesma mudança do modo por-associado acima (ver docblock
+      // de exports.sync, item 1): classifica/aplica cada candidata via
+      // reconciliarCandidatasEmLote em vez de marcar "quitada" às cegas.
       const idsGlobal = Array.from(idsTratadosGlobal);
-      const resultadoQuitacaoGlobal = await req.prisma.cobranca.updateMany({
+      const candidatasAusentesGlobal = await req.prisma.cobranca.findMany({
         where: {
           status: { in: STATUS_CONSIDERADOS_ABERTOS },
           vencimento: { gte: janela.inicio, lte: janela.fim },
           ...(idsGlobal.length > 0 ? { id: { notIn: idsGlobal } } : {}),
         },
-        data: { status: 'quitada', quitadaEm: new Date() },
       });
-      cobrancasQuitadas += resultadoQuitacaoGlobal.count;
+      const resultadoGlobal = await reconciliarCandidatasEmLote(candidatasAusentesGlobal, req.franquiaId, { prisma: req.prisma });
+      cobrancasQuitadas += resultadoGlobal.quitadas.length;
+      cobrancasRemovidas += resultadoGlobal.removidas.length;
+      for (const item of resultadoGlobal.naoResolvidas) {
+        if (item.acao === 'sem_id_externo') continue;
+        erros.push({
+          index: null,
+          cpf_cnpj: null,
+          id_externo: item.cobranca.idExterno,
+          erro: `Cobrança ausente do payload (reconciliação global) não reconciliada (${item.acao}${item.detalhe ? `: ${item.detalhe}` : ''}) — permanece pending/overdue.`,
+        });
+      }
+      // AJUSTE 22 (revisão pré-commit, item 4) — mesmo guardrail do modo
+      // por-associado acima, aplicado aqui ao resultado da chamada única do
+      // modo global (candidatas da base inteira dentro da janela, numa só
+      // chamada a reconciliarCandidatasEmLote).
+      cobrancasRemovidaBloqueadaGuardrail += resultadoGlobal.removidasBloqueadasGuardrail.length;
+      for (const item of resultadoGlobal.removidasBloqueadasGuardrail) {
+        erros.push({
+          index: null,
+          cpf_cnpj: null,
+          id_externo: item.cobranca.idExterno,
+          erro:
+            `Cobrança confirmada como removida no Asaas, mas NÃO aplicada — guardrail de segurança ` +
+            `(mais de ${LIMITE_GUARDRAIL_REMOVIDAS} remoções confirmadas nesta chamada). Permanece pending/overdue.`,
+        });
+      }
     }
 
     await registrarSyncLog(req.prisma, { total: totalAssociadosProcessados, sucesso: true });
@@ -408,6 +575,28 @@ exports.sync = async (req, res, next) => {
       cobrancas_criadas: cobrancasCriadas,
       cobrancas_atualizadas: cobrancasAtualizadas,
       cobrancas_quitadas: cobrancasQuitadas,
+      // AJUSTE 22 — cobrancas_removidas: cobranças confirmadas como apagadas
+      // no Asaas (deleted=true) durante a reconciliação de "ausente do
+      // payload" (ver docblock de exports.sync, item 1). Distinto de
+      // cobrancas_quitadas de propósito — nunca a mesma coisa.
+      cobrancas_removidas: cobrancasRemovidas,
+      // cobrancas_removida_reaparecida: cobranças que estavam "removida",
+      // voltaram a aparecer neste payload, e o Asaas consultado ao vivo NÃO
+      // confirmou a reversão (ver docblock, item 2) — permanecem
+      // "removida"; cada uma também está detalhada em "erros".
+      cobrancas_removida_reaparecida: cobrancasRemovidaReaparecida,
+      // cobrancas_removida_revertida: cobranças que estavam "removida",
+      // voltaram a aparecer neste payload, E o Asaas consultado ao vivo
+      // confirmou deleted:false — revertidas pro status do payload
+      // (AJUSTE 22, revisão pré-commit, item 5).
+      cobrancas_removida_revertida: cobrancasRemovidaRevertida,
+      // removidas_bloqueadas_guardrail: candidatas confirmadas como
+      // "removida" no Asaas, mas NÃO aplicadas porque o guardrail de
+      // segurança bloqueou a chamada inteira (AJUSTE 22, revisão
+      // pré-commit, item 4 — ver LIMITE_GUARDRAIL_REMOVIDAS em
+      // cobrancasRemovidas.service.js). Cada uma também detalhada em
+      // "erros"; permanecem pending/overdue.
+      removidas_bloqueadas_guardrail: cobrancasRemovidaBloqueadaGuardrail,
       reconciliacao: janela ? 'global' : 'por_associado',
       erros,
     });
@@ -523,8 +712,49 @@ exports.atualizarSobDemanda = async (req, res) => {
  * cenário usa o script direto, com --confirm --force, depois de revisar a
  * lista).
  *
- * `quitadaEm` grava o `paymentDate` real do Asaas (não "agora") — mesmo
- * comportamento do script, ver `aplicarQuitacao` no serviço.
+ * `quitadaEm` grava a data real (`paymentDate` ?? `clientPaymentDate` ??
+ * `confirmedDate` ?? "agora" — revisão pré-commit do AJUSTE 22, item 2) —
+ * mesmo comportamento do script, ver `aplicarQuitacao` no serviço.
+ *
+ * AJUSTE 22 — rede de segurança adicional: além de quitar as "presas" (já
+ * fazia isso), agora também CONFIRMA VIA API DO ASAAS cada cobrança
+ * "sem_correspondencia_em_pagamentos_asaas" (nenhuma linha correspondente
+ * em pagamentos_asaas — ambíguo por comparação só local, ver docblock de
+ * `cobrancasRemovidas.service.js`) via `confirmarERemoverSemCorrespondencia`
+ * — que reaproveita a MESMA `classificarCandidataAusente` usada por
+ * `POST /api/sync` (ver acima): marca "removida" as que o Asaas confirma
+ * como `deleted: true` (salvo se o guardrail de remoção bloquear — ver
+ * `LIMITE_GUARDRAIL_REMOVIDAS`, item 4 abaixo), e — a partir da revisão
+ * pré-commit do AJUSTE 22 (item 3) — TAMBÉM marca "quitada" as que o Asaas
+ * confirma como RECEIVED/RECEIVED_IN_CASH/CONFIRMED (mesmo critério único de
+ * `STATUS_ADIMPLENTE_ASAAS`, já que é a mesma função por trás dos dois
+ * endpoints). `cobrancas_quitadas` na resposta soma as duas origens
+ * (via "presas", que já existia, e via esta confirmação ao vivo das
+ * "sem correspondência", nova). Nunca marca "removida"/"quitada" só pela
+ * ausência local — sempre confirma ao vivo antes. O guardrail de segurança
+ * (`LIMITE_SEGURANCA_RECONCILIACAO_COBRANCAS`) continua cobrindo só a
+ * quitação de "presas" (não a confirmação via Asaas ao vivo das "sem
+ * correspondência", que já é inerentemente mais lenta/conservadora — uma
+ * chamada HTTP por candidata, nunca aplica nada em caso de dúvida ou falha
+ * do Asaas).
+ *
+ * EQUIVALÊNCIA COM O SCRIPT CLI (corrigida na revisão pré-commit do AJUSTE
+ * 22 — antes deste ajuste havia uma divergência aqui, ver histórico no
+ * README): `scripts/reconciliar-cobrancas-quitadas-no-asaas.js` (o script
+ * CLI irmão deste endpoint, pensado pro mesmo job diário) agora reaproveita
+ * a MESMA `confirmarERemoverSemCorrespondencia` (só que com `aplicar: false`
+ * por padrão, pro seu modo dry-run) — nenhuma lógica própria de
+ * classificação. Uma cobrança CONFIRMED sem correspondência local é tratada
+ * de forma idêntica pelos dois: quitada quando o Asaas confirma
+ * RECEIVED/RECEIVED_IN_CASH/CONFIRMED, removida (sujeita ao mesmo guardrail
+ * — `LIMITE_GUARDRAIL_REMOVIDAS`) quando confirma `deleted: true`.
+ *
+ * `removidas_bloqueadas_guardrail` na resposta (AJUSTE 22, revisão
+ * pré-commit, item 4): candidatas confirmadas como removida nesta chamada,
+ * mas NÃO aplicadas porque o total passou de `LIMITE_GUARDRAIL_REMOVIDAS` —
+ * nenhuma removida é aplicada nesse caso, todas permanecem pending/overdue.
+ * Mesma constante/mesmo comportamento de `POST /api/sync` (ver docblock de
+ * `exports.sync`, item 1b).
  */
 exports.reconciliarCobrancasQuitadas = async (req, res, next) => {
   try {
@@ -546,12 +776,39 @@ exports.reconciliarCobrancasQuitadas = async (req, res, next) => {
     }
 
     const aplicados = await aplicarQuitacao(presas, { prisma: req.prisma });
-    const valorTotalQuitado = presas.reduce((soma, { cobranca }) => soma + Number(cobranca.valor), 0);
+    const valorTotalQuitadoPresas = presas.reduce((soma, { cobranca }) => soma + Number(cobranca.valor), 0);
+
+    const resultadoRemovidas = await confirmarERemoverSemCorrespondencia(semCorrespondencia, req.franquiaId, {
+      prisma: req.prisma,
+    });
+
+    // AJUSTE 22 (revisão pré-commit, item 3) — valor_total_quitado precisa
+    // somar as duas origens de "quitada", igual cobrancas_quitadas logo
+    // abaixo: via "presas" (calculado acima) + via confirmação ao vivo das
+    // "sem correspondência" (resultadoRemovidas.quitadas — cada item carrega
+    // a "cobranca" original, com o "valor"). Antes desta correção só somava
+    // "presas" — ficava inconsistente com cobrancas_quitadas assim que esse
+    // segundo caminho começasse a aplicar quitações de verdade (CONFIRMED
+    // confirmado ao vivo).
+    const valorTotalQuitadoSemCorrespondencia = resultadoRemovidas.quitadas.reduce(
+      (soma, item) => soma + Number(item.cobranca.valor),
+      0
+    );
+    const valorTotalQuitado = valorTotalQuitadoPresas + valorTotalQuitadoSemCorrespondencia;
 
     res.json({
       cobrancas_verificadas: comIdExterno.length,
-      cobrancas_quitadas: aplicados.length,
+      // AJUSTE 22 (revisão pré-commit, item 3) — soma as duas origens de
+      // "quitada": via "presas" (pagamentos_asaas local já RECEIVED/
+      // RECEIVED_IN_CASH/CONFIRMED, comportamento original do AJUSTE 18) +
+      // via confirmação ao vivo das "sem correspondência" (RECEIVED/
+      // RECEIVED_IN_CASH/CONFIRMED confirmado direto na API do Asaas, ver
+      // docblock acima).
+      cobrancas_quitadas: aplicados.length + resultadoRemovidas.quitadas.length,
       valor_total_quitado: valorTotalQuitado,
+      cobrancas_removidas: resultadoRemovidas.removidas.length,
+      // removidas_bloqueadas_guardrail — ver docblock acima (item 4).
+      removidas_bloqueadas_guardrail: resultadoRemovidas.removidasBloqueadasGuardrail.length,
       sem_id_externo: semIdExterno.length,
       sem_correspondencia_em_pagamentos_asaas: semCorrespondencia.length,
     });

@@ -15,12 +15,13 @@
  * é uma segunda via, independente do payload do n8n: usa `pagamentos_asaas`
  * (atualizado continuamente via webhook — AJUSTE 14 — sem limite de janela
  * por data de vencimento) como fonte de verdade. Toda `Cobranca`
- * `pending`/`overdue` cujo `id_externo` já está `RECEIVED`/`RECEIVED_IN_CASH`
- * em `pagamentos_asaas` é marcada `quitada` — a mesma comparação POR
- * COBRANÇA INDIVIDUAL (nunca por associado inteiro) já validada em
+ * `pending`/`overdue` cujo `id_externo` já está em STATUS_ADIMPLENTE_ASAAS
+ * (RECEIVED/RECEIVED_IN_CASH/CONFIRMED) em `pagamentos_asaas` é marcada
+ * `quitada` — a mesma comparação POR COBRANÇA INDIVIDUAL (nunca por
+ * associado inteiro) já validada em
  * `scripts/diagnostico-cobrancas-presas-sistemico.js`, reaproveitando a
  * lógica de `src/services/cobrancasPresas.service.js` (nenhuma lógica
- * duplicada entre os três caminhos: este script, o endpoint HTTP, e o
+ * duplicada entre os caminhos: este script, o endpoint HTTP, e o
  * diagnóstico manual).
  *
  * NÃO substitui `POST /api/sync` — continua sendo a fonte primária de
@@ -36,36 +37,65 @@
  * tempo real (isso continua sendo `POST /api/sync`, horário).
  *
  * IMPORTANTE — leia antes de rodar:
- *   - Roda em modo DRY RUN por padrão — só reporta o que seria quitado, não
- *     escreve nada no banco. Passe --confirm para aplicar de verdade (é
- *     assim que um agendador externo deve chamar este script na prática,
- *     depois de já ter sido validado em dry-run pelo menos uma vez).
- *   - `quitadaEm` grava o `paymentDate` real do Asaas (não "agora") — ver
- *     docblock de `aplicarQuitacao` no serviço.
+ *   - Roda em modo DRY RUN por padrão — só reporta o que seria quitado/
+ *     removido, não escreve nada no banco. Passe --confirm para aplicar de
+ *     verdade (é assim que um agendador externo deve chamar este script na
+ *     prática, depois de já ter sido validado em dry-run pelo menos uma
+ *     vez).
+ *   - `quitadaEm` grava a data real do Asaas — `paymentDate` ??
+ *     `clientPaymentDate` ?? `confirmedDate` ?? "agora" (AJUSTE 22, revisão
+ *     pré-commit, item 2 — ver docblock de `aplicarQuitacao` no serviço).
  *   - Não é hard delete: os registros continuam no banco, só mudam de
  *     status (mesmo comportamento de `POST /api/sync` e de
  *     `scripts/reconciliar-cobrancas-presas.js`).
- *   - Guardrail de segurança: recusa aplicar (--confirm) se o total de
- *     presas encontradas passar muito do esperado, a não ser que --force
- *     também seja passado — evita quitar em massa por engano se algo
- *     inesperado acontecer nos dados (ex.: pagamentos_asaas com um bug
+ *   - Guardrail de segurança pras "presas": recusa aplicar (--confirm) se o
+ *     total de presas encontradas passar muito do esperado, a não ser que
+ *     --force também seja passado — evita quitar em massa por engano se
+ *     algo inesperado acontecer nos dados (ex.: pagamentos_asaas com um bug
  *     upstream marcando muita coisa como RECEIVED por engano).
+ *   - Guardrail de segurança pras "removida" (AJUSTE 22, revisão
+ *     pré-commit, item 4 — `LIMITE_GUARDRAIL_REMOVIDAS`, ver docblock em
+ *     `cobrancasRemovidas.service.js`): se, numa mesma franquia, mais de
+ *     `LIMITE_GUARDRAIL_REMOVIDAS` candidatas forem confirmadas como
+ *     "removida" nesta rodada, NENHUMA é aplicada pra aquela franquia —
+ *     reportado, sem --force pra ignorar isto (diferente do guardrail das
+ *     "presas" acima) — revise manualmente antes de aplicar via
+ *     `scripts/corrigir-cobrancas-removidas-asaas.js`.
  *   - Multi-franquia: por padrão processa TODAS as franquias. Use
  *     --franquia=<id> pra restringir a uma só (mesmo padrão de
- *     reconciliar-pagamentos-asaas.js).
+ *     reconciliar-pagamentos-asaas.js). Cada franquia é uma chamada
+ *     separada a `confirmarERemoverSemCorrespondencia` — o guardrail de
+ *     remoção é avaliado POR FRANQUIA, não pra soma de todas.
  *   - Idempotente: rodar de novo não encontra mais nada pras cobranças já
- *     quitadas na rodada anterior (elas deixam de aparecer no filtro
+ *     quitadas/removidas na rodada anterior (deixam de aparecer no filtro
  *     pending/overdue).
+ *
+ * AJUSTE 22 — além de quitar "presas", este script CONFIRMA VIA API DO
+ * ASAAS cada cobrança "sem correspondência em pagamentos_asaas" e marca
+ * "removida" as que o Asaas confirma como `deleted: true`, ou "quitada" as
+ * que o Asaas confirma em STATUS_ADIMPLENTE_ASAAS — nunca pela ausência
+ * local sozinha (ver `src/services/cobrancasRemovidas.service.js`).
+ *
+ * REVISÃO PRÉ-COMMIT (item 1) — este script REAPROVEITA
+ * `confirmarERemoverSemCorrespondencia`, a MESMA função usada por
+ * `POST /api/sync/reconciliar-cobrancas-quitadas` (nenhuma lógica própria
+ * de classificação/aplicação aqui) — o script CLI e o endpoint HTTP voltam
+ * a ser equivalentes ponto a ponto, inclusive pra CONFIRMED. Em modo dry
+ * run (padrão), chama com `aplicar: false` — ainda faz as chamadas ao Asaas
+ * (Fase 1 de classificação, ver docblock de `reconciliarCandidatasEmLote`),
+ * só não escreve nada, pra já mostrar de antemão o que "--confirm" faria
+ * (inclusive o que o guardrail de remoção bloquearia).
  *
  * Uso (dentro do container/ambiente com DATABASE_URL apontando pro banco
  * certo):
  *   node scripts/reconciliar-cobrancas-quitadas-no-asaas.js                    # dry run, todas as franquias
  *   node scripts/reconciliar-cobrancas-quitadas-no-asaas.js --confirm          # aplica
  *   node scripts/reconciliar-cobrancas-quitadas-no-asaas.js --franquia=<id> --confirm
- *   node scripts/reconciliar-cobrancas-quitadas-no-asaas.js --confirm --force  # ignora o guardrail
+ *   node scripts/reconciliar-cobrancas-quitadas-no-asaas.js --confirm --force  # ignora o guardrail das "presas" (o guardrail de remoção não tem --force)
  */
 const prismaBase = require('../src/config/prisma');
 const { buscarCobrancasPresas, aplicarQuitacao } = require('../src/services/cobrancasPresas.service');
+const { LIMITE_GUARDRAIL_REMOVIDAS, confirmarERemoverSemCorrespondencia } = require('../src/services/cobrancasRemovidas.service');
 
 const LIMITE_SEGURANCA_SEM_FORCE = 60;
 
@@ -97,8 +127,89 @@ async function main() {
       `(${semIdExterno.length} sem id_externo, fora do escopo deste método; ${semCorrespondencia.length} sem correspondência em pagamentos_asaas).`
   );
 
+  // AJUSTE 22 (revisão pré-commit, item 1) — reaproveita a MESMA
+  // confirmarERemoverSemCorrespondencia do endpoint HTTP irmão. Agrupado
+  // por franquia: a função exige uma franquiaId única por chamada (pra
+  // resolver a API key certa via requisitar/getAsaasApiKey), mas este
+  // script (ao contrário do endpoint, sempre escopado a uma franquia) pode
+  // processar TODAS numa rodada só quando --franquia não é passado — então
+  // roda uma chamada por franquia representada em "semCorrespondencia"
+  // (com --franquia, é sempre uma franquia só, já filtrada por
+  // buscarCobrancasPresas). O guardrail de remoção (LIMITE_GUARDRAIL_REMOVIDAS)
+  // é avaliado dentro de cada chamada — ou seja, por franquia, não pra soma
+  // de todas nesta rodada.
+  const semCorrespondenciaPorFranquia = new Map();
+  for (const cobranca of semCorrespondencia) {
+    const fId = cobranca.associado?.franquiaId;
+    if (!fId) continue; // defensivo — não deveria acontecer, mas sem franquia não dá pra escolher a chave certa
+    if (!semCorrespondenciaPorFranquia.has(fId)) semCorrespondenciaPorFranquia.set(fId, []);
+    semCorrespondenciaPorFranquia.get(fId).push(cobranca);
+  }
+
+  const resultadoRemovidas = { quitadas: [], removidas: [], naoResolvidas: [], removidasBloqueadasGuardrail: [] };
+  for (const [fId, itens] of semCorrespondenciaPorFranquia.entries()) {
+    const parcial = await confirmarERemoverSemCorrespondencia(itens, fId, { aplicar: confirm });
+    resultadoRemovidas.quitadas.push(...parcial.quitadas);
+    resultadoRemovidas.removidas.push(...parcial.removidas);
+    resultadoRemovidas.naoResolvidas.push(...parcial.naoResolvidas);
+    resultadoRemovidas.removidasBloqueadasGuardrail.push(...parcial.removidasBloqueadasGuardrail);
+  }
+
+  if (semCorrespondencia.length > 0) {
+    console.log(`\n${semCorrespondencia.length} cobrança(s) sem correspondência em pagamentos_asaas — confirmação via Asaas:`);
+    const todasClassificadas = [
+      ...resultadoRemovidas.quitadas,
+      ...resultadoRemovidas.removidas,
+      ...resultadoRemovidas.removidasBloqueadasGuardrail,
+      ...resultadoRemovidas.naoResolvidas,
+    ];
+    for (const item of todasClassificadas) {
+      const c = item.cobranca;
+      console.log(
+        `  ${c.associado?.nome ?? '?'} (${c.associado?.cpfCnpj ?? '?'})  cobranca id=${c.id}  id_externo=${c.idExterno}  ` +
+          `valor=${formatarBRL(c.valor)}  → ${item.acao}${item.detalhe ? ` (${item.detalhe})` : ''}`
+      );
+    }
+    // "confirmada(s) como removida(s)" soma aplicadas + bloqueadas pelo
+    // guardrail (as duas categorias FORAM confirmadas pelo Asaas como
+    // deleted:true — a diferença é só se a aplicação foi permitida ou não,
+    // detalhado no aviso do guardrail logo abaixo quando houver bloqueadas).
+    const totalRemovidaConfirmada = resultadoRemovidas.removidas.length + resultadoRemovidas.removidasBloqueadasGuardrail.length;
+    console.log(
+      `  → ${resultadoRemovidas.quitadas.length} confirmada(s) como quitada(s), ` +
+        `${totalRemovidaConfirmada} confirmada(s) como removida(s) no Asaas` +
+        `${resultadoRemovidas.removidasBloqueadasGuardrail.length > 0 ? ` (${resultadoRemovidas.removidas.length} aplicada(s), ${resultadoRemovidas.removidasBloqueadasGuardrail.length} bloqueada(s) pelo guardrail — ver aviso abaixo)` : ''} ` +
+        `(as demais: existem sob outro status, não encontradas, ou falha na consulta — nenhuma dessas é tocada).`
+    );
+    if (resultadoRemovidas.removidasBloqueadasGuardrail.length > 0) {
+      console.log(
+        `\n⚠️  ${resultadoRemovidas.removidasBloqueadasGuardrail.length} cobrança(s) confirmada(s) como removida, mas NÃO aplicada(s) — ` +
+          `guardrail de segurança (mais de ${LIMITE_GUARDRAIL_REMOVIDAS} remoções confirmadas numa mesma franquia nesta execução). ` +
+          'Permanecem pending/overdue. Revise manualmente antes de aplicar (não há --force pra este guardrail).'
+      );
+    }
+    if (resultadoRemovidas.removidas.length > 0 || resultadoRemovidas.quitadas.length > 0) {
+      if (confirm) {
+        console.log(
+          `\n✓ ${resultadoRemovidas.quitadas.length} cobrança(s) sem correspondência marcada(s) como "quitada", ` +
+            `${resultadoRemovidas.removidas.length} marcada(s) como "removida".`
+        );
+      } else {
+        console.log(
+          `\nDRY RUN — ${resultadoRemovidas.quitadas.length} cobrança(s) sem correspondência seria(m) marcada(s) como "quitada", ` +
+            `${resultadoRemovidas.removidas.length} seria(m) marcada(s) como "removida". Rode de novo com --confirm para aplicar.`
+        );
+      }
+    }
+  }
+
+  if (presas.length === 0 && resultadoRemovidas.removidas.length === 0 && resultadoRemovidas.quitadas.length === 0) {
+    console.log('\nNenhuma cobrança presa, quitada (sem correspondência) nem removida confirmada — nada a fazer.');
+    return;
+  }
+
   if (presas.length === 0) {
-    console.log('\nNenhuma cobrança presa encontrada — nada a fazer.');
+    console.log('\nNenhuma cobrança presa encontrada — nada a quitar por essa via (ver resultado da confirmação via Asaas acima).');
     return;
   }
 
@@ -122,7 +233,7 @@ async function main() {
       console.log(
         `    ${c.associado?.nome ?? '?'} (${c.associado?.cpfCnpj ?? '?'})  cobranca id=${c.id}  id_externo=${c.idExterno}  ` +
           `valor=${formatarBRL(c.valor)}  vencimento=${new Date(c.vencimento).toISOString().slice(0, 10)}  ` +
-          `→ pagamentos_asaas status=${p.status}  paymentDate=${p.paymentDate ?? '(null)'}`
+          `→ pagamentos_asaas status=${p.status}  paymentDate=${p.paymentDate ?? '(null)'}  clientPaymentDate=${p.clientPaymentDate ?? '(null)'}  confirmedDate=${p.confirmedDate ?? '(null)'}`
       );
     }
   }
@@ -145,7 +256,9 @@ async function main() {
   const aproximadas = aplicados.filter((a) => a.quitadaEmAproximada);
   console.log(`\n✓ ${aplicados.length} cobrança(s) marcada(s) como "quitada".`);
   if (aproximadas.length > 0) {
-    console.log(`⚠️  ${aproximadas.length} delas sem paymentDate em pagamentos_asaas (inesperado) — quitada_em gravado como "agora".`);
+    console.log(
+      `⚠️  ${aproximadas.length} delas sem paymentDate/clientPaymentDate/confirmedDate em pagamentos_asaas (inesperado) — quitada_em gravado como "agora".`
+    );
   }
 }
 

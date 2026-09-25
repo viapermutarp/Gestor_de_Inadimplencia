@@ -37,8 +37,8 @@ const EVENTO_WEBHOOK_DELETE = 'PAYMENT_DELETED';
 /**
  * Upsert de UM pagamento (mesmo formato "cru" do Asaas — tanto o payload do
  * webhook quanto o retorno de `listarPagamentos` usam os mesmos nomes de
- * campo: id/customer/value/dueDate/paymentDate/status/description) na
- * tabela local. "id" é o próprio "pay_..." do Asaas — upsert por esse id é
+ * campo: id/customer/value/dueDate/paymentDate/clientPaymentDate/
+ * confirmedDate/status/description) na tabela local. "id" é o próprio "pay_..." do Asaas — upsert por esse id é
  * o que torna isto naturalmente idempotente: aplicar o mesmo evento (ou
  * reprocessar o mesmo pagamento no backfill/reconciliação) 2x só upserta a
  * mesma linha pro mesmo estado final, nunca duplica.
@@ -71,6 +71,14 @@ async function upsertPagamento(prismaCliente, franquiaId, payment, clienteResolv
     dateCreated: payment.dateCreated || null,
     dueDate: payment.dueDate,
     paymentDate: payment.paymentDate || null,
+    // AJUSTE 22 (revisão pré-commit) — mesma convenção de dateCreated acima:
+    // já vêm no payload do webhook/listarPagamentos, só não eram
+    // persistidos. Ver docblock do fallback em aplicarQuitacao
+    // (cobrancasPresas.service.js) — necessários pra "quitadaEm" de um
+    // pagamento CONFIRMED (cartão) não cair em "agora" só porque
+    // "paymentDate" ainda não foi preenchido (repasse pendente).
+    clientPaymentDate: payment.clientPaymentDate || null,
+    confirmedDate: payment.confirmedDate || null,
     status: payment.status,
     description: payment.description || null,
   };

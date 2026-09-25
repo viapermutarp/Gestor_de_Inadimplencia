@@ -193,6 +193,17 @@ model Cobranca {
   /// (ou seja, sumiu da listagem PENDING/OVERDUE do Asaas — geralmente
   /// porque foi paga). Nunca é setado a partir de payload externo.
   quitadaEm      DateTime? @map("quitada_em")
+  /// AJUSTE 22 — "removida": status para cobrança que foi APAGADA no Asaas
+  /// (evento PAYMENT_DELETED — geralmente por renegociação, que substitui a
+  /// cobrança original por uma nova) SEM nunca ter sido paga. Distinto de
+  /// "quitada" DE PROPÓSITO — dinheiro que nunca entrou não pode contar como
+  /// recebido em nenhum lugar do sistema (ver docblock de
+  /// `src/services/cobrancasRemovidas.service.js` para o fluxo completo:
+  /// webhook PAYMENT_DELETED/PAYMENT_RESTORED, POST /api/sync,
+  /// reconciliação diária). "removidaEm" preenchido só quando o status vira
+  /// "removida"; nunca setado a partir de payload externo (mesma convenção
+  /// de "quitadaEm" acima).
+  removidaEm     DateTime? @map("removida_em")
 
   @@index([associadoId])
   @@index([status])
@@ -628,6 +639,19 @@ model PagamentoAsaas {
   dateCreated  String?  @map("date_created")
   dueDate      String   @map("due_date")
   paymentDate  String?  @map("payment_date")
+  /// AJUSTE 22 (revisão pré-commit) — "clientPaymentDate"/"confirmedDate" do
+  /// payload do Asaas (mesma convenção de string "YYYY-MM-DD" de
+  /// dueDate/paymentDate/dateCreated acima, sem passar por Date em nenhuma
+  /// ponta): pra cartão de crédito (status CONFIRMED), "paymentDate" costuma
+  /// vir nulo até o repasse cair — "confirmedDate" (quando o Asaas confirmou
+  /// o pagamento) e "clientPaymentDate" (quando o cliente efetivamente pagou)
+  /// já vêm preenchidos nesse meio tempo. Usados como fallback em
+  /// `aplicarQuitacao` (cobrancasPresas.service.js) pra "quitadaEm" não cair
+  /// em "agora" só porque o repasse ainda não terminou de processar. `null`
+  /// em linhas gravadas antes deste ajuste, até a próxima sincronização
+  /// (webhook/backfill/reconciliação) trazer o valor.
+  clientPaymentDate String? @map("client_payment_date")
+  confirmedDate     String? @map("confirmed_date")
   status       String
   description  String?
   atualizadoEm DateTime @updatedAt @map("atualizado_em")

@@ -8,6 +8,15 @@ const {
   excluirPagamento,
   resolverClienteEmSegundoPlano,
 } = require('../services/pagamentosAsaas.service');
+const { marcarRemovidaSeAberta, reverterRemovidaParaStatusAsaas } = require('../services/cobrancasRemovidas.service');
+
+/** Evento de restauração de uma cobrança antes apagada no Asaas (ver
+ * AJUSTE 22, src/services/cobrancasRemovidas.service.js) — já está incluído
+ * em EVENTOS_WEBHOOK_UPSERT (upserta pagamentos_asaas normalmente, como
+ * qualquer outro evento), mas precisa de um tratamento ADICIONAL do lado de
+ * `cobrancas`: reverter uma Cobranca que esteja "removida" de volta pro
+ * status correto. */
+const EVENTO_WEBHOOK_RESTORE = 'PAYMENT_RESTORED';
 
 /**
  * POST /api/asaas/webhook/:franquiaId
@@ -108,7 +117,25 @@ exports.receber = async (req, res) => {
         return res.status(400).json({ error: 'Payload inválido: "payment.id" ausente.' });
       }
       await excluirPagamento(franquiaId, payment.id);
-      return res.status(200).json({ ok: true, evento: event, acao: 'removido' });
+
+      // AJUSTE 22 — além de remover a linha de pagamentos_asaas (acima),
+      // marca a Cobranca correspondente como "removida" (só se ainda
+      // pending/overdue — nunca toca uma já "quitada", ver docblock de
+      // marcarRemovidaSeAberta). Uma falha aqui é só logada: o Asaas já
+      // confirmou a exclusão (o evento em si), então não faz sentido tratar
+      // isso como 400/500 pro Asaas re-entregar o evento — a cobrança fica
+      // presa em pending/overdue até a próxima reconciliação (POST /api/sync
+      // ou o job diário) pegar o mesmo caso como rede de segurança.
+      try {
+        const { marcada } = await marcarRemovidaSeAberta(payment.id, franquiaId);
+        return res.status(200).json({ ok: true, evento: event, acao: 'removido', cobranca_marcada_removida: marcada });
+      } catch (err) {
+        console.error(
+          `[asaas-webhook] Falha ao marcar Cobranca como "removida" (pagamento "${payment.id}", franquia "${franquiaId}"):`,
+          err.message
+        );
+        return res.status(200).json({ ok: true, evento: event, acao: 'removido', cobranca_marcada_removida: false });
+      }
     }
 
     if (!EVENTOS_WEBHOOK_UPSERT.has(event)) {
@@ -123,6 +150,26 @@ exports.receber = async (req, res) => {
 
     const prismaEscopado = criarPrismaEscopado(franquiaId);
     await upsertPagamento(prismaEscopado, franquiaId, payment, null);
+
+    // AJUSTE 22 — PAYMENT_RESTORED precisa de um passo A MAIS além do
+    // upsert comum (acima): reverter uma Cobranca "removida" de volta pro
+    // status certo (o próprio "payment.status" deste evento já diz qual —
+    // ver docblock de reverterRemovidaParaStatusAsaas, nenhuma chamada
+    // extra ao Asaas é necessária). Síncrono, ANTES de responder — ao
+    // contrário da resolução de cliente em segundo plano abaixo, isto é uma
+    // escrita local rápida (1 SELECT + 1 UPDATE, sem chamada externa),
+    // mesmo raciocínio de "responder rápido" do docblock do controller não
+    // se aplica aqui (não há I/O externo envolvido).
+    if (event === EVENTO_WEBHOOK_RESTORE) {
+      try {
+        await reverterRemovidaParaStatusAsaas(payment.id, franquiaId, payment, { prisma: prismaEscopado });
+      } catch (err) {
+        console.error(
+          `[asaas-webhook] Falha ao reverter Cobranca "removida" (pagamento "${payment.id}", franquia "${franquiaId}"):`,
+          err.message
+        );
+      }
+    }
 
     res.status(200).json({ ok: true, evento: event, acao: 'upsert' });
 

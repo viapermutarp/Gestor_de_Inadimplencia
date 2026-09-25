@@ -146,9 +146,9 @@ async function main() {
     async function criarAssociado(franquiaId, cpfCnpj, nome) {
       return db.associado.create({ data: { franquiaId, cpfCnpj, cpfCnpjDigits: apenasDigitos(cpfCnpj), nome, telefone: '11999990000' } });
     }
-    async function criarPar({ associadoId, franquiaId, cpfCnpj, nome, idExterno, valor, dueDate, paymentDate, statusAsaas, statusCobranca, diasDiferenca }) {
+    async function criarPar({ associadoId, franquiaId, cpfCnpj, nome, idExterno, valor, dueDate, paymentDate, clientPaymentDate = null, confirmedDate = null, statusAsaas, statusCobranca, diasDiferenca }) {
       await db.pagamentoAsaas.create({
-        data: { id: idExterno, franquiaId, customerId: `cus_${idExterno}`, cpfCnpj, nome, value: valor, dueDate, paymentDate, status: statusAsaas, description: 'Mensalidade' },
+        data: { id: idExterno, franquiaId, customerId: `cus_${idExterno}`, cpfCnpj, nome, value: valor, dueDate, paymentDate, clientPaymentDate, confirmedDate, status: statusAsaas, description: 'Mensalidade' },
       });
       return db.cobranca.create({
         data: { associadoId, idExterno, valor, vencimento: dataISO(dueDate), diasDiferenca, status: statusCobranca, descricao: 'Mensalidade', sincronizadoEm: new Date() },
@@ -310,7 +310,15 @@ async function main() {
       const { saida, codigo } = rodarScript('diagnostico-cobrancas-presas-sistemico.js', `--franquia=${franquiaA.id} --confirm`);
       console.log(saida);
       assertEqual(codigo, 0, 'segunda rodada sai com código 0');
-      assert(saida.includes('Nenhuma cobrança presa encontrada'), 'segunda rodada não encontra mais nada (idempotente)');
+      // Texto exato de scripts/diagnostico-cobrancas-presas-sistemico.js
+      // (ganhou o sufixo "(critério "paga no Asaas")..." num ajuste
+      // anterior a este — a asserção antiga ("Nenhuma cobrança presa
+      // encontrada", sem esse sufixo) ficou desatualizada, corrigida na
+      // revisão pré-commit do AJUSTE 22, item 7.
+      assert(
+        saida.includes('Nenhuma cobrança presa (critério "paga no Asaas") encontrada'),
+        'segunda rodada não encontra mais nada (idempotente)'
+      );
     }
 
     // -------------------------------------------------------------
@@ -370,6 +378,64 @@ async function main() {
       assertEqual(codigoForce, 0, '--force aplica com sucesso (código 0)');
       const countDepoisForce = await db.cobranca.count({ where: { status: 'quitada', associadoId: massa.id } });
       assertEqual(countDepoisForce, 61, '--force aplicou as 61 quitações');
+    }
+
+    // -------------------------------------------------------------
+    // TESTE 7 (revisão pré-commit, AJUSTE 22, item "CONFIRMED com critério
+    // único" + "quitadaEm para CONFIRMED") — presa com status CONFIRMED
+    // (cartão de crédito aprovado, repasse ainda pendente): precisa ser
+    // detectada como presa pelo MESMO caminho 100% local de
+    // buscarCobrancasPresas/aplicarQuitacao (sem precisar de chave Asaas
+    // configurada nem de nenhuma chamada à API — CONFIRMED entra por
+    // STATUS_ADIMPLENTE_ASAAS, casado localmente por id_externo, igual
+    // RECEIVED/RECEIVED_IN_CASH). Franquia isolada pra não alterar as
+    // contagens dos testes 1-6 acima.
+    // Dois associados: Gabriela (paymentDate null, mas clientPaymentDate
+    // presente — deve usar clientPaymentDate) e Heitor (paymentDate E
+    // clientPaymentDate null, só confirmedDate — deve cair no terceiro elo
+    // da cadeia), provando a ordem completa
+    // paymentDate ?? clientPaymentDate ?? confirmedDate ?? agora.
+    // -------------------------------------------------------------
+    console.log('\n== Teste 7: presa com CONFIRMED — quitadaEm via clientPaymentDate/confirmedDate ==');
+    {
+      const franquiaD = await db.franquia.create({ data: { nome: 'AJUSTE18 Franquia D (CONFIRMED)' } });
+      const bearerD = await criarApiKey(franquiaD.id, 'teste-d');
+
+      const gabriela = await criarAssociado(franquiaD.id, '99999999999', 'Gabriela Confirmed Cartao');
+      await criarPar({
+        associadoId: gabriela.id, franquiaId: franquiaD.id, cpfCnpj: gabriela.cpfCnpj, nome: gabriela.nome,
+        idExterno: 'pay_gabriela_confirmed', valor: 220, dueDate: diasAtras(20), paymentDate: null,
+        clientPaymentDate: diasAtras(4), confirmedDate: diasAtras(6),
+        statusAsaas: 'CONFIRMED', statusCobranca: 'overdue', diasDiferenca: -20,
+      });
+
+      const heitor = await criarAssociado(franquiaD.id, '10101010101', 'Heitor Confirmed So ConfirmedDate');
+      await criarPar({
+        associadoId: heitor.id, franquiaId: franquiaD.id, cpfCnpj: heitor.cpfCnpj, nome: heitor.nome,
+        idExterno: 'pay_heitor_confirmed', valor: 180, dueDate: diasAtras(18), paymentDate: null,
+        clientPaymentDate: null, confirmedDate: diasAtras(7),
+        statusAsaas: 'CONFIRMED', statusCobranca: 'pending', diasDiferenca: -18,
+      });
+
+      const { saida, codigo } = rodarScript('diagnostico-cobrancas-presas-sistemico.js', `--franquia=${franquiaD.id} --confirm`);
+      console.log(saida);
+      assertEqual(codigo, 0, 'diagnóstico --confirm (CONFIRMED) sai com código 0');
+      assert(saida.includes('2 cobrança(s) marcada(s) como "quitada"'), 'quitou as 2 presas CONFIRMED (critério único inclui CONFIRMED, sem precisar de chamada ao Asaas)');
+      assert(!saida.includes('não tinham paymentDate'), 'nenhuma caiu em "agora" — ambas tinham clientPaymentDate/confirmedDate como fallback');
+
+      const gabrielaRow = await db.cobranca.findUnique({ where: { idExterno: 'pay_gabriela_confirmed' } });
+      assertEqual(gabrielaRow.status, 'quitada', 'cobrança CONFIRMED da Gabriela quitada');
+      assertEqual(gabrielaRow.quitadaEm.toISOString().slice(0, 10), diasAtras(4), 'quitada_em da Gabriela = clientPaymentDate (paymentDate era null)');
+
+      const heitorRow = await db.cobranca.findUnique({ where: { idExterno: 'pay_heitor_confirmed' } });
+      assertEqual(heitorRow.status, 'quitada', 'cobrança CONFIRMED do Heitor quitada');
+      assertEqual(heitorRow.quitadaEm.toISOString().slice(0, 10), diasAtras(7), 'quitada_em do Heitor = confirmedDate (paymentDate E clientPaymentDate eram null)');
+
+      // Confirma também via endpoint HTTP (equivalência script/endpoint —
+      // idempotência: já quitadas acima, então 0 novas aqui).
+      const rD = await post('/sync/reconciliar-cobrancas-quitadas', {}, bearerD);
+      assertEqual(rD.status, 200, 'endpoint na franquia D -> 200');
+      assertEqual(rD.corpo.cobrancas_quitadas, 0, 'endpoint não encontra mais nada — as 2 CONFIRMED já foram quitadas pelo script acima');
     }
   } finally {
     console.log('\n== Encerrando app e derrubando banco de teste ==');

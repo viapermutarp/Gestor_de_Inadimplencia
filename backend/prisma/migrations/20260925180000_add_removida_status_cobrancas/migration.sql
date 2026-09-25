@@ -1,0 +1,19 @@
+-- Adiciona "removida_em" à tabela cobrancas.
+--
+-- AJUSTE 22 — "removida": novo valor de "status" (a coluna continua uma
+-- String livre, sem enum/CHECK no Postgres — nenhuma migration de tipo é
+-- necessária pra aceitar o valor novo, só esta coluna de data) para uma
+-- cobrança que foi APAGADA no Asaas (evento PAYMENT_DELETED, geralmente por
+-- renegociação) sem nunca ter sido paga.
+--
+-- Por que não reaproveitar "quitada_em": dinheiro que nunca entrou não pode
+-- aparecer em nenhum lugar do sistema como recebido — "removida" e
+-- "quitada" são estados mutuamente exclusivos, cada um com seu próprio
+-- timestamp, pra nunca arriscar confundir um com o outro numa consulta.
+-- "removida" nunca é um valor aceito vindo de payload externo (mesma
+-- convenção de "quitada", ver STATUS_VALIDOS em
+-- src/controllers/sync.controller.js) — só o próprio backend grava esse
+-- status (webhook PAYMENT_DELETED, POST /api/sync ou a reconciliação
+-- diária), sempre depois de confirmar com a API do Asaas que a cobrança foi
+-- de fato removida.
+ALTER TABLE "cobrancas" ADD COLUMN "removida_em" TIMESTAMP(3);
