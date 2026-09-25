@@ -62,12 +62,121 @@
  *   esta flag pra conferir a lista, e só depois com ela.
  * --force (opcional): ignora o guardrail de segurança (> LIMITE_SEGURANCA_SEM_FORCE
  *   presas). Use só depois de já ter revisado a lista impressa.
+ *
+ * ADAPTAÇÃO (investigação "reconciliação diária não está resolvendo os
+ * casos atuais") — três seções novas, só leitura, nenhuma mudança na lógica
+ * de busca/classificação/aplicação (que continua 100% em
+ * cobrancasPresas.service.js, importada, nunca reimplementada aqui):
+ *   1. Compara `presas.length` direto contra o MESMO limite que
+ *      `POST /api/sync/reconciliar-cobrancas-quitadas` usa
+ *      (`LIMITE_SEGURANCA_RECONCILIACAO_COBRANCAS`, sync.controller.js) e
+ *      diz explicitamente se o endpoint estaria devolvendo 409 agora.
+ *   2. Detalha CADA item de `semCorrespondencia` (antes só a contagem) —
+ *      cobrança com id_externo preenchido mas sem NENHUMA linha em
+ *      `pagamentos_asaas` pra esse id. Candidato principal pro caso "cobrança
+ *      de cento e pouquinho, não existe mais no Asaas": quando o Asaas
+ *      apaga uma cobrança (evento `PAYMENT_DELETED`), a linha correspondente
+ *      é REMOVIDA de `pagamentos_asaas` (nunca vira um status tipo
+ *      "DELETED" — ver `excluirPagamento` em
+ *      `src/services/pagamentosAsaas.service.js`), então ela desaparece
+ *      daqui e cai exatamente neste balde — que, hoje, é só REPORTADO
+ *      (`sem_correspondencia_em_pagamentos_asaas` na resposta do endpoint),
+ *      nunca reconciliado automaticamente. Diferente de `presas` (que exige
+ *      `pagamentos_asaas` com status RECEIVED/RECEIVED_IN_CASH pra agir),
+ *      não há NENHUM caminho hoje que quite uma cobrança só porque ela
+ *      sumiu do Asaas — só porque foi paga.
+ *   3. Pra cada item de `presas` E de `semCorrespondencia`, checa se ele
+ *      "parece" ser um dos dois lados de um par "(Negativada)" (mesmo
+ *      padrão/mesma regex documentados em
+ *      `inadimplencia.controller.js:pareceDescricaoNegativada` e
+ *      `auditoria-duplicatas-negativada-dunning.js` — duplicada aqui de
+ *      propósito, só leitura, mesma convenção que o script de auditoria já
+ *      usa, em vez de exportar a função interna do controller): (a) a
+ *      própria descrição (da `Cobranca` local e, quando existir, do
+ *      `PagamentoAsaas` casado) termina com o sufixo "(Negativada)"/
+ *      variação; e/ou (b) existe, em `pagamentos_asaas`, outra linha do
+ *      MESMO cpf_cnpj com valor igual (2 casas) e vencimento a até 3 dias
+ *      de distância, onde exatamente um dos dois lados tem o sufixo — o
+ *      mesmo critério de `identificarIdsCopiasNegativadas`. Não decide nem
+ *      corrige nada — só sinaliza a suspeita, pra responder "as cobranças
+ *      presas de agora têm cara do mesmo padrão de antes?" sem imprimir uma
+ *      lista negativa que ninguém pediu.
  */
 const { buscarCobrancasPresas, aplicarQuitacao } = require('../src/services/cobrancasPresas.service');
+const prismaBase = require('../src/config/prisma');
 
 const JANELA_DIAS_TRAS = 53;
 const JANELA_DIAS_FRENTE = 5;
 const LIMITE_SEGURANCA_SEM_FORCE = 60;
+// Mesmo valor de LIMITE_SEGURANCA_RECONCILIACAO_COBRANCAS em
+// sync.controller.js — duplicado aqui só pra simular a decisão do endpoint
+// HTTP sem importar um controller Express dentro de um script de linha de
+// comando (mesma razão de LIMITE_SEGURANCA_SEM_FORCE já ser uma constante
+// própria deste arquivo, não um import).
+const LIMITE_SEGURANCA_ENDPOINT_HTTP = 60;
+
+/** Mesma normalização/regex de `pareceDescricaoNegativada` em inadimplencia.controller.js e auditoria-duplicatas-negativada-dunning.js — ver docblock da adaptação acima. */
+function normalizarTextoParaComparacao(texto) {
+  return (texto || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+}
+function pareceDescricaoNegativada(description) {
+  const normalizado = normalizarTextoParaComparacao(description).trimEnd();
+  return /\(\s*neg[a-z]*\.{0,3}\)?\s*$/.test(normalizado);
+}
+function arredondar2Valor(valor) {
+  return Math.round((Number(valor) + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Pra UMA cobrança (presa ou sem-correspondência), monta um veredito de
+ * suspeita de par "negativada" — nunca lança, nunca aplica nada.
+ */
+async function checarSuspeitaNegativada({ cobranca, pagamento }) {
+  const descricaoLocal = cobranca.descricao || null;
+  const descricaoAsaas = pagamento?.description || null;
+  const proprioSufixo = pareceDescricaoNegativada(descricaoLocal) || pareceDescricaoNegativada(descricaoAsaas);
+
+  const cpfCnpj = cobranca.associado?.cpfCnpj;
+  if (!cpfCnpj) {
+    return { proprioSufixo, parEncontrado: false, detalheParaLog: proprioSufixo ? '  [descrição tem sufixo "(Negativada)"/variação]' : '' };
+  }
+
+  // Candidatos: qualquer outra linha de pagamentos_asaas do MESMO cpf_cnpj,
+  // valor igual (2 casas) — filtra o resto em memória (poucos registros por
+  // cliente, não vale a pena um WHERE mais elaborado pra um script de
+  // diagnóstico).
+  const candidatos = await prismaBase.pagamentoAsaas.findMany({
+    where: { cpfCnpj, value: arredondar2Valor(cobranca.valor) },
+    select: { id: true, dueDate: true, status: true, description: true },
+  });
+
+  const vencimentoCobranca = new Date(cobranca.vencimento);
+  let parEncontrado = false;
+  let outroLado = null;
+  for (const cand of candidatos) {
+    if (pagamento && cand.id === pagamento.id) continue; // não compara a linha consigo mesma
+    const diffDias = Math.abs((new Date(cand.dueDate) - vencimentoCobranca) / 86400000);
+    if (diffDias > 3) continue;
+    const candNeg = pareceDescricaoNegativada(cand.description);
+    const estaNeg = proprioSufixo; // já calculado acima (cobranca/pagamento desta linha)
+    if (candNeg === estaNeg) continue; // precisa ser exatamente 1 dos 2, mesmo critério de identificarIdsCopiasNegativadas
+    parEncontrado = true;
+    outroLado = cand;
+  }
+
+  let detalheParaLog = '';
+  if (proprioSufixo) detalheParaLog += '  [descrição tem sufixo "(Negativada)"/variação]';
+  if (parEncontrado) {
+    detalheParaLog +=
+      `  [par encontrado em pagamentos_asaas: esta linha é a ${proprioSufixo ? 'CÓPIA "negativada"' : 'ORIGINAL'}, ` +
+      `outro lado id=${outroLado.id} status=${outroLado.status}${pareceDescricaoNegativada(outroLado.description) ? ' (tem sufixo)' : ' (sem sufixo)'}]`;
+  }
+
+  return { proprioSufixo, parEncontrado, detalheParaLog };
+}
 
 function parseArgs(argv) {
   const args = { franquiaId: null, limite: 100, confirm: false, force: false };
@@ -116,8 +225,52 @@ async function main() {
   console.log(`    dessas, o PagamentoAsaas AINDA não está quitado (cobrança em aberto legítima): ${naoQuitadasNoAsaas.length}`);
   console.log(`  id_externo SEM correspondência em pagamentos_asaas: ${semCorrespondencia.length}`);
 
+  // --- ADAPTAÇÃO 1: simula a decisão do guardrail de POST /api/sync/reconciliar-cobrancas-quitadas ---
+  console.log('\n--- Guardrail do endpoint HTTP (POST /api/sync/reconciliar-cobrancas-quitadas) ---');
+  if (args.franquiaId) {
+    console.log(
+      presas.length > LIMITE_SEGURANCA_ENDPOINT_HTTP
+        ? `  ⚠️  ${presas.length} presa(s) nesta franquia > limite (${LIMITE_SEGURANCA_ENDPOINT_HTTP}) — o endpoint estaria devolvendo 409 pra ela agora.`
+        : `  ${presas.length} presa(s) nesta franquia <= limite (${LIMITE_SEGURANCA_ENDPOINT_HTTP}) — o endpoint aplicaria normalmente (200) pra ela agora.`
+    );
+  } else {
+    // O endpoint é escopado a 1 franquia por chamada — o guardrail dele
+    // compara contra as presas DAQUELA franquia, nunca a soma de todas.
+    // Reagrupa aqui só pra simular a decisão por franquia, sem re-consultar
+    // o banco.
+    const presasPorFranquia = new Map();
+    for (const { cobranca } of presas) {
+      const fid = cobranca.associado?.franquiaId ?? '(desconhecida)';
+      presasPorFranquia.set(fid, (presasPorFranquia.get(fid) || 0) + 1);
+    }
+    if (presasPorFranquia.size === 0) {
+      console.log(`  0 presa(s) em qualquer franquia — endpoint aplicaria normalmente (200) em todas.`);
+    } else {
+      for (const [fid, qtd] of presasPorFranquia) {
+        console.log(
+          qtd > LIMITE_SEGURANCA_ENDPOINT_HTTP
+            ? `  ⚠️  franquia ${fid}: ${qtd} presa(s) > limite (${LIMITE_SEGURANCA_ENDPOINT_HTTP}) — endpoint devolveria 409 pra ela.`
+            : `  franquia ${fid}: ${qtd} presa(s) <= limite (${LIMITE_SEGURANCA_ENDPOINT_HTTP}) — endpoint aplicaria (200).`
+        );
+      }
+    }
+  }
+
+  // --- ADAPTAÇÃO 2: detalha CADA "sem correspondência" (candidato a "apagada no Asaas") ---
+  if (semCorrespondencia.length > 0) {
+    console.log(`\n--- ADAPTAÇÃO — detalhe de ${semCorrespondencia.length} cobrança(s) SEM correspondência em pagamentos_asaas ---`);
+    console.log('    (id_externo preenchido, mas nenhuma linha em pagamentos_asaas com esse id — candidata a "apagada no Asaas": PAYMENT_DELETED REMOVE a linha de lá, não a marca com um status "deletado". Hoje só reportado, nunca reconciliado automaticamente.)\n');
+    for (const c of semCorrespondencia) {
+      const suspeita = await checarSuspeitaNegativada({ cobranca: c, pagamento: null });
+      console.log(
+        `    ${c.associado?.nome ?? '(desconhecido)'}  cpf_cnpj=${c.associado?.cpfCnpj ?? '?'}  franquiaId=${c.associado?.franquiaId ?? '?'}\n` +
+          `      cobranca id=${c.id}  id_externo=${c.idExterno}  valor=${formatarBRL(c.valor)}  vencimento=${fmtData(c.vencimento)}  status_cobranca=${c.status}${suspeita.detalheParaLog}`
+      );
+    }
+  }
+
   if (presas.length === 0) {
-    console.log('\nNenhuma cobrança presa encontrada por este critério. Encerrando.');
+    console.log('\nNenhuma cobrança presa (critério "paga no Asaas") encontrada. Encerrando — ver seção acima se houve "sem correspondência".');
     return;
   }
 
@@ -167,24 +320,48 @@ async function main() {
   // --- Detalhe por associado ---
   console.log('\n--- Detalhe por associado ---\n');
   let impressos = 0;
+  let presasComSuspeitaNegativada = 0;
   for (const { associado, itens } of porAssociado.values()) {
     if (impressos >= args.limite) {
       console.log(`... limite de --limite=${args.limite} atingido, ${porAssociado.size - impressos} associado(s) restantes não impressos.`);
-      break;
+      // Ainda assim, conta a suspeita de negativada nos itens não impressos
+      // — o resumo agregado abaixo cobre 100% das presas, não só as
+      // impressas (mesma convenção do resto do script, ver docblock de
+      // "--limite").
+      for (const { cobranca: c, pagamento: p } of itens) {
+        const suspeita = await checarSuspeitaNegativada({ cobranca: c, pagamento: p });
+        if (suspeita.proprioSufixo || suspeita.parEncontrado) presasComSuspeitaNegativada += 1;
+      }
+      continue;
     }
     const totalAssociado = itens.reduce((soma, it) => soma + Number(it.cobranca.valor), 0);
     console.log(`${associado?.nome ?? '(desconhecido)'}  cpf_cnpj=${associado?.cpfCnpj ?? '?'}  franquiaId=${associado?.franquiaId ?? '?'}`);
     console.log(`  ${itens.length} cobrança(s) presa(s), total ${formatarBRL(totalAssociado)}`);
     for (const { cobranca: c, pagamento: p, dentroDaJanela } of itens) {
+      const suspeita = await checarSuspeitaNegativada({ cobranca: c, pagamento: p });
+      if (suspeita.proprioSufixo || suspeita.parEncontrado) presasComSuspeitaNegativada += 1;
       console.log(
         `    cobranca id=${c.id}  id_externo=${c.idExterno}  valor=${formatarBRL(c.valor)}  vencimento=${fmtData(c.vencimento)}  ` +
           `dias_diferenca=${c.diasDiferenca}  status_cobranca=${c.status}  ` +
           `→ pagamentos_asaas: status=${p.status}  paymentDate=${p.paymentDate ?? '(null)'}  ` +
-          `${dentroDaJanela ? '[DENTRO da janela de hoje]' : '[FORA da janela de hoje]'}`
+          `${dentroDaJanela ? '[DENTRO da janela de hoje]' : '[FORA da janela de hoje]'}${suspeita.detalheParaLog}`
       );
     }
     impressos += 1;
   }
+
+  // --- ADAPTAÇÃO 3 (resumo agregado): relação com o padrão "negativada" ---
+  console.log(
+    `\n>>> Suspeita de par "(Negativada)" (descrição com o sufixo, e/ou par achado em pagamentos_asaas por cpf_cnpj+valor+vencimento±3d): ` +
+      `${presasComSuspeitaNegativada} de ${presas.length} presa(s) (${((presasComSuspeitaNegativada / presas.length) * 100).toFixed(1)}%).`
+  );
+  console.log(
+    presasComSuspeitaNegativada === 0
+      ? '    → NENHUMA presa tem cara de duplicata "negativada" — os dois problemas parecem INDEPENDENTES neste levantamento.'
+      : presasComSuspeitaNegativada === presas.length
+        ? '    → TODAS as presas têm cara de duplicata "negativada" — forte indício de relação entre os dois problemas (mesmo padrão de antes).'
+        : '    → PARTE das presas tem cara de duplicata "negativada" — indício de relação parcial; vale olhar caso a caso os marcados acima.'
+  );
 
   // --- Fora de escopo, reportado à parte ---
   if (semIdExterno.length > 0) {
